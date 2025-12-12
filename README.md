@@ -180,7 +180,7 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 * `describe()`: View dataset structure.
 * `codebook(variable, raw=false)`: Variable-level metadata (JSON envelope by default).
 * `run_do_file(path, trace=false, raw=false)`: Execute a .do file with rich error capture (JSON by default).
-* `export_graph(name)`: Export a graph as an image.
+* `export_graph(name, format="pdf")`: Export a graph to a file path (default PDF; use `format="png"` for PNG).
 * `export_graphs_all()`: Export all in-memory graphs as base64-encoded PNGs (JSON response).
 * `list_graphs()`: See available graphs in memory (JSON list with an `active` flag).
 * `get_stored_results()`: Get `r()` and `e()` scalars/macros.

@@ -52,15 +52,19 @@ def test_graphs(client, tmp_path):
     graphs = client.list_graphs()
     assert "MyGraph" in graphs
     
-    # Test export
-    # Use a specific temp file for this test
+    # Test export (default PDF)
+    default_path = client.export_graph("MyGraph")
+    assert os.path.exists(default_path)
+    assert default_path.endswith(".pdf")
+    assert Path(default_path).stat().st_size > 0
+
+    # Test explicit PNG export to a provided path
     export_path = tmp_path / "test_graph.png"
-    # Ensure it doesn't exist
     if export_path.exists():
         export_path.unlink()
-        
-    returned_path = client.export_graph("MyGraph", filename=str(export_path))
+    returned_path = client.export_graph("MyGraph", filename=str(export_path), format="png")
     assert os.path.exists(returned_path)
+    assert returned_path.endswith(".png")
     assert Path(returned_path).stat().st_size > 0
 
 def test_stored_results(client):

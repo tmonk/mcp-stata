@@ -1,5 +1,4 @@
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp import Image
 import mcp.types as types
 from .stata_client import StataClient
 from .models import (
@@ -82,22 +81,18 @@ def list_graphs() -> str:
     return graphs.model_dump_json(indent=2)
 
 @mcp.tool()
-def export_graph(graph_name: str = None) -> Image:
+def export_graph(graph_name: str = None, format: str = "pdf") -> str:
     """
-    Exports a stored Stata graph to an image format (PNG) and returns it.
-
+    Exports a stored Stata graph to a file and returns its path.
+    
     Args:
         graph_name: The name of the graph to export (as seen in `list_graphs`). 
                    If None, exports the currently active graph.
+        format: Output format, defaults to "pdf". Supported: "pdf", "png".
     """
     try:
-        path = client.export_graph(graph_name)
-        with open(path, "rb") as f:
-            data = f.read()
-        return Image(data=data, format="png")
+        return client.export_graph(graph_name, format=format)
     except Exception as e:
-        # Return error as text if image fails? 
-        # FastMCP expects Image or error.
         raise RuntimeError(f"Failed to export graph: {e}")
 
 @mcp.tool()

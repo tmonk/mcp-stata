@@ -341,11 +341,17 @@ class StataClient:
         graphs = [GraphInfo(name=n, active=(n == active_name)) for n in names]
         return GraphListResponse(graphs=graphs)
 
-    def export_graph(self, graph_name: str = None, filename: str = None) -> str:
-        """Exports graph to a temp file and returns path."""
+    def export_graph(self, graph_name: str = None, filename: str = None, format: str = "pdf") -> str:
+        """Exports graph to a temp file (pdf or png) and returns the path."""
         import tempfile
+
+        fmt = (format or "pdf").strip().lower()
+        if fmt not in {"pdf", "png"}:
+            raise ValueError(f"Unsupported graph export format: {format}. Allowed: pdf, png.")
+
         if not filename:
-            with tempfile.NamedTemporaryFile(prefix="mcp_stata_", suffix=".png", delete=False) as tmp:
+            suffix = f".{fmt}"
+            with tempfile.NamedTemporaryFile(prefix="mcp_stata_", suffix=suffix, delete=False) as tmp:
                 filename = tmp.name
         else:
             # Ensure fresh start
@@ -357,9 +363,9 @@ class StataClient:
             
         cmd = "graph export"
         if graph_name:
-            cmd += f' "{filename}", name("{graph_name}") replace'
+            cmd += f' "{filename}", name("{graph_name}") replace as({fmt})'
         else:
-            cmd += f' "{filename}", replace'
+            cmd += f' "{filename}", replace as({fmt})'
             
         output = self.run_command(cmd)
         
@@ -477,7 +483,7 @@ class StataClient:
         exports: List[GraphExport] = []
         for name in self.list_graphs():
             try:
-                path = self.export_graph(name)
+                path = self.export_graph(name, format="png")
                 with open(path, "rb") as f:
                     b64 = base64.b64encode(f.read()).decode("ascii")
                 exports.append(GraphExport(name=name, image_base64=b64))

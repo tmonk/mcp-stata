@@ -56,12 +56,20 @@ def test_server_tools(init_server):
     names = [g["name"] for g in g_list["graphs"]]
     assert "ServerGraph" in names
     
-    # Test export tool
-    # Returns Image object
-    img = export_graph("ServerGraph")
-    print("\nDEBUG IMAGE ATTRS:", dir(img), img.__dict__)
-    # For FastMCP Image, checking data presence is key
-    assert len(img.data) > 0
+    # Test export tool (path return, default PDF)
+    pdf_path = export_graph("ServerGraph")
+    assert isinstance(pdf_path, str)
+    assert pdf_path.endswith(".pdf")
+    from pathlib import Path
+    assert Path(pdf_path).exists()
+    assert Path(pdf_path).stat().st_size > 0
+    
+    # Test export tool with PNG format
+    png_path = export_graph("ServerGraph", format="png")
+    assert isinstance(png_path, str)
+    assert png_path.endswith(".png")
+    assert Path(png_path).exists()
+    assert Path(png_path).stat().st_size > 0
     
     # Test help tool
     h = get_help("sysuse")
