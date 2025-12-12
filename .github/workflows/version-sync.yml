@@ -33,6 +33,10 @@ jobs:
         env:
           RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
+          if [ -z "${RELEASE_BRANCH}" ]; then
+            echo "No head branch available from workflow_run; cannot push updates."
+            exit 1
+          fi
           if git diff --quiet -- server.json; then
             echo "server.json already in sync."
             exit 0
@@ -41,10 +45,6 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add server.json
           git commit -m "chore: sync server.json version"
-          if [ -z "${RELEASE_BRANCH}" ]; then
-            echo "No head branch available from workflow_run; cannot push updates."
-            exit 1
-          fi
           # Push back to the branch associated with the workflow run.
           git push origin HEAD:${RELEASE_BRANCH}
 
