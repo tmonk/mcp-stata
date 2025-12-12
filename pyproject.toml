@@ -26,6 +26,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "pystata>=0.0.1",
     "stata_setup>=0.1.0",
+    "twine>=6.2.0",
 ]
 
 [project.optional-dependencies]
