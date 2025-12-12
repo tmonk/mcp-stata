@@ -73,11 +73,10 @@ def test_stored_results(client):
 
 def test_help(client):
     help_text = client.get_help("regress")
-    # Check for SMCL content or common words
-    # Verification script found: "{smcl} ... {viewerdialog regress ...}"
-    assert "{smcl}" in help_text or "{vieweralsosee" in help_text
-    assert "Linear regression" in help_text
-    assert len(help_text) > 1000
+    assert help_text.lower().startswith("# help for")
+    assert "regress" in help_text.lower()
+    assert "syntax" in help_text.lower()
+    assert len(help_text) > 200
 
 def test_standard_commands(client):
     """Verifies standard analysis commands like regress conform to expected output."""

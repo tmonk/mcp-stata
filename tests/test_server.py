@@ -32,9 +32,10 @@ def init_server():
 
 def test_server_tools(init_server):
     # Test run_command tool
-    res = run_command("display 5+5") 
-    assert "10" in res
-    res_struct = json.loads(run_command("display 2+3", as_json=True))
+    res = json.loads(run_command("display 5+5"))
+    assert res["rc"] == 0
+    assert "10" in res["stdout"]
+    res_struct = json.loads(run_command("display 2+3"))
     assert res_struct["rc"] == 0
     assert "5" in res_struct["stdout"]
 
@@ -64,7 +65,8 @@ def test_server_tools(init_server):
     
     # Test help tool
     h = get_help("sysuse")
-    assert "smcl" in h or "sysuse" in h
+    assert h.lower().startswith("# help for")
+    assert "sysuse" in h.lower()
     
     # Test stored results tool
     run_command("summarize price")

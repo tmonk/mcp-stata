@@ -37,6 +37,17 @@ def find_stata_path() -> Tuple[str, str]:
             edition = "se"
         elif "be" in lower_path:
             edition = "be"
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"STATA_PATH points to '{path}', but that file does not exist. "
+                "Update STATA_PATH to your Stata binary (e.g., "
+                "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp)."
+            )
+        if not os.access(path, os.X_OK):
+            raise PermissionError(
+                f"STATA_PATH points to '{path}', but it is not executable. "
+                "Ensure this is the Stata binary, not the .app directory."
+            )
         logger.info("Using STATA_PATH override: %s (%s)", path, edition)
         return path, edition
 
@@ -96,10 +107,15 @@ def find_stata_path() -> Tuple[str, str]:
 
     candidates = _dedupe_preserve(candidates)
 
-    if candidates:
-        first = candidates[0]
-        logger.info("Auto-discovered Stata at %s (%s)", first[0], first[1])
-        return first
+    for path, edition in candidates:
+        if not os.path.exists(path):
+            logger.warning("Discovered candidate missing on disk: %s", path)
+            continue
+        if not os.access(path, os.X_OK):
+            logger.warning("Discovered candidate is not executable: %s", path)
+            continue
+        logger.info("Auto-discovered Stata at %s (%s)", path, edition)
+        return path, edition
 
     raise FileNotFoundError(
         "Could not automatically locate Stata. "

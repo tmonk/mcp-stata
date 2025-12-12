@@ -274,19 +274,17 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 
 ## Tools Available
 
-* `run_command(code)`: Execute Stata syntax.
-  - `as_json=true` returns a structured envelope with `rc`, `stdout`, `stderr`, and `error` details.
-  - `trace=true` temporarily enables `set trace on` around the call for program-defined errors.
-* `load_data(source, clear=True)`: Heuristic loader (sysuse/webuse/use/path/URL) with JSON envelope.
-* `get_data(start, count)`: View dataset rows (JSON response).
+* `run_command(code, raw=false)`: Execute Stata syntax. Returns a structured JSON envelope by default; set `raw=true` for plain stdout/stderr. `trace=true` temporarily enables `set trace on`.
+* `load_data(source, clear=True, raw=false)`: Heuristic loader (sysuse/webuse/use/path/URL) with JSON envelope.
+* `get_data(start, count)`: View dataset rows (JSON response, capped to 500 rows).
 * `describe()`: View dataset structure.
-* `codebook(variable)`: Variable-level metadata (supports `as_json`).
-* `run_do_file(path, trace=false, as_json=false)`: Execute a .do file with rich error capture.
+* `codebook(variable, raw=false)`: Variable-level metadata (JSON envelope by default).
+* `run_do_file(path, trace=false, raw=false)`: Execute a .do file with rich error capture (JSON by default).
 * `export_graph(name)`: Export a graph as an image.
 * `export_graphs_all()`: Export all in-memory graphs as base64-encoded PNGs (JSON response).
 * `list_graphs()`: See available graphs in memory (JSON list with an `active` flag).
 * `get_stored_results()`: Get `r()` and `e()` scalars/macros.
-* `get_help(topic)`: Get help URL for a topic.
+* `get_help(topic, plain_text=false)`: Returns Markdown-rendered Stata help (default). Use `plain_text=true` for stripped text. Falls back to the Stata online help URL if missing.
 * `get_variable_list()`: JSON list of variables and labels.
 
 ## License

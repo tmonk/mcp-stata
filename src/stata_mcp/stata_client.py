@@ -4,10 +4,14 @@ import json
 import re
 import base64
 import logging
+import threading
+import time
 from io import StringIO
+from contextlib import contextmanager
 from typing import Any, List, Optional, Dict
 import pandas as pd
 from .discovery import find_stata_path
+from .smcl.smcl2html import smcl_to_markdown
 from .models import (
     CommandResponse,
     ErrorEnvelope,
@@ -24,11 +28,26 @@ logger = logging.getLogger("stata_mcp")
 class StataClient:
     _instance = None
     _initialized = False
+    _exec_lock: threading.Lock
+    MAX_DATA_ROWS = 500
+    MAX_GRAPH_BYTES = 50 * 1024 * 1024  # Allow large graph exports (~50MB)
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(StataClient, cls).__new__(cls)
+            cls._instance._exec_lock = threading.Lock()
         return cls._instance
+
+    @contextmanager
+    def _redirect_io(self):
+        """Safely redirect stdout/stderr for the duration of a Stata call."""
+        out_buf, err_buf = StringIO(), StringIO()
+        backup_stdout, backup_stderr = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out_buf, err_buf
+        try:
+            yield out_buf, err_buf
+        finally:
+            sys.stdout, sys.stderr = backup_stdout, backup_stderr
 
     def init(self):
         """Initializes usage of pystata."""
@@ -39,7 +58,15 @@ class StataClient:
             # 1. Setup config
             # 1. Setup config
             import stata_setup
-            stata_exec_path, edition = find_stata_path()
+            try:
+                stata_exec_path, edition = find_stata_path()
+            except FileNotFoundError as e:
+                raise RuntimeError(f"Stata binary not found: {e}") from e
+            except PermissionError as e:
+                raise RuntimeError(
+                    f"Stata binary is not executable: {e}. "
+                    "Point STATA_PATH directly to the Stata binary (e.g., .../Contents/MacOS/stata-mp)."
+                ) from e
             logger.info(f"Discovery found Stata at: {stata_exec_path} ({edition})")
             
             # Helper to try init
@@ -134,6 +161,17 @@ class StataClient:
                 return None
         return None
 
+    def _smcl_to_text(self, smcl: str) -> str:
+        """Convert simple SMCL markup into plain text for LLM-friendly help."""
+        # First, keep inline directive content if present (e.g., {bf:word} -> word)
+        cleaned = re.sub(r"\{[^}:]+:([^}]*)\}", r"\1", smcl)
+        # Remove remaining SMCL brace commands like {smcl}, {vieweralsosee ...}, {txt}, {p}
+        cleaned = re.sub(r"\{[^}]*\}", "", cleaned)
+        # Normalize whitespace
+        cleaned = cleaned.replace("\r", "")
+        lines = [line.rstrip() for line in cleaned.splitlines()]
+        return "\n".join(lines).strip()
+
     def _build_error_envelope(
         self,
         command: str,
@@ -165,24 +203,23 @@ class StataClient:
         if not self._initialized:
             self.init()
 
-        out_buf, err_buf = StringIO(), StringIO()
-        backup_stdout, backup_stderr = sys.stdout, sys.stderr
-        sys.stdout, sys.stderr = out_buf, err_buf
+        start_time = time.time()
         exc: Optional[Exception] = None
-        try:
-            if trace:
-                self.stata.run("set trace on")
-            self.stata.run(code, echo=echo)
-        except Exception as e:
-            exc = e
-        finally:
-            rc = self._read_return_code()
-            if trace:
+        with self._exec_lock:
+            with self._redirect_io() as (out_buf, err_buf):
                 try:
-                    self.stata.run("set trace off")
-                except Exception:
-                    pass
-            sys.stdout, sys.stderr = backup_stdout, backup_stderr
+                    if trace:
+                        self.stata.run("set trace on")
+                    self.stata.run(code, echo=echo)
+                except Exception as e:
+                    exc = e
+                finally:
+                    rc = self._read_return_code()
+                    if trace:
+                        try:
+                            self.stata.run("set trace off")
+                        except Exception:
+                            pass
 
         stdout = out_buf.getvalue()
         stderr = err_buf.getvalue()
@@ -193,6 +230,16 @@ class StataClient:
         error = None
         if not success:
             error = self._build_error_envelope(code, rc, stdout, stderr, exc, trace)
+        duration = time.time() - start_time
+        code_preview = code.replace("\n", "\\n")
+        logger.info(
+            "stata.run rc=%s success=%s trace=%s duration_ms=%.2f code_preview=%s",
+            rc,
+            success,
+            trace,
+            duration * 1000,
+            code_preview[:120],
+        )
         return CommandResponse(
             command=code,
             rc=rc,
@@ -219,14 +266,17 @@ class StataClient:
         """Returns valid JSON-serializable data."""
         if not self._initialized:
             self.init()
-            
+
+        if count > self.MAX_DATA_ROWS:
+            count = self.MAX_DATA_ROWS
+
         try:
             # Use pystata integration to retrieve data
             df = self.stata.pdataframe_from_data()
-            
+
             # Slice
             sliced = df.iloc[start : start + count]
-            
+
             # Convert to dict
             return sliced.to_dict(orient="records")
         except Exception as e:
@@ -295,13 +345,15 @@ class StataClient:
         """Exports graph to a temp file and returns path."""
         import tempfile
         if not filename:
-            filename = os.path.join(tempfile.gettempdir(), "stata_mcp_graph.png")
-            
-        # Ensure fresh start
-        if os.path.exists(filename):
-            try:
-                os.remove(filename)
-            except: pass
+            with tempfile.NamedTemporaryFile(prefix="stata_mcp_", suffix=".png", delete=False) as tmp:
+                filename = tmp.name
+        else:
+            # Ensure fresh start
+            if os.path.exists(filename):
+                try:
+                    os.remove(filename)
+                except Exception:
+                    pass
             
         cmd = "graph export"
         if graph_name:
@@ -312,16 +364,28 @@ class StataClient:
         output = self.run_command(cmd)
         
         if os.path.exists(filename):
+            try:
+                size = os.path.getsize(filename)
+                if size == 0:
+                    raise RuntimeError(f"Graph export failed: produced empty file {filename}")
+                if size > self.MAX_GRAPH_BYTES:
+                    raise RuntimeError(
+                        f"Graph export failed: file too large (> {self.MAX_GRAPH_BYTES} bytes): {filename}"
+                    )
+            except Exception as size_err:
+                # Clean up oversized or unreadable files
+                try:
+                    os.remove(filename)
+                except Exception:
+                    pass
+                raise size_err
             return filename
             
         # If file missing, it failed. Check output for details.
-        if "not found" in output or "error" in output.lower():
-            raise RuntimeError(f"Graph export failed: {output}")
-            
-        raise FileNotFoundError(f"Graph export failed, file not found. Stata output: {output}")
+        raise RuntimeError(f"Graph export failed: {output}")
 
-    def get_help(self, topic: str) -> str:
-        """Returns help text."""
+    def get_help(self, topic: str, plain_text: bool = False) -> str:
+        """Returns help text as Markdown (default) or plain text."""
         # Try to locate the .sthlp help file
         # We use 'capture' to avoid crashing if not found
         self.stata.run(f"capture findfile {topic}.sthlp")
@@ -334,7 +398,14 @@ class StataClient:
         if fn and os.path.exists(fn):
             try:
                 with open(fn, 'r', encoding='utf-8', errors='replace') as f:
-                    return f.read()
+                    smcl = f.read()
+                if plain_text:
+                    return self._smcl_to_text(smcl)
+                try:
+                    return smcl_to_markdown(smcl, adopath=os.path.dirname(fn), current_file=os.path.splitext(os.path.basename(fn))[0])
+                except Exception as parse_err:
+                    logger.warning("SMCL to Markdown failed, falling back to plain text: %s", parse_err)
+                    return self._smcl_to_text(smcl)
             except Exception as e:
                 return f"Error reading help file at {fn}: {e}"
 

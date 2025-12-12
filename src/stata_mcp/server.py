@@ -20,7 +20,7 @@ mcp = FastMCP("stata")
 client = StataClient()
 
 @mcp.tool()
-def run_command(code: str, echo: bool = True, as_json: bool = False, trace: bool = False) -> str:
+def run_command(code: str, echo: bool = True, as_json: bool = True, trace: bool = False, raw: bool = False) -> str:
     """
     Executes a specific Stata command.
 
@@ -33,16 +33,19 @@ def run_command(code: str, echo: bool = True, as_json: bool = False, trace: bool
         trace: If True, enables `set trace on` for deeper error diagnostics (automatically disabled after).
     """
     result = client.run_command_structured(code, echo=echo, trace=trace)
+    if raw:
+        if result.success:
+            return result.stdout
+        if result.error:
+            msg = result.error.message
+            if result.error.rc is not None:
+                msg = f"{msg}\nrc={result.error.rc}"
+            return msg
+        return result.stdout
     if as_json:
         return result.model_dump_json(indent=2)
-    if result.success:
-        return result.stdout
-    if result.error:
-        msg = result.error.message
-        if result.error.rc is not None:
-            msg = f"{msg}\nrc={result.error.rc}"
-        return msg
-    return result.stdout
+    # Default structured string for compatibility when as_json is False but raw is also False
+    return result.model_dump_json(indent=2)
 
 @mcp.tool()
 def get_data(start: int = 0, count: int = 50) -> str:
@@ -98,15 +101,15 @@ def export_graph(graph_name: str = None) -> Image:
         raise RuntimeError(f"Failed to export graph: {e}")
 
 @mcp.tool()
-def get_help(topic: str) -> str:
+def get_help(topic: str, plain_text: bool = False) -> str:
     """
     Returns the official Stata help text for a given command or topic.
 
     Args:
         topic: The command name or help topic (e.g., "regress", "graph", "options").
-               Returns the full SMCL help file content as text.
+               Returns Markdown by default, or plain text when plain_text=True.
     """
-    return client.get_help(topic)
+    return client.get_help(topic, plain_text=plain_text)
 
 @mcp.tool()
 def get_stored_results() -> str:
@@ -120,35 +123,35 @@ def get_stored_results() -> str:
     return json.dumps(client.get_stored_results(), indent=2)
 
 @mcp.tool()
-def load_data(source: str, clear: bool = True, as_json: bool = True) -> str:
+def load_data(source: str, clear: bool = True, as_json: bool = True, raw: bool = False) -> str:
     """
     Loads data using sysuse/webuse/use heuristics based on the source string.
     Automatically appends , clear unless clear=False.
     """
     result = client.load_data(source, clear=clear)
-    if as_json:
-        return result.model_dump_json(indent=2)
-    return result.stdout if result.success else (result.error.message if result.error else result.stdout)
+    if raw:
+        return result.stdout if result.success else (result.error.message if result.error else result.stdout)
+    return result.model_dump_json(indent=2) if as_json else result.model_dump_json(indent=2)
 
 @mcp.tool()
-def codebook(variable: str, as_json: bool = False, trace: bool = False) -> str:
+def codebook(variable: str, as_json: bool = True, trace: bool = False, raw: bool = False) -> str:
     """
     Returns codebook/summary for a specific variable.
     """
     result = client.codebook(variable, trace=trace)
-    if as_json:
-        return result.model_dump_json(indent=2)
-    return result.stdout if result.success else (result.error.message if result.error else result.stdout)
+    if raw:
+        return result.stdout if result.success else (result.error.message if result.error else result.stdout)
+    return result.model_dump_json(indent=2) if as_json else result.model_dump_json(indent=2)
 
 @mcp.tool()
-def run_do_file(path: str, echo: bool = True, as_json: bool = False, trace: bool = False) -> str:
+def run_do_file(path: str, echo: bool = True, as_json: bool = True, trace: bool = False, raw: bool = False) -> str:
     """
     Executes a .do file with optional trace output and JSON envelope.
     """
     result = client.run_do_file(path, echo=echo, trace=trace)
-    if as_json:
-        return result.model_dump_json(indent=2)
-    return result.stdout if result.success else (result.error.message if result.error else result.stdout)
+    if raw:
+        return result.stdout if result.success else (result.error.message if result.error else result.stdout)
+    return result.model_dump_json(indent=2) if as_json else result.model_dump_json(indent=2)
 
 @mcp.resource("stata://data/summary")
 def get_summary() -> str:

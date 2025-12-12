@@ -26,6 +26,8 @@ dependencies = [
     "stata_setup>=0.1.0",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
+    "lxml>=6.0.2",
+    "cssselect>=1.2.0",
 ]
 
 [project.urls]
