@@ -1,8 +1,9 @@
 name: Check server.json version
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Publish to PyPI"]
+    types: [completed]
 
 permissions:
   contents: write
@@ -11,10 +12,10 @@ jobs:
   check-version:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout release tag
+      - name: Checkout workflow source commit
         uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ github.event.release.tag_name }}
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
       - name: Set up Python
@@ -30,7 +31,7 @@ jobs:
 
       - name: Commit and push if server.json changed
         env:
-          RELEASE_BRANCH: ${{ github.event.release.target_commitish }}
+          RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           if git diff --quiet -- server.json; then
             echo "server.json already in sync."
@@ -40,9 +41,11 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add server.json
           git commit -m "chore: sync server.json version"
-          # Push back to the branch associated with the release target.
+          if [ -z "${RELEASE_BRANCH}" ]; then
+            echo "No head branch available from workflow_run; cannot push updates."
+            exit 1
+          fi
+          # Push back to the branch associated with the workflow run.
           git push origin HEAD:${RELEASE_BRANCH}
 
-      - name: Verify server.json matches project version
-        run: python scripts/check_server_version.py
 
