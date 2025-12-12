@@ -1,0 +1,48 @@
+name: Check server.json version
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install hatch
+        run: pip install --upgrade pip hatch
+
+      - name: Sync server.json to project version
+        run: python scripts/sync_server_version.py
+
+      - name: Commit and push if server.json changed
+        env:
+          RELEASE_BRANCH: ${{ github.event.release.target_commitish }}
+        run: |
+          if git diff --quiet -- server.json; then
+            echo "server.json already in sync."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add server.json
+          git commit -m "chore: sync server.json version"
+          # Push back to the branch associated with the release target.
+          git push origin HEAD:${RELEASE_BRANCH}
+
+      - name: Verify server.json matches project version
+        run: python scripts/check_server_version.py
+

@@ -27,8 +27,6 @@ uvx --from mcp-stata mcp-stata
 
 `uvx` is an alias for `uv tool run` and runs the tool in an isolated, cached environment.
 
-> Tip: You can pin a version (example): `uvx --from mcp-stata==0.1.0 mcp-stata`
-
 ## Configuration
 
 This server attempts to automatically discover your Stata installation (supporting standard paths and StataNow).
