@@ -23,7 +23,7 @@ from .models import (
     VariablesResponse,
 )
 
-logger = logging.getLogger("stata_mcp")
+logger = logging.getLogger("mcp_stata")
 
 class StataClient:
     _instance = None
@@ -345,7 +345,7 @@ class StataClient:
         """Exports graph to a temp file and returns path."""
         import tempfile
         if not filename:
-            with tempfile.NamedTemporaryFile(prefix="stata_mcp_", suffix=".png", delete=False) as tmp:
+            with tempfile.NamedTemporaryFile(prefix="mcp_stata_", suffix=".png", delete=False) as tmp:
                 filename = tmp.name
         else:
             # Ensure fresh start

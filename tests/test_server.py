@@ -1,6 +1,6 @@
 import json
 import pytest
-from stata_mcp.server import (
+from mcp_stata.server import (
     mcp,
     run_command,
     get_data,

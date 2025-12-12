@@ -1,4 +1,4 @@
-from stata_mcp.stata_client import StataClient
+from mcp_stata.stata_client import StataClient
 
 
 def test_smcl_to_text_strips_markup():

@@ -16,23 +16,15 @@ This server enables LLMs to:
 
 ## Installation
 
-### Option A: Run from a local checkout (recommended for development)
+### Run as a published tool with `uvx`
 
 ```bash
-uv sync
-```
-
-### Option B: Run as a published tool with `uvx` (no cloning)
-
-Once this project is published to PyPI, you can run it without cloning:
-
-```bash
-uvx --from stata-mcp stata-mcp
+uvx --from mcp-stata mcp-stata
 ```
 
 `uvx` is an alias for `uv tool run` and runs the tool in an isolated, cached environment.
 
-> Tip: You can pin a version (example): `uvx --from stata-mcp==0.1.0 stata-mcp`
+> Tip: You can pin a version (example): `uvx --from mcp-stata==0.1.0 mcp-stata`
 
 ## Configuration
 
@@ -48,21 +40,9 @@ export STATA_PATH="/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
 set STATA_PATH="C:\Program Files\Stata18\StataMP-64.exe"
 ```
 
-## Usage
-
-### Running locally (from a clone)
-
-```bash
-uv run stata-mcp
-```
-
 ## IDE Setup (MCP)
 
 This MCP server uses the **stdio** transport (the IDE launches the process and communicates over stdin/stdout).
-
-When using `uv` against a local checkout, we recommend starting the server with `uv run --directory ...` so `uv` runs in the folder containing your `pyproject.toml`. (`--directory` tells `uv` to change to that directory before executing.)
-
-> **Important:** These configuration files are typically **strict JSON** (no `//` comments, no trailing commas).
 
 ---
 
@@ -74,22 +54,6 @@ Config file locations include:
 * macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 * Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
-#### Local checkout (uv)
-
-```json
-{
-  "mcpServers": {
-    "stata": {
-      "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/stata-mcp", "stata-mcp"],
-      "env": {
-        "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
-      }
-    }
-  }
-}
-```
-
 #### Published tool (uvx)
 
 ```json
@@ -97,7 +61,7 @@ Config file locations include:
   "mcpServers": {
     "stata": {
       "command": "uvx",
-      "args": ["--from", "stata-mcp", "stata-mcp"],
+      "args": ["--from", "mcp-stata", "mcp-stata"],
       "env": {
         "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
       }
@@ -117,22 +81,6 @@ Cursor supports MCP config at:
 * Global: `~/.cursor/mcp.json`
 * Project: `.cursor/mcp.json`
 
-#### Local checkout (uv)
-
-```json
-{
-  "mcpServers": {
-    "stata": {
-      "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/stata-mcp", "stata-mcp"],
-      "env": {
-        "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
-      }
-    }
-  }
-}
-```
-
 #### Published tool (uvx)
 
 ```json
@@ -140,7 +88,7 @@ Cursor supports MCP config at:
   "mcpServers": {
     "stata": {
       "command": "uvx",
-      "args": ["--from", "stata-mcp", "stata-mcp"],
+      "args": ["--from", "mcp-stata", "mcp-stata"],
       "env": {
         "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
       }
@@ -156,22 +104,6 @@ Cursor supports MCP config at:
 Windsurf supports MCP plugins and also allows manual editing of `mcp_config.json`. After adding/editing a server, use the UI’s refresh so it re-reads the config.
 
 A common location is `~/.codeium/windsurf/mcp_config.json`.
-#### Local checkout (uv)
-
-```json
-{
-  "mcpServers": {
-    "stata": {
-      "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/stata-mcp", "stata-mcp"],
-      "env": {
-        "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
-      }
-    }
-  }
-}
-```
-
 #### Published tool (uvx)
 
 ```json
@@ -179,7 +111,7 @@ A common location is `~/.codeium/windsurf/mcp_config.json`.
   "mcpServers": {
     "stata": {
       "command": "uvx",
-      "args": ["--from", "stata-mcp", "stata-mcp"],
+      "args": ["--from", "mcp-stata", "mcp-stata"],
       "env": {
         "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
       }
@@ -194,22 +126,6 @@ A common location is `~/.codeium/windsurf/mcp_config.json`.
 
 In Antigravity, MCP servers are managed from the MCP store/menu; you can open **Manage MCP Servers** and then **View raw config** to edit `mcp_config.json`.
 
-#### Local checkout (uv)
-
-```json
-{
-  "mcpServers": {
-    "stata": {
-      "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/stata-mcp", "stata-mcp"],
-      "env": {
-        "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
-      }
-    }
-  }
-}
-```
-
 #### Published tool (uvx)
 
 ```json
@@ -217,7 +133,7 @@ In Antigravity, MCP servers are managed from the MCP store/menu; you can open **
   "mcpServers": {
     "stata": {
       "command": "uvx",
-      "args": ["--from", "stata-mcp", "stata-mcp"],
+      "args": ["--from", "mcp-stata", "mcp-stata"],
       "env": {
         "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
       }
@@ -234,23 +150,6 @@ VS Code supports MCP servers via a `.vscode/mcp.json` file. The top-level key is
 
 Create `.vscode/mcp.json`:
 
-#### Local checkout (uv)
-
-```json
-{
-  "servers": {
-    "stata": {
-      "type": "stdio",
-      "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/stata-mcp", "stata-mcp"],
-      "env": {
-        "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
-      }
-    }
-  }
-}
-```
-
 #### Published tool (uvx)
 
 ```json
@@ -259,7 +158,7 @@ Create `.vscode/mcp.json`:
     "stata": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--from", "stata-mcp", "stata-mcp"],
+      "args": ["--from", "mcp-stata", "mcp-stata"],
       "env": {
         "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
       }

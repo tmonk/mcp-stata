@@ -1,6 +1,6 @@
 [project]
-name = "stata-mcp"
-version = "0.1.0"
+name = "mcp-stata"
+dynamic = ["version"]
 description = "Model Context Protocol (MCP) server for Stata"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,20 +24,31 @@ dependencies = [
     "pydantic>=2.0.0",
     "pystata>=0.0.1",
     "stata_setup>=0.1.0",
+]
+
+[project.optional-dependencies]
+test = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
-    "lxml>=6.0.2",
-    "cssselect>=1.2.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/tmonk/stata-mcp"
-Repository = "https://github.com/tmonk/stata-mcp"
-Issues = "https://github.com/tmonk/stata-mcp/issues"
+Homepage = "https://github.com/tmonk/mcp-stata"
+Repository = "https://github.com/tmonk/mcp-stata"
+Issues = "https://github.com/tmonk/mcp-stata/issues"
 
 [project.scripts]
-stata-mcp = "stata_mcp.server:main"
+mcp-stata = "mcp_stata.server:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_stata"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/tests", "/uv.lock"]

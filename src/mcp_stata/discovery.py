@@ -5,7 +5,7 @@ import logging
 
 from typing import Tuple, Optional, List
 
-logger = logging.getLogger("stata_mcp.discovery")
+logger = logging.getLogger("mcp_stata.discovery")
 
 
 def _dedupe_preserve(items: List[tuple]) -> List[tuple]:

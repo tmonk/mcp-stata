@@ -1,4 +1,4 @@
-from stata_mcp.smcl.smcl2html import smcl_to_markdown
+from mcp_stata.smcl.smcl2html import smcl_to_markdown
 
 
 def test_smcl_to_markdown_title_and_paragraph():

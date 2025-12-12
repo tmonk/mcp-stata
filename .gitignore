@@ -3,3 +3,5 @@
 uv.lock
 tests/test_external_do_file.py
 tests/test_external_optional.py
+/dist
+py.typed

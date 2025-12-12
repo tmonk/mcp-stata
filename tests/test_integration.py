@@ -4,10 +4,12 @@ import pytest
 import shutil
 from pathlib import Path
 
-# Ensure src is in path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
-
-from stata_mcp.stata_client import StataClient
+try:
+    from mcp_stata.stata_client import StataClient
+except ImportError:
+    # Fallback when running directly from a source checkout without installation
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
+    from mcp_stata.stata_client import StataClient
 
 # Fixture for the Stata client (session scope to init once)
 @pytest.fixture(scope="session")
