@@ -105,3 +105,116 @@ def test_error_handling(client):
     # Test invalid export
     with pytest.raises(RuntimeError, match="Graph export failed"):
          client.export_graph("NonExistentGraph")
+
+
+def test_structured_error_envelope(client, tmp_path):
+    missing_do = tmp_path / "does_not_exist.do"
+    resp = client.run_do_file(str(missing_do))
+    assert resp.success is False
+    assert resp.error is not None
+    assert resp.error.rc == 601
+
+    # Intentional syntax error to surface rc and snippet
+    bad_do = tmp_path / "bad.do"
+    bad_do.write_text("sysuse auto\nthis_is_bad_syntax\n")
+    resp2 = client.run_do_file(str(bad_do), trace=True)
+    assert resp2.success is False
+    assert resp2.error is not None
+    assert resp2.error.rc is not None
+    assert resp2.error.snippet is not None
+
+
+def test_nested_do_and_program_errors(client, tmp_path):
+    # Prepare data
+    client.run_command("sysuse auto, clear")
+
+    # Child do-file with invalid variable to trigger r(111)
+    child = tmp_path / "child_bad.do"
+    child.write_text('regress price bogusvar\n')
+
+    # Parent do-file that calls child
+    parent = tmp_path / "parent_bad.do"
+    parent.write_text(f'do "{child}"\n')
+
+    resp = client.run_do_file(str(parent), trace=True)
+    assert resp.success is False
+    assert resp.error is not None
+    assert resp.error.rc is not None
+    combined = (resp.error.snippet or "") + (resp.error.stderr or "") + (resp.error.stdout or "")
+    assert "bogusvar" in combined.lower()
+
+    # Program-defined command inside a do-file with an error
+    program_do = tmp_path / "program_bad.do"
+    program_do.write_text(
+        "program define badprog\n"
+        "    syntax varlist(min=1)\n"
+        "    regress price bogusvar\n"
+        "end\n"
+        "badprog price\n"
+    )
+
+    resp2 = client.run_do_file(str(program_do), trace=True)
+    assert resp2.success is False
+    assert resp2.error is not None
+    assert resp2.error.rc is not None
+    combined2 = (resp2.error.snippet or "") + (resp2.error.stderr or "") + (resp2.error.stdout or "")
+    assert "bogusvar" in combined2.lower()
+
+
+def test_additional_error_cases(client, tmp_path):
+    # Structured run_command error with trace
+    bad_cmd = client.run_command_structured("invalid_command_xyz", trace=True)
+    assert bad_cmd.success is False
+    assert bad_cmd.error is not None
+    assert bad_cmd.error.rc is not None
+
+    # load_data with missing file
+    missing = client.load_data("/tmp/nonexistent_file_1234.dta")
+    assert missing.success is False
+    assert missing.error is not None
+    assert missing.error.rc is not None
+
+    # codebook on missing variable
+    client.run_command("sysuse auto, clear")
+    cb = client.codebook("definitely_not_a_var", trace=True)
+    assert cb.success is False
+    assert cb.error is not None
+    assert cb.error.rc is not None
+    combined = (cb.error.stderr or "") + (cb.error.stdout or "") + (cb.error.snippet or "")
+    assert "definitely_not_a_var" in combined
+
+    # Nested do-file that references another missing do-file
+    missing_child = tmp_path / "missing_child.do"
+    parent = tmp_path / "parent_missing_child.do"
+    parent.write_text(f'do "{missing_child}"\n')
+    resp = client.run_do_file(str(parent), trace=True)
+    assert resp.success is False
+    assert resp.error is not None
+    assert resp.error.rc is not None
+
+
+def test_success_paths(client, tmp_path):
+    # Structured run_command success with trace toggled
+    ok_cmd = client.run_command_structured("display 1+1", trace=True)
+    assert ok_cmd.success is True
+    assert ok_cmd.rc == 0
+    assert "2" in ok_cmd.stdout
+
+    # load_data success via sysuse heuristic
+    load_ok = client.load_data("auto", clear=True)
+    assert load_ok.success is True
+    assert load_ok.rc == 0
+
+    # codebook success on existing variable
+    cb_ok = client.codebook("price", trace=True)
+    assert cb_ok.success is True
+    assert cb_ok.rc == 0
+    assert "price" in cb_ok.stdout.lower()
+
+    # run_do_file success
+    good_do = tmp_path / "good.do"
+    good_do.write_text('sysuse auto, clear\ndisplay "hello ok"\n')
+    do_ok = client.run_do_file(str(good_do), trace=True)
+    assert do_ok.success is True
+    assert do_ok.rc == 0
+    assert "hello ok" in (do_ok.stdout or "") or "hello ok" in (do_ok.error.stdout if do_ok.error else "")

@@ -2,14 +2,25 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp import Image
 import mcp.types as types
 from .stata_client import StataClient
+from .models import (
+    DataResponse,
+    GraphListResponse,
+    VariablesResponse,
+    GraphExportResponse,
+)
 import logging
+import json
+import os
+
+LOG_LEVEL = os.getenv("STATA_MCP_LOGLEVEL", "INFO").upper()
+logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
 # Initialize FastMCP
 mcp = FastMCP("stata")
 client = StataClient()
 
 @mcp.tool()
-def run_command(code: str, echo: bool = True) -> str:
+def run_command(code: str, echo: bool = True, as_json: bool = False, trace: bool = False) -> str:
     """
     Executes a specific Stata command.
 
@@ -18,8 +29,20 @@ def run_command(code: str, echo: bool = True) -> str:
     Args:
         code: The detailed Stata command(s) to execute (e.g., "sysuse auto", "regress price mpg", "summarize").
         echo: If True, the command itself is included in the output. Default is True.
+        as_json: If True, returns a JSON envelope with rc/stdout/stderr/error.
+        trace: If True, enables `set trace on` for deeper error diagnostics (automatically disabled after).
     """
-    return client.run_command(code, echo)
+    result = client.run_command_structured(code, echo=echo, trace=trace)
+    if as_json:
+        return result.model_dump_json(indent=2)
+    if result.success:
+        return result.stdout
+    if result.error:
+        msg = result.error.message
+        if result.error.rc is not None:
+            msg = f"{msg}\nrc={result.error.rc}"
+        return msg
+    return result.stdout
 
 @mcp.tool()
 def get_data(start: int = 0, count: int = 50) -> str:
@@ -33,7 +56,8 @@ def get_data(start: int = 0, count: int = 50) -> str:
         count: The number of observations to retrieve. Defaults to 50.
     """
     data = client.get_data(start, count)
-    return str(data)
+    resp = DataResponse(start=start, count=count, data=data)
+    return resp.model_dump_json(indent=2)
 
 @mcp.tool()
 def describe() -> str:
@@ -51,8 +75,8 @@ def list_graphs() -> str:
 
     Use this to see which graphs are available for export via `export_graph`.
     """
-    graphs = client.list_graphs()
-    return f"Graphs in memory: {graphs}"
+    graphs = client.list_graphs_structured()
+    return graphs.model_dump_json(indent=2)
 
 @mcp.tool()
 def export_graph(graph_name: str = None) -> Image:
@@ -95,6 +119,37 @@ def get_stored_results() -> str:
     import json
     return json.dumps(client.get_stored_results(), indent=2)
 
+@mcp.tool()
+def load_data(source: str, clear: bool = True, as_json: bool = True) -> str:
+    """
+    Loads data using sysuse/webuse/use heuristics based on the source string.
+    Automatically appends , clear unless clear=False.
+    """
+    result = client.load_data(source, clear=clear)
+    if as_json:
+        return result.model_dump_json(indent=2)
+    return result.stdout if result.success else (result.error.message if result.error else result.stdout)
+
+@mcp.tool()
+def codebook(variable: str, as_json: bool = False, trace: bool = False) -> str:
+    """
+    Returns codebook/summary for a specific variable.
+    """
+    result = client.codebook(variable, trace=trace)
+    if as_json:
+        return result.model_dump_json(indent=2)
+    return result.stdout if result.success else (result.error.message if result.error else result.stdout)
+
+@mcp.tool()
+def run_do_file(path: str, echo: bool = True, as_json: bool = False, trace: bool = False) -> str:
+    """
+    Executes a .do file with optional trace output and JSON envelope.
+    """
+    result = client.run_do_file(path, echo=echo, trace=trace)
+    if as_json:
+        return result.model_dump_json(indent=2)
+    return result.stdout if result.success else (result.error.message if result.error else result.stdout)
+
 @mcp.resource("stata://data/summary")
 def get_summary() -> str:
     """
@@ -114,19 +169,28 @@ def get_metadata() -> str:
 @mcp.resource("stata://graphs/list")
 def get_graph_list() -> str:
     """Returns list of active graphs."""
-    return str(client.list_graphs())
+    return client.list_graphs_structured().model_dump_json(indent=2)
 
 @mcp.resource("stata://variables/list")
 def get_variable_list() -> str:
     """Returns JSON list of all variables."""
-    import json
-    return json.dumps(client.list_variables(), indent=2)
+    variables = client.list_variables_structured()
+    return variables.model_dump_json(indent=2)
 
 @mcp.resource("stata://results/stored")
 def get_stored_results_resource() -> str:
     """Returns stored r() and e() results."""
     import json
     return json.dumps(client.get_stored_results(), indent=2)
+
+@mcp.tool()
+def export_graphs_all() -> str:
+    """
+    Exports all graphs in memory to base64-encoded PNGs.
+    Returns a JSON envelope listing graph names and images.
+    """
+    exports = client.export_graphs_all()
+    return exports.model_dump_json(indent=2)
 
 def main():
     mcp.run()

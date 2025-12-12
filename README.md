@@ -275,14 +275,34 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 ## Tools Available
 
 * `run_command(code)`: Execute Stata syntax.
-* `get_data(start, count)`: View dataset rows.
+  - `as_json=true` returns a structured envelope with `rc`, `stdout`, `stderr`, and `error` details.
+  - `trace=true` temporarily enables `set trace on` around the call for program-defined errors.
+* `load_data(source, clear=True)`: Heuristic loader (sysuse/webuse/use/path/URL) with JSON envelope.
+* `get_data(start, count)`: View dataset rows (JSON response).
 * `describe()`: View dataset structure.
+* `codebook(variable)`: Variable-level metadata (supports `as_json`).
+* `run_do_file(path, trace=false, as_json=false)`: Execute a .do file with rich error capture.
 * `export_graph(name)`: Export a graph as an image.
-* `list_graphs()`: See available graphs in memory.
+* `export_graphs_all()`: Export all in-memory graphs as base64-encoded PNGs (JSON response).
+* `list_graphs()`: See available graphs in memory (JSON list with an `active` flag).
 * `get_stored_results()`: Get `r()` and `e()` scalars/macros.
 * `get_help(topic)`: Get help URL for a topic.
+* `get_variable_list()`: JSON list of variables and labels.
 
 ## License
 
 This project is licensed under the GNU Affero General Public License v3.0 or later.
 See the LICENSE file for the full text.
+
+## Error reporting
+
+- All tools that execute Stata commands support JSON envelopes (`as_json=true`) carrying:
+  - `rc` (from r()/c(rc)), `stdout`, `stderr`, `message`, optional `line` (when Stata reports it), `command`, and a `snippet` excerpt of error output.
+- Stata-specific cues are preserved:
+  - `r(XXX)` codes are parsed when present in output.
+  - “Red text” is captured via stderr where available.
+  - `trace=true` adds `set trace on` around the command/do-file to surface program-defined errors; the trace is turned off afterward.
+
+## Logging
+
+Set `STATA_MCP_LOGLEVEL` (e.g., `DEBUG`, `INFO`) to control server logging. Logs include discovery details (edition/path) and command-init traces for easier troubleshooting.

@@ -1,9 +1,23 @@
 import os
-import sys
 import platform
 import glob
+import logging
 
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
+
+logger = logging.getLogger("stata_mcp.discovery")
+
+
+def _dedupe_preserve(items: List[tuple]) -> List[tuple]:
+    seen = set()
+    unique = []
+    for path, edition in items:
+        if path in seen:
+            continue
+        seen.add(path)
+        unique.append((path, edition))
+    return unique
+
 
 def find_stata_path() -> Tuple[str, str]:
     """
@@ -11,24 +25,25 @@ def find_stata_path() -> Tuple[str, str]:
     Returns (path_to_executable, edition_string).
     """
     system = platform.system()
-    
+
     # 1. Check Environment Variable
     if os.environ.get("STATA_PATH"):
         path = os.environ["STATA_PATH"]
-        # Guess edition from path
-        edition = "be" # default fallback
+        edition = "be"
         lower_path = path.lower()
-        if "mp" in lower_path: edition = "mp"
-        elif "se" in lower_path: edition = "se"
-        elif "be" in lower_path: edition = "be"
+        if "mp" in lower_path:
+            edition = "mp"
+        elif "se" in lower_path:
+            edition = "se"
+        elif "be" in lower_path:
+            edition = "be"
+        logger.info("Using STATA_PATH override: %s (%s)", path, edition)
         return path, edition
 
     # 2. Platform-specific search
-    candidates = [] # List of (path, edition)
-    
+    candidates = []  # List of (path, edition)
+
     if system == "Darwin":  # macOS
-        # Search patterns: /Applications/Stata*/*.app
-        # We explicitly list StataNow and Stata
         app_globs = [
             "/Applications/StataNow/StataMP.app",
             "/Applications/StataNow/StataSE.app",
@@ -36,70 +51,58 @@ def find_stata_path() -> Tuple[str, str]:
             "/Applications/Stata/StataMP.app",
             "/Applications/Stata/StataSE.app",
             "/Applications/Stata/Stata.app",
-            "/Applications/Stata*/Stata*.app"
+            "/Applications/Stata*/Stata*.app",
         ]
-        
+
         for pattern in app_globs:
             for app_dir in glob.glob(pattern):
                 binary_dir = os.path.join(app_dir, "Contents", "MacOS")
-                if not os.path.exists(binary_dir): continue
-                
-                # Check for specific binaries (prioritize MP)
-                # 'stata-mp' is the binary name usually
+                if not os.path.exists(binary_dir):
+                    continue
                 for binary, edition in [("stata-mp", "mp"), ("stata-se", "se"), ("stata", "be")]:
                     full_path = os.path.join(binary_dir, binary)
                     if os.path.exists(full_path):
                         candidates.append((full_path, edition))
 
     elif system == "Windows":
-        # Check Program Files
         base_dirs = [
             os.environ.get("ProgramFiles", "C:\\Program Files"),
-            os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")
+            os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"),
         ]
-        
+
         for base_dir in base_dirs:
-            # Look for Stata* folders (including StataNow)
             for stata_dir in glob.glob(os.path.join(base_dir, "Stata*")):
-                # Look for executables
                 for exe, edition in [
-                    ("StataMP-64.exe", "mp"), ("StataMP.exe", "mp"),
-                    ("StataSE-64.exe", "se"), ("StataSE.exe", "se"),
-                    ("Stata-64.exe", "be"),   ("Stata.exe", "be")
+                    ("StataMP-64.exe", "mp"),
+                    ("StataMP.exe", "mp"),
+                    ("StataSE-64.exe", "se"),
+                    ("StataSE.exe", "se"),
+                    ("Stata-64.exe", "be"),
+                    ("Stata.exe", "be"),
                 ]:
                     full_path = os.path.join(stata_dir, exe)
                     if os.path.exists(full_path):
                         candidates.append((full_path, edition))
 
     elif system == "Linux":
-        # Check standard locations
         for binary, edition in [
             ("/usr/local/stata/stata-mp", "mp"),
             ("/usr/local/stata/stata-se", "se"),
             ("/usr/local/stata/stata", "be"),
-            ("/usr/bin/stata", "be") # Assume BE if generic
+            ("/usr/bin/stata", "be"),
         ]:
             if os.path.exists(binary):
                 candidates.append((binary, edition))
-    else:
-        candidates = []
 
-    # Prioritize MP > SE > BE
-    # candidates list is populated in discovery order, but we can sort?
-    # Our explicit lists prioritized MP already.
-    # Just return first valid one.
-    
+    candidates = _dedupe_preserve(candidates)
+
     if candidates:
-        return candidates[0]
+        first = candidates[0]
+        logger.info("Auto-discovered Stata at %s (%s)", first[0], first[1])
+        return first
 
-
-    # Check candidates
-    for path in candidates:
-        if os.path.exists(path):
-            return path
-            
-    # Raise error if not found to simplify downstream logic
     raise FileNotFoundError(
         "Could not automatically locate Stata. "
-        "Please set the 'STATA_PATH' environment variable to your Stata executable."
+        "Set STATA_PATH to your Stata executable (e.g., "
+        "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp or C:\\Program Files\\Stata18\\StataMP-64.exe)."
     )

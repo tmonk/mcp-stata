@@ -1,10 +1,23 @@
 import sys
 import os
 import json
+import re
+import base64
 import logging
+from io import StringIO
 from typing import Any, List, Optional, Dict
 import pandas as pd
 from .discovery import find_stata_path
+from .models import (
+    CommandResponse,
+    ErrorEnvelope,
+    GraphExport,
+    GraphExportResponse,
+    GraphInfo,
+    GraphListResponse,
+    VariableInfo,
+    VariablesResponse,
+)
 
 logger = logging.getLogger("stata_mcp")
 
@@ -88,28 +101,119 @@ class StataClient:
         except Exception as e:
             raise RuntimeError(f"Failed to initialize Stata: {e}")
 
-    def run_command(self, code: str, echo: bool = True) -> str:
-        """Runs a Stata command and captures output."""
+    def _read_return_code(self) -> int:
+        """Read the last Stata return code without mutating rc."""
+        try:
+            from sfi import Macro
+            rc_val = Macro.getCValue("rc")  # type: ignore[attr-defined]
+            return int(float(rc_val))
+        except Exception:
+            try:
+                self.stata.run("global MCP_RC = c(rc)")
+                from sfi import Macro as Macro2
+                rc_val = Macro2.getGlobal("MCP_RC")
+                return int(float(rc_val))
+            except Exception:
+                return -1
+
+    def _parse_rc_from_text(self, text: str) -> Optional[int]:
+        match = re.search(r"r\((\d+)\)", text)
+        if match:
+            try:
+                return int(match.group(1))
+            except Exception:
+                return None
+        return None
+
+    def _parse_line_from_text(self, text: str) -> Optional[int]:
+        match = re.search(r"line\s+(\d+)", text, re.IGNORECASE)
+        if match:
+            try:
+                return int(match.group(1))
+            except Exception:
+                return None
+        return None
+
+    def _build_error_envelope(
+        self,
+        command: str,
+        rc: int,
+        stdout: str,
+        stderr: str,
+        exc: Optional[Exception],
+        trace: bool,
+    ) -> ErrorEnvelope:
+        combined = "\n".join(filter(None, [stdout, stderr, str(exc) if exc else ""])).strip()
+        rc_hint = self._parse_rc_from_text(combined) if combined else None
+        rc_final = rc if rc not in (-1, None) else rc_hint
+        line_no = self._parse_line_from_text(combined) if combined else None
+        snippet = combined[-800:] if combined else None
+        message = (stderr or (str(exc) if exc else "") or stdout or "Stata error").strip()
+        return ErrorEnvelope(
+            message=message,
+            rc=rc_final,
+            line=line_no,
+            command=command,
+            stdout=stdout or None,
+            stderr=stderr or None,
+            snippet=snippet,
+            trace=trace or None,
+        )
+
+    def _exec_with_capture(self, code: str, echo: bool = True, trace: bool = False) -> CommandResponse:
+        """Execute Stata code with stdout/stderr capture and rc detection."""
         if not self._initialized:
             self.init()
-            
-        # Capture stdout
-        
-        # Using simple redirection as pystata writes to stdout
-        from io import StringIO
-        backup_stdout = sys.stdout
-        capture = StringIO()
-        sys.stdout = capture
-        
+
+        out_buf, err_buf = StringIO(), StringIO()
+        backup_stdout, backup_stderr = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out_buf, err_buf
+        exc: Optional[Exception] = None
         try:
+            if trace:
+                self.stata.run("set trace on")
             self.stata.run(code, echo=echo)
         except Exception as e:
-            sys.stdout = backup_stdout
-            return f"Error executing Stata code: {e}"
+            exc = e
         finally:
-            sys.stdout = backup_stdout
-            
-        return capture.getvalue()
+            rc = self._read_return_code()
+            if trace:
+                try:
+                    self.stata.run("set trace off")
+                except Exception:
+                    pass
+            sys.stdout, sys.stderr = backup_stdout, backup_stderr
+
+        stdout = out_buf.getvalue()
+        stderr = err_buf.getvalue()
+        # If no exception and stderr is empty, treat rc anomalies as success (e.g., spurious rc reads)
+        if exc is None and (not stderr or not stderr.strip()):
+            rc = 0 if rc is None or rc != 0 else rc
+        success = rc == 0 and exc is None
+        error = None
+        if not success:
+            error = self._build_error_envelope(code, rc, stdout, stderr, exc, trace)
+        return CommandResponse(
+            command=code,
+            rc=rc,
+            stdout=stdout,
+            stderr=stderr or None,
+            success=success,
+            error=error,
+        )
+
+    def run_command(self, code: str, echo: bool = True) -> str:
+        """Runs a Stata command and returns raw output (legacy)."""
+        result = self._exec_with_capture(code, echo=echo)
+        if result.success:
+            return result.stdout
+        if result.error:
+            return f"Error executing Stata code (r({result.error.rc})):\n{result.error.message}"
+        return result.stdout or "Unknown Stata error"
+
+    def run_command_structured(self, code: str, echo: bool = True, trace: bool = False) -> CommandResponse:
+        """Runs a Stata command and returns a structured envelope."""
+        return self._exec_with_capture(code, echo=echo, trace=trace)
 
     def get_data(self, start: int = 0, count: int = 50) -> List[Dict[str, Any]]:
         """Returns valid JSON-serializable data."""
@@ -145,13 +249,25 @@ class StataClient:
             vars_info.append({
                 "name": name,
                 "label": label,
-                # Simple type map could be added, but name/label is most useful
+                "type": str(type_str),
             })
         return vars_info
 
     def get_variable_details(self, varname: str) -> str:
         """Returns codebook/summary for a specific variable."""
         return self.run_command(f"codebook {varname}")
+
+    def list_variables_structured(self) -> VariablesResponse:
+        vars_info: List[VariableInfo] = []
+        for item in self.list_variables():
+            vars_info.append(
+                VariableInfo(
+                    name=item.get("name", ""),
+                    label=item.get("label"),
+                    type=item.get("type"),
+                )
+            )
+        return VariablesResponse(variables=vars_info)
 
     def list_graphs(self) -> List[str]:
         """Returns list of graphs in memory."""
@@ -168,6 +284,12 @@ class StataClient:
             return []
         
         return graph_list_str.split()
+
+    def list_graphs_structured(self) -> GraphListResponse:
+        names = self.list_graphs()
+        active_name = names[-1] if names else None
+        graphs = [GraphInfo(name=n, active=(n == active_name)) for n in names]
+        return GraphListResponse(graphs=graphs)
 
     def export_graph(self, graph_name: str = None, filename: str = None) -> str:
         """Exports graph to a temp file and returns path."""
@@ -278,4 +400,54 @@ class StataClient:
         results["e"] = parse_list(raw_e)
         
         return results
+
+    def export_graphs_all(self) -> GraphExportResponse:
+        """Exports all graphs to base64-encoded strings."""
+        exports: List[GraphExport] = []
+        for name in self.list_graphs():
+            try:
+                path = self.export_graph(name)
+                with open(path, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("ascii")
+                exports.append(GraphExport(name=name, image_base64=b64))
+            except Exception as e:
+                logger.warning("Failed to export graph '%s': %s", name, e)
+                continue
+        return GraphExportResponse(graphs=exports)
+
+    def run_do_file(self, path: str, echo: bool = True, trace: bool = False) -> CommandResponse:
+        if not os.path.exists(path):
+            return CommandResponse(
+                command=f'do "{path}"',
+                rc=601,
+                stdout="",
+                stderr=None,
+                success=False,
+                error=ErrorEnvelope(
+                    message=f"Do-file not found: {path}",
+                    rc=601,
+                    command=path,
+                ),
+            )
+        return self._exec_with_capture(f'do "{path}"', echo=echo, trace=trace)
+
+    def load_data(self, source: str, clear: bool = True) -> CommandResponse:
+        src = source.strip()
+        clear_suffix = ", clear" if clear else ""
+
+        if src.startswith("sysuse "):
+            cmd = f"{src}{clear_suffix}"
+        elif src.startswith("webuse "):
+            cmd = f"{src}{clear_suffix}"
+        elif src.startswith("use "):
+            cmd = f"{src}{clear_suffix}"
+        elif "://" in src or src.endswith(".dta") or os.path.sep in src:
+            cmd = f'use "{src}"{clear_suffix}'
+        else:
+            cmd = f"sysuse {src}{clear_suffix}"
+
+        return self._exec_with_capture(cmd, echo=True, trace=False)
+
+    def codebook(self, varname: str, trace: bool = False) -> CommandResponse:
+        return self._exec_with_capture(f"codebook {varname}", trace=trace)
 
