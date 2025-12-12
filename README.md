@@ -3,6 +3,7 @@
 A [Model Context Protocol](https://github.com/modelcontextprotocol) (MCP) server that connects AI assistants to a local Stata installation.
 
 Built by <a href="https://tdmonk.com">Thomas Monk</a>, London School of Economics.
+<!-- mcp-name: io.github.tmonk/mcp-stata -->
 
 This server enables LLMs to:
 - **Execute Stata code**: run any Stata command (e.g. `sysuse auto`, `regress price mpg`).
