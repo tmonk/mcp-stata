@@ -2,13 +2,13 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
   "name": "io.github.tmonk/mcp-stata",
   "title": "Stata MCP Server",
-  "description": " A lightweight Model Context Protocol (MCP) server for Stata. Execute commands, inspect data, retrieve stored results (r()/e()), and view graphs in your chat interface. Built for economists who want to integrate LLM assistance into their Stata workflow.",
-  "version": "1.0.2",
+  "description": "A lightweight MCP server for Stata.",
+  "version": "1.0.3",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mcp-stata",
-      "version": "1.0.2",
+      "version": "1.0.3",
       "transport": {
         "type": "stdio"
       }
