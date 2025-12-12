@@ -1,0 +1,135 @@
+from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Image
+import mcp.types as types
+from .stata_client import StataClient
+import logging
+
+# Initialize FastMCP
+mcp = FastMCP("stata")
+client = StataClient()
+
+@mcp.tool()
+def run_command(code: str, echo: bool = True) -> str:
+    """
+    Executes a specific Stata command.
+
+    This is the primary tool for interacting with Stata. You can run any valid Stata syntax.
+    
+    Args:
+        code: The detailed Stata command(s) to execute (e.g., "sysuse auto", "regress price mpg", "summarize").
+        echo: If True, the command itself is included in the output. Default is True.
+    """
+    return client.run_command(code, echo)
+
+@mcp.tool()
+def get_data(start: int = 0, count: int = 50) -> str:
+    """
+    Returns a slice of the active dataset as a JSON-formatted list of dictionaries.
+
+    Use this to inspect the actual data values in memory. Useful for checking data quality or content.
+    
+    Args:
+        start: The zero-based index of the first observation to retrieve.
+        count: The number of observations to retrieve. Defaults to 50.
+    """
+    data = client.get_data(start, count)
+    return str(data)
+
+@mcp.tool()
+def describe() -> str:
+    """
+    Returns variable descriptions, storage types, and labels (equivalent to Stata's `describe` command).
+
+    Use this to understand the structure of the dataset, variable names, and their formats before running analysis.
+    """
+    return client.run_command("describe")
+
+@mcp.tool()
+def list_graphs() -> str:
+    """
+    Lists the names of all graphs currently stored in Stata's memory.
+
+    Use this to see which graphs are available for export via `export_graph`.
+    """
+    graphs = client.list_graphs()
+    return f"Graphs in memory: {graphs}"
+
+@mcp.tool()
+def export_graph(graph_name: str = None) -> Image:
+    """
+    Exports a stored Stata graph to an image format (PNG) and returns it.
+
+    Args:
+        graph_name: The name of the graph to export (as seen in `list_graphs`). 
+                   If None, exports the currently active graph.
+    """
+    try:
+        path = client.export_graph(graph_name)
+        with open(path, "rb") as f:
+            data = f.read()
+        return Image(data=data, format="png")
+    except Exception as e:
+        # Return error as text if image fails? 
+        # FastMCP expects Image or error.
+        raise RuntimeError(f"Failed to export graph: {e}")
+
+@mcp.tool()
+def get_help(topic: str) -> str:
+    """
+    Returns the official Stata help text for a given command or topic.
+
+    Args:
+        topic: The command name or help topic (e.g., "regress", "graph", "options").
+               Returns the full SMCL help file content as text.
+    """
+    return client.get_help(topic)
+
+@mcp.tool()
+def get_stored_results() -> str:
+    """
+    Returns the current stored results (r-class and e-class scalars/macros) as a JSON-formatted string.
+
+    Use this after running a command (like `summarize` or `regress`) to programmatically retrieve 
+    specific values (e.g., means, coefficients, sample sizes) for validation or further calculation.
+    """
+    import json
+    return json.dumps(client.get_stored_results(), indent=2)
+
+@mcp.resource("stata://data/summary")
+def get_summary() -> str:
+    """
+    Returns the output of the `summarize` command for the dataset in memory.
+    Provides descriptive statistics (obs, mean, std. dev, min, max) for all variables.
+    """
+    return client.run_command("summarize")
+
+@mcp.resource("stata://data/metadata")
+def get_metadata() -> str:
+    """
+    Returns the output of the `describe` command.
+    Provides metadata about the dataset, including variable names, storage types, display formats, and labels.
+    """
+    return client.run_command("describe")
+
+@mcp.resource("stata://graphs/list")
+def get_graph_list() -> str:
+    """Returns list of active graphs."""
+    return str(client.list_graphs())
+
+@mcp.resource("stata://variables/list")
+def get_variable_list() -> str:
+    """Returns JSON list of all variables."""
+    import json
+    return json.dumps(client.list_variables(), indent=2)
+
+@mcp.resource("stata://results/stored")
+def get_stored_results_resource() -> str:
+    """Returns stored r() and e() results."""
+    import json
+    return json.dumps(client.get_stored_results(), indent=2)
+
+def main():
+    mcp.run()
+
+if __name__ == "__main__":
+    main()

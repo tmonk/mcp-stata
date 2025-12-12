@@ -1,0 +1,41 @@
+[project]
+name = "stata-mcp"
+version = "0.1.0"
+description = "Model Context Protocol (MCP) server for Stata"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+authors = [
+    { name = "Thomas Monk", email = "t.d.monk@lse.ac.uk" }
+]
+keywords = ["mcp", "stata", "statistics", "econometrics", "ai", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "pandas>=2.0.0",
+    "pydantic>=2.0.0",
+    "pystata>=0.0.1",
+    "stata_setup>=0.1.0",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/tmonk/stata-mcp"
+Repository = "https://github.com/tmonk/stata-mcp"
+Issues = "https://github.com/tmonk/stata-mcp/issues"
+
+[project.scripts]
+stata-mcp = "stata_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
