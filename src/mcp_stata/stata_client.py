@@ -321,6 +321,9 @@ class StataClient:
 
     def list_graphs(self) -> List[str]:
         """Returns list of graphs in memory."""
+        if not self._initialized:
+            self.init()
+        
         # 'graph dir' returns list in r(list)
         # We need to ensure we run it quietly so we don't spam.
         self.stata.run("quietly graph dir, memory")
@@ -392,6 +395,9 @@ class StataClient:
 
     def get_help(self, topic: str, plain_text: bool = False) -> str:
         """Returns help text as Markdown (default) or plain text."""
+        if not self._initialized:
+            self.init()
+        
         # Try to locate the .sthlp help file
         # We use 'capture' to avoid crashing if not found
         self.stata.run(f"capture findfile {topic}.sthlp")

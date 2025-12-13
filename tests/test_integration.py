@@ -26,6 +26,35 @@ def test_connection_and_math(client):
     result = client.run_command("display 2+2")
     assert "4" in result
 
+def test_list_graphs_without_prior_init():
+    from mcp_stata.stata_client import StataClient
+    c = StataClient()
+    # Force reset to simulate fresh use before any command
+    c._initialized = False
+    if hasattr(c, "stata"):
+        delattr(c, "stata")
+    graphs = c.list_graphs()
+    assert isinstance(graphs, list)
+
+
+def test_export_graph_invalid_format(client):
+    client.run_command("sysuse auto, clear")
+    client.run_command("scatter price mpg, name(BadFmtGraph, replace)")
+    with pytest.raises(ValueError, match="Unsupported graph export format"):
+        client.export_graph("BadFmtGraph", format="jpg")
+
+
+def test_export_graph_pdf_with_explicit_filename(client, tmp_path):
+    client.run_command("sysuse auto, clear")
+    client.run_command("scatter price mpg, name(PdfGraph, replace)")
+    pdf_path = tmp_path / "explicit.pdf"
+    if pdf_path.exists():
+        pdf_path.unlink()
+    returned = client.export_graph("PdfGraph", filename=str(pdf_path))
+    assert returned == str(pdf_path)
+    assert pdf_path.exists()
+    assert pdf_path.stat().st_size > 0
+
 def test_data_and_variables(client):
     client.run_command("sysuse auto, clear")
     
