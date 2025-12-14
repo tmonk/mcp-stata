@@ -173,11 +173,16 @@ def get_graph_list() -> str:
     """Returns list of active graphs."""
     return client.list_graphs_structured().model_dump_json(indent=2)
 
-@mcp.resource("stata://variables/list")
+@mcp.tool()
 def get_variable_list() -> str:
     """Returns JSON list of all variables."""
     variables = client.list_variables_structured()
     return variables.model_dump_json(indent=2)
+
+@mcp.resource("stata://variables/list")
+def get_variable_list_resource() -> str:
+    """Resource wrapper for the variable list."""
+    return get_variable_list()
 
 @mcp.resource("stata://results/stored")
 def get_stored_results_resource() -> str:
