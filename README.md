@@ -60,7 +60,7 @@ Config file locations include:
 ```json
 {
   "mcpServers": {
-    "stata": {
+    "mcp-stata": {
       "command": "uvx",
       "args": ["--from", "mcp-stata", "mcp-stata"],
       "env": {
@@ -87,7 +87,7 @@ Cursor supports MCP config at:
 ```json
 {
   "mcpServers": {
-    "stata": {
+    "mcp-stata": {
       "command": "uvx",
       "args": ["--from", "mcp-stata", "mcp-stata"],
       "env": {
@@ -110,7 +110,7 @@ A common location is `~/.codeium/windsurf/mcp_config.json`.
 ```json
 {
   "mcpServers": {
-    "stata": {
+    "mcp-stata": {
       "command": "uvx",
       "args": ["--from", "mcp-stata", "mcp-stata"],
       "env": {
@@ -132,7 +132,7 @@ In Antigravity, MCP servers are managed from the MCP store/menu; you can open **
 ```json
 {
   "mcpServers": {
-    "stata": {
+    "mcp-stata": {
       "command": "uvx",
       "args": ["--from", "mcp-stata", "mcp-stata"],
       "env": {
@@ -156,7 +156,7 @@ Create `.vscode/mcp.json`:
 ```json
 {
   "servers": {
-    "stata": {
+    "mcp-stata": {
       "type": "stdio",
       "command": "uvx",
       "args": ["--from", "mcp-stata", "mcp-stata"],
