@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   check-version:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout workflow source commit
@@ -32,9 +33,15 @@ jobs:
       - name: Commit and push if server.json changed
         env:
           RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          if [ -z "${RELEASE_BRANCH}" ]; then
-            echo "No head branch available from workflow_run; cannot push updates."
+          TARGET_REF="${RELEASE_BRANCH}"
+          if [ -z "${TARGET_REF}" ] || git show-ref --verify --quiet "refs/tags/${TARGET_REF}"; then
+            echo "Head ref '${TARGET_REF:-<empty>}' is not a branch; using default branch '${DEFAULT_BRANCH}' for push."
+            TARGET_REF="${DEFAULT_BRANCH}"
+          fi
+          if [ -z "${TARGET_REF}" ]; then
+            echo "Unable to determine a target branch for push."
             exit 1
           fi
           if git diff --quiet -- server.json; then
@@ -46,6 +53,6 @@ jobs:
           git add server.json
           git commit -m "chore: sync server.json version"
           # Push back to the branch associated with the workflow run.
-          git push origin HEAD:${RELEASE_BRANCH}
+          git push origin HEAD:${TARGET_REF}
 
 
