@@ -160,9 +160,6 @@ Create `.vscode/mcp.json`:
       "type": "stdio",
       "command": "uvx",
       "args": ["--from", "mcp-stata", "mcp-stata"],
-      "env": {
-        "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
-      }
     }
   }
 }
