@@ -7,3 +7,7 @@ tests/test_external_optional.py
 py.typed
 .mcpregistry_github_token
 .mcpregistry_registry_token
+/ideas
+.cursor
+.vscode
+.gemini

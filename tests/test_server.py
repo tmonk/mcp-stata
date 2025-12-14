@@ -39,6 +39,10 @@ def test_server_tools(init_server):
     assert res_struct["rc"] == 0
     assert "5" in res_struct["stdout"]
 
+    # list_graphs should work even before any graph exists / prior init
+    empty_graphs = json.loads(list_graphs())
+    assert "graphs" in empty_graphs
+
     # Test get_data tool
     # Need data first
     run_command("sysuse auto, clear")

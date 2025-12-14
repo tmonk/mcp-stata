@@ -43,6 +43,16 @@ export STATA_PATH="/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
 set STATA_PATH="C:\Program Files\Stata18\StataMP-64.exe"
 ```
 
+If you prefer, add `STATA_PATH` to your MCP config's `env` for any IDE shown below. It's optional and only needed when discovery cannot find Stata.
+
+Optional `env` example (add inside your MCP server entry):
+
+```json
+"env": {
+  "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
+}
+```
+
 ## IDE Setup (MCP)
 
 This MCP server uses the **stdio** transport (the IDE launches the process and communicates over stdin/stdout).
@@ -64,14 +74,8 @@ Config file locations include:
   "mcpServers": {
     "mcp-stata": {
       "command": "uvx",
-      "args": ["--from", "mcp-stata", "mcp-stata"],
-      "env": {
-        "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
-      }
-    }
-  }
-}
-```
+        "args": ["--from", "mcp-stata", "mcp-stata"]
+        "args": ["--from", "mcp-stata", "mcp-stata"]
 
 After editing, fully quit and restart Claude Desktop to reload MCP servers.
 
@@ -91,10 +95,7 @@ Cursor supports MCP config at:
   "mcpServers": {
     "mcp-stata": {
       "command": "uvx",
-      "args": ["--from", "mcp-stata", "mcp-stata"],
-      "env": {
-        "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
-      }
+        "args": ["--from", "mcp-stata", "mcp-stata"]
     }
   }
 }
@@ -114,10 +115,7 @@ A common location is `~/.codeium/windsurf/mcp_config.json`.
   "mcpServers": {
     "mcp-stata": {
       "command": "uvx",
-      "args": ["--from", "mcp-stata", "mcp-stata"],
-      "env": {
-        "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
-      }
+        "args": ["--from", "mcp-stata", "mcp-stata"]
     }
   }
 }
@@ -136,10 +134,7 @@ In Antigravity, MCP servers are managed from the MCP store/menu; you can open **
   "mcpServers": {
     "mcp-stata": {
       "command": "uvx",
-      "args": ["--from", "mcp-stata", "mcp-stata"],
-      "env": {
-        "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
-      }
+        "args": ["--from", "mcp-stata", "mcp-stata"]
     }
   }
 }
@@ -173,6 +168,10 @@ Create `.vscode/mcp.json`:
 VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` and `command`/`args`.
 
 ---
+
+## Skills
+
+- Skill file (for Claude/Codex): [skill/SKILL.md](skill/SKILL.md)
 
 ## Tools Available
 
