@@ -75,7 +75,9 @@ def list_graphs() -> str:
     """
     Lists the names of all graphs currently stored in Stata's memory.
 
-    Use this to see which graphs are available for export via `export_graph`.
+    Use this to see which graphs are available for export via `export_graph`. The
+    response marks the active graph so the agent knows which one will export by
+    default.
     """
     graphs = client.list_graphs_structured()
     return graphs.model_dump_json(indent=2)
@@ -88,7 +90,9 @@ def export_graph(graph_name: str = None, format: str = "pdf") -> str:
     Args:
         graph_name: The name of the graph to export (as seen in `list_graphs`). 
                    If None, exports the currently active graph.
-        format: Output format, defaults to "pdf". Supported: "pdf", "png".
+        format: Output format, defaults to "pdf". Supported: "pdf", "png". Use
+                "png" to view the plot directly so the agent can visually check
+                titles, labels, legends, colors, and other user requirements.
     """
     try:
         return client.export_graph(graph_name, format=format)
@@ -185,7 +189,9 @@ def get_stored_results_resource() -> str:
 def export_graphs_all() -> str:
     """
     Exports all graphs in memory to base64-encoded PNGs.
-    Returns a JSON envelope listing graph names and images.
+    Returns a JSON envelope listing graph names and images so the agent can open
+    them directly and verify visuals (titles/labels/colors/legends) against the
+    user's requested spec without an extra fetch.
     """
     exports = client.export_graphs_all()
     return exports.model_dump_json(indent=2)
