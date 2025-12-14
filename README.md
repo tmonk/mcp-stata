@@ -1,6 +1,6 @@
 # Stata MCP Server
 
-[![Install MCP Server](https://cursor.com/deeplink/mcp-install-light.svg)](https://cursor.com/en-US/install-mcp?name=mcp-stata&config=eyJjb21tYW5kIjoidXZ4IC0tZnJvbSBtY3Atc3RhdGEgbWNwLXN0YXRhIn0%3D)
+[![Install MCP Server](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en-US/install-mcp?name=mcp-stata&config=eyJjb21tYW5kIjoidXZ4IC0tZnJvbSBtY3Atc3RhdGEgbWNwLXN0YXRhIn0%3D)
 
 A [Model Context Protocol](https://github.com/modelcontextprotocol) (MCP) server that connects AI assistants to a local Stata installation.
 
