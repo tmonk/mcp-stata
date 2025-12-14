@@ -75,7 +75,10 @@ Config file locations include:
     "mcp-stata": {
       "command": "uvx",
         "args": ["--from", "mcp-stata", "mcp-stata"]
-        "args": ["--from", "mcp-stata", "mcp-stata"]
+    }
+  }
+}
+```
 
 After editing, fully quit and restart Claude Desktop to reload MCP servers.
 
