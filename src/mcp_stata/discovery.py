@@ -2,6 +2,7 @@ import os
 import platform
 import glob
 import logging
+import shutil
 
 from typing import Tuple, Optional, List
 
@@ -41,7 +42,7 @@ def find_stata_path() -> Tuple[str, str]:
             raise FileNotFoundError(
                 f"STATA_PATH points to '{path}', but that file does not exist. "
                 "Update STATA_PATH to your Stata binary (e.g., "
-                "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp)."
+                "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp or /usr/local/stata18/stata-mp)."
             )
         if not os.access(path, os.X_OK):
             raise PermissionError(
@@ -96,14 +97,51 @@ def find_stata_path() -> Tuple[str, str]:
                         candidates.append((full_path, edition))
 
     elif system == "Linux":
-        for binary, edition in [
-            ("/usr/local/stata/stata-mp", "mp"),
-            ("/usr/local/stata/stata-se", "se"),
-            ("/usr/local/stata/stata", "be"),
-            ("/usr/bin/stata", "be"),
-        ]:
-            if os.path.exists(binary):
-                candidates.append((binary, edition))
+        linux_binaries = [
+            ("stata-mp", "mp"),
+            ("stata-se", "se"),
+            ("stata-ic", "be"),
+            ("stata", "be"),
+            ("xstata-mp", "mp"),
+            ("xstata-se", "se"),
+            ("xstata-ic", "be"),
+            ("xstata", "be"),
+        ]
+
+        # 2a. Try binaries available on PATH first
+        for binary, edition in linux_binaries:
+            found = shutil.which(binary)
+            if found:
+                candidates.append((found, edition))
+
+        # 2b. Search common install prefixes used by Stata's Linux installer
+        linux_roots = [
+            "/usr/local",
+            "/opt",
+            os.path.expanduser("~/stata"),
+            os.path.expanduser("~/Stata"),
+        ]
+
+        for root in linux_roots:
+            patterns: List[str] = []
+            if root.endswith(("stata", "Stata")):
+                patterns.append(root)
+            else:
+                patterns.extend(
+                    [
+                        os.path.join(root, "stata*"),
+                        os.path.join(root, "Stata*"),
+                    ]
+                )
+
+            for pattern in patterns:
+                for base_dir in glob.glob(pattern):
+                    if not os.path.isdir(base_dir):
+                        continue
+                    for binary, edition in linux_binaries:
+                        full_path = os.path.join(base_dir, binary)
+                        if os.path.exists(full_path):
+                            candidates.append((full_path, edition))
 
     candidates = _dedupe_preserve(candidates)
 
@@ -120,5 +158,5 @@ def find_stata_path() -> Tuple[str, str]:
     raise FileNotFoundError(
         "Could not automatically locate Stata. "
         "Set STATA_PATH to your Stata executable (e.g., "
-        "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp or C:\\Program Files\\Stata18\\StataMP-64.exe)."
+        "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp, /usr/local/stata18/stata-mp, or C:\\Program Files\\Stata18\\StataMP-64.exe)."
     )
