@@ -1,7 +1,13 @@
 import stat
+import platform
 from pathlib import Path
 
+import pytest
+
 from mcp_stata import discovery
+
+# Linux-only: these discovery cases rely on Linux filesystem layout/exec bits.
+pytestmark = pytest.mark.skipif(platform.system() != "Linux", reason="Linux-only discovery tests")
 
 
 def _make_executable(path: Path) -> Path:
@@ -46,7 +52,7 @@ def test_linux_discovers_install_prefix(monkeypatch, tmp_path):
             str(tmp_path / "stata"),
             str(tmp_path / "Stata"),
         }
-        if pattern in watched:
+        if pattern in watched or pattern.startswith(str(tmp_path / "stata")) or pattern.startswith(str(tmp_path / "Stata")):
             return [str(base_dir)]
         return []
 
