@@ -571,15 +571,18 @@ class StataClient:
                 try:
                     os.remove(do_path)
                 except Exception:
+                    # Ignore errors during temporary do-file cleanup (file may not exist or be locked)
                     pass
                 try:
                     os.remove(gph_path)
                 except Exception:
+                    # Ignore errors during temporary graph file cleanup (file may not exist or be locked)
                     pass
                 try:
                     if os.path.exists(log_path):
                         os.remove(log_path)
                 except Exception:
+                    # Ignore errors during temporary log file cleanup (file may not exist or be locked)
                     # Ignore errors during log file cleanup; leftover temp files are not critical
                     pass
 
