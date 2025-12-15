@@ -82,6 +82,7 @@ class StataClient:
                     if timeout_env:
                         timeout = float(timeout_env)
                 except Exception:
+                    # Ignore errors if STATA_SETUP_TIMEOUT is not set or is invalid; use default timeout.
                     pass
 
                 # Preflight in a separate Python process so we can hard-timeout even if
