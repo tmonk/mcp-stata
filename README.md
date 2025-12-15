@@ -5,7 +5,7 @@
 
 A [Model Context Protocol](https://github.com/modelcontextprotocol) (MCP) server that connects AI agents to a local Stata installation.
 
-> If you'd like a fully integrated VS Code extension to run Stata code without leaving your IDE, and also allow AI agent interaction, check out my other project: [<img src="https://raw.githubusercontent.com/tmonk/stata-workbench/refs/heads/main/img/icon.png" height="12px"> Stata Workbench](https://github.com/tmonk/stata-workbench/). 
+> If you'd like a fully integrated VS Code extension to run Stata code without leaving your IDE, and also allow AI agent interaction, check out my other project: [<img src="https://raw.githubusercontent.com/tmonk/stata-workbench/refs/heads/main/img/icon.png" height="12px"> Stata Workbench](https://github.com/tmonk/stata-workbench/).
 
 Built by <a href="https://tdmonk.com">Thomas Monk</a>, London School of Economics.
 <!-- mcp-name: io.github.tmonk/mcp-stata -->
