@@ -1,8 +1,13 @@
 # Stata MCP Server
 
-[![Install MCP Server](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en-US/install-mcp?name=mcp-stata&config=eyJjb21tYW5kIjoidXZ4IC0tZnJvbSBtY3Atc3RhdGEgbWNwLXN0YXRhIn0%3D) ![PyPI - Version](https://img.shields.io/pypi/v/mcp-stata?style=flat&color=black)
+<a href="https://cursor.com/en-US/install-mcp?name=mcp-stata&config=eyJjb21tYW5kIjoidXZ4IC0tZnJvbSBtY3Atc3RhdGEgbWNwLXN0YXRhIn0%3D">
+  <img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Install MCP Server" height="20px">
+</a>
+<img src="https://img.shields.io/pypi/v/mcp-stata?style=flat&color=black" alt="PyPI - Version" height="20px">
 
-A [Model Context Protocol](https://github.com/modelcontextprotocol) (MCP) server that connects AI assistants to a local Stata installation.
+A [Model Context Protocol](https://github.com/modelcontextprotocol) (MCP) server that connects AI agents to a local Stata installation.
+
+If you'd like a fully integrated VS Code extension to run Stata code without leaving your IDE, and also allow AI agent interaction, check out my other project: [Stata Workbench](https://github.com/tmonk/stata-workbench/). 
 
 Built by <a href="https://tdmonk.com">Thomas Monk</a>, London School of Economics.
 <!-- mcp-name: io.github.tmonk/mcp-stata -->
