@@ -575,16 +575,16 @@ class StataClient:
                     pass
                 try:
                     os.remove(gph_path)
+                    logger.warning("Failed to remove temporary do-file: %s", do_path, exc_info=True)
+                try:
+                    os.remove(gph_path)
                 except Exception:
-                    # Ignore errors during temporary graph file cleanup (file may not exist or be locked)
-                    pass
+                    logger.warning("Failed to remove temporary graph file: %s", gph_path, exc_info=True)
                 try:
                     if os.path.exists(log_path):
                         os.remove(log_path)
                 except Exception:
-                    # Ignore errors during temporary log file cleanup (file may not exist or be locked)
-                    # Ignore errors during log file cleanup; leftover temp files are not critical
-                    pass
+                    logger.warning("Failed to remove temporary log file: %s", log_path, exc_info=True)
 
             if completed.returncode != 0:
                 err = completed.stderr.strip() or completed.stdout.strip() or str(completed.returncode)
