@@ -71,90 +71,32 @@ class StataClient:
                     f"Stata binary is not executable: {e}. "
                     "Point STATA_PATH directly to the Stata binary (e.g., .../Contents/MacOS/stata-mp)."
                 ) from e
-            logger.info("Discovery found Stata at: %s (%s)", stata_exec_path, edition)
-            self._stata_exec_path = stata_exec_path
-            self._stata_edition = edition
+            logger.info(f"Discovery found Stata at: {stata_exec_path} ({edition})")
+            
+            def _config_with_timeout(path_to_try: str, timeout: float = 120.0) -> bool:
+                """Run stata_setup.config with a timeout to avoid hangs during discovery.
 
-            def _config_with_timeout(path_to_try: str, timeout: float = 10.0) -> bool:
-                """Run stata_setup.config with a hard timeout guard to avoid hangs."""
-                timeout_env = os.getenv("STATA_SETUP_TIMEOUT")
-                try:
-                    if timeout_env:
-                        timeout = float(timeout_env)
-                except Exception:
-                    # Ignore errors if STATA_SETUP_TIMEOUT is not set or is invalid; use default timeout.
-                    pass
+                Returns True on success, False on timeout, and raises if config throws.
+                """
+                done = threading.Event()
+                err: Optional[Exception] = None
 
-                # Preflight in a separate Python process so we can hard-timeout even if
-                # stata_setup or its native components hang on import/config.
-                preflight_code = (
-                    "import sys; "
-                    "import stata_setup; "
-                    "path=sys.argv[1]; edition=sys.argv[2]; "
-                    "stata_setup.config(path, edition, splash=False); "
-                    "import sfi; "
-                    "print('sfi OK')"
-                )
-                cmd = [sys.executable, "-c", preflight_code, path_to_try, edition]
+                def _worker():
+                    nonlocal err
+                    try:
+                        stata_setup.config(path_to_try, edition)
+                    except Exception as exc:  # noqa: BLE001
+                        err = exc
+                    finally:
+                        done.set()
 
-                logger.info(
-                    "stata_setup.config preflight start path=%s timeout=%.1fs edition=%s",
-                    path_to_try,
-                    timeout,
-                    edition,
-                )
-                print(
-                    f"[stata-init] config preflight path={path_to_try} timeout={timeout}s edition={edition}",
-                    flush=True,
-                )
-
-                try:
-                    completed = subprocess.run(
-                        cmd,
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout,
-                    )
-                except subprocess.TimeoutExpired:
-                    logger.error("stata_setup.config preflight timed out after %.1fs for %s", timeout, path_to_try)
-                    print(f"[stata-init] timeout after {timeout:.2f}s for {path_to_try}", flush=True)
+                t = threading.Thread(target=_worker, daemon=True)
+                t.start()
+                finished = done.wait(timeout)
+                if not finished:
                     return False
-
-                if completed.returncode != 0:
-                    err_msg = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
-
-                    if "No module named 'sfi'" in err_msg:
-                        err_msg = (
-                            "PyStata could not import sfi. Update Stata (19 or later) to the 12Nov2025 "
-                            "update or newer so that sfi binaries match this Python. On Windows use Python "
-                            "3.11/3.12, then rerun. Original error: " + err_msg
-                        )
-
-                    logger.warning("stata_setup.config preflight failed for %s: %s", path_to_try, err_msg)
-                    print(f"[stata-init] config preflight failed for {path_to_try}: {err_msg}", flush=True)
-                    raise RuntimeError(err_msg)
-
-                logger.info(
-                    "stata_setup.config start path=%s edition=%s (preflight ok)",
-                    path_to_try,
-                    edition,
-                )
-                print(
-                    f"[stata-init] config start path={path_to_try} edition={edition} (preflight ok)",
-                    flush=True,
-                )
-
-                real_start = time.time()
-                try:
-                    stata_setup.config(path_to_try, edition)
-                except Exception as exc:
-                    logger.warning("stata_setup.config raised for %s: %s", path_to_try, exc)
-                    print(f"[stata-init] config failed for {path_to_try}: {exc}", flush=True)
-                    raise
-
-                real_elapsed = time.time() - real_start
-                logger.info("stata_setup.config succeeded for %s in %.2fs", path_to_try, real_elapsed)
-                print(f"[stata-init] config ok for {path_to_try} in {real_elapsed:.2f}s", flush=True)
+                if err:
+                    raise err
                 return True
 
             def tries_init(path_to_try: str) -> bool:
@@ -221,6 +163,9 @@ class StataClient:
                     f"stata_setup.config failed. Tried: {candidates}. "
                     f"Derived from binary: {stata_exec_path}"
                 )
+
+            # Cache the binary path for later use (e.g., PNG export on Windows)
+            self._stata_exec_path = os.path.abspath(stata_exec_path)
 
             print("[stata-init] importing pystata.stata", flush=True)
             from pystata import stata  # type: ignore[import-not-found]
