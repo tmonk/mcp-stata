@@ -601,7 +601,6 @@ class StataClient:
             # output thread can crash on Windows when we swap stdio handles.
             resp = self._exec_no_capture(cmd, echo=False)
             if not resp.success:
-                msg = resp.error.message if resp.error else f"graph export failed (rc={resp.rc})"
                 # Retry once after a short pause in case Stata had a transient file handle issue
                 time.sleep(0.2)
                 resp_retry = self._exec_no_capture(cmd, echo=False)
