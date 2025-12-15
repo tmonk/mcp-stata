@@ -6,13 +6,13 @@ from mcp_stata.server import (
     get_data,
     describe,
     list_graphs,
+    list_graphs_resource,
     export_graph,
     export_graphs_all,
     get_help,
     get_stored_results,
     get_summary,
     get_metadata,
-    get_graph_list,
     get_variable_list,
     get_stored_results_resource,
     load_data,
@@ -125,8 +125,9 @@ def test_server_resources(init_server):
     # Test graph list resource
     # Ensure a graph exists
     run_command("scatter price mpg, name(ResourceGraph, replace)")
-    g_list = get_graph_list()
-    assert "ResourceGraph" in g_list
+    g_list = json.loads(list_graphs_resource())
+    names = [g["name"] for g in g_list.get("graphs", [])]
+    assert "ResourceGraph" in names
 
     # Test variable list resource
     v_list = json.loads(get_variable_list())

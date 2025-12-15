@@ -33,7 +33,7 @@ def test_windows_end_to_end(monkeypatch, tmp_path):
 
     # Ensure downstream logic uses the resolved binary
     monkeypatch.setenv("STATA_PATH", stata_path)
-    monkeypatch.setenv("STATA_MCP_LOGLEVEL", "DEBUG")
+    monkeypatch.setenv("MCP_STATA_LOGLEVEL", "DEBUG")
 
     client = StataClient()
     try:

@@ -176,20 +176,28 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 
 - Skill file (for Claude/Codex): [skill/SKILL.md](skill/SKILL.md)
 
-## Tools Available
+## Tools Available (from server.py)
 
-* `run_command(code, raw=false)`: Execute Stata syntax. Returns a structured JSON envelope by default; set `raw=true` for plain stdout/stderr. `trace=true` temporarily enables `set trace on`.
-* `load_data(source, clear=True, raw=false)`: Heuristic loader (sysuse/webuse/use/path/URL) with JSON envelope.
-* `get_data(start, count)`: View dataset rows (JSON response, capped to 500 rows).
-* `describe()`: View dataset structure.
-* `codebook(variable, raw=false)`: Variable-level metadata (JSON envelope by default).
-* `run_do_file(path, trace=false, raw=false)`: Execute a .do file with rich error capture (JSON by default).
-* `export_graph(name, format="pdf")`: Export a graph to a file path (default PDF; use `format="png"` for PNG).
-* `export_graphs_all()`: Export all in-memory graphs as base64-encoded PNGs (JSON response).
+* `run_command(code, echo=True, as_json=True, trace=False, raw=False)`: Execute Stata syntax. JSON envelope by default; `raw=True` returns plain stdout/stderr.
+* `load_data(source, clear=True, as_json=True, raw=False)`: Heuristic loader (sysuse/webuse/use/path/URL) with JSON envelope unless `raw=True`.
+* `get_data(start=0, count=50)`: View dataset rows (JSON response, capped to 500 rows).
+* `describe()`: View dataset structure via Stata `describe`.
 * `list_graphs()`: See available graphs in memory (JSON list with an `active` flag).
-* `get_stored_results()`: Get `r()` and `e()` scalars/macros.
-* `get_help(topic, plain_text=false)`: Returns Markdown-rendered Stata help (default). Use `plain_text=true` for stripped text. Falls back to the Stata online help URL if missing.
+* `export_graph(graph_name=None, format="pdf")`: Export a graph to a file path (default PDF; use `format="png"` for PNG).
+* `export_graphs_all()`: Export all in-memory graphs as base64-encoded PNGs (JSON response).
+* `get_help(topic, plain_text=False)`: Markdown-rendered Stata help by default; `plain_text=True` strips formatting.
+* `codebook(variable, as_json=True, trace=False, raw=False)`: Variable-level metadata (JSON envelope by default; supports `trace=True`).
+* `run_do_file(path, echo=True, as_json=True, trace=False, raw=False)`: Execute a .do file with rich error capture (JSON by default).
+* `get_stored_results()`: Get `r()` and `e()` scalars/macros as JSON.
 * `get_variable_list()`: JSON list of variables and labels.
+
+Resources exposed for MCP clients:
+
+* `stata://data/summary` → `summarize`
+* `stata://data/metadata` → `describe`
+* `stata://graphs/list` → graph list (resource handler delegates to `list_graphs` tool)
+* `stata://variables/list` → variable list (resource wrapper)
+* `stata://results/stored` → stored r()/e() results
 
 ## License
 
@@ -207,7 +215,7 @@ See the LICENSE file for the full text.
 
 ## Logging
 
-Set `STATA_MCP_LOGLEVEL` (e.g., `DEBUG`, `INFO`) to control server logging. Logs include discovery details (edition/path) and command-init traces for easier troubleshooting.
+Set `MCP_STATA_LOGLEVEL` (e.g., `DEBUG`, `INFO`) to control server logging. Logs include discovery details (edition/path) and command-init traces for easier troubleshooting.
 
 ## Development
 
