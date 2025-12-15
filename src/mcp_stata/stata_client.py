@@ -1,18 +1,16 @@
-import sys
-import os
-import json
-import re
 import base64
 import logging
+import os
+import re
 import subprocess
+import sys
 import threading
 import time
-from io import StringIO
 from contextlib import contextmanager
-from typing import Any, List, Optional, Dict
-import pandas as pd
+from io import StringIO
+from typing import Any, Dict, List, Optional
+
 from .discovery import find_stata_path
-from .smcl.smcl2html import smcl_to_markdown
 from .models import (
     CommandResponse,
     ErrorEnvelope,
@@ -23,6 +21,7 @@ from .models import (
     VariableInfo,
     VariablesResponse,
 )
+from .smcl.smcl2html import smcl_to_markdown
 
 logger = logging.getLogger("mcp_stata")
 
@@ -56,7 +55,8 @@ class StataClient:
             return
 
         try:
-            print("[stata-init] import stata_setup..."); logger.info("Importing stata_setup")
+            print("[stata-init] import stata_setup...")
+            logger.info("Importing stata_setup")
             import stata_setup
             print("[stata-init] import stata_setup done")
 
@@ -179,7 +179,7 @@ class StataClient:
 
             # Also try the exact binary path as a fallback (Windows sometimes expects it)
             candidates.append(stata_exec_path)
-            
+
             # 2. App Bundle: .../StataMP.app (macOS only)
             curr = bin_dir
             app_bundle = None
@@ -191,11 +191,11 @@ class StataClient:
                 if parent == curr:  # Reached root directory, prevent infinite loop on Windows
                     break
                 curr = parent
-                
+
             if app_bundle:
                 candidates.insert(0, os.path.dirname(app_bundle))
                 candidates.insert(1, app_bundle)
-            
+
             # Deduplicate preserving order
             seen = set()
             deduped = []
@@ -214,20 +214,20 @@ class StataClient:
                     print(f"[stata-init] candidate {path} succeeded", flush=True)
                     break
                 print(f"[stata-init] candidate {path} failed/timeout", flush=True)
-            
+
             if not success:
                 raise RuntimeError(
                     f"stata_setup.config failed. Tried: {candidates}. "
                     f"Derived from binary: {stata_exec_path}"
                 )
-            
+
             print("[stata-init] importing pystata.stata", flush=True)
-            from pystata import stata
+            from pystata import stata  # type: ignore[import-not-found]
             print("[stata-init] imported pystata.stata", flush=True)
             self.stata = stata
             self._initialized = True
             print("[stata-init] initialization complete", flush=True)
-            
+
         except ImportError:
             # Fallback for when stata_setup isn't in PYTHONPATH yet?
             # Usually users must have it installed. We rely on discovery logic.
@@ -238,13 +238,13 @@ class StataClient:
     def _read_return_code(self) -> int:
         """Read the last Stata return code without mutating rc."""
         try:
-            from sfi import Macro
+            from sfi import Macro  # type: ignore[import-not-found]
             rc_val = Macro.getCValue("rc")  # type: ignore[attr-defined]
             return int(float(rc_val))
         except Exception:
             try:
                 self.stata.run("global MCP_RC = c(rc)")
-                from sfi import Macro as Macro2
+                from sfi import Macro as Macro2  # type: ignore[import-not-found]
                 rc_val = Macro2.getGlobal("MCP_RC")
                 return int(float(rc_val))
             except Exception:
@@ -438,16 +438,16 @@ class StataClient:
         """Returns list of variables with labels."""
         if not self._initialized:
             self.init()
-            
+
         # We can use sfi to be efficient
-        from sfi import Data
+        from sfi import Data  # type: ignore[import-not-found]
         vars_info = []
         for i in range(Data.getVarCount()):
             var_index = i # 0-based
             name = Data.getVarName(var_index)
             label = Data.getVarLabel(var_index)
             type_str = Data.getVarType(var_index) # Returns int
-            
+
             vars_info.append({
                 "name": name,
                 "label": label,
@@ -475,19 +475,19 @@ class StataClient:
         """Returns list of graphs in memory."""
         if not self._initialized:
             self.init()
-        
+
         # 'graph dir' returns list in r(list)
         # We need to ensure we run it quietly so we don't spam.
         self.stata.run("quietly graph dir, memory")
-        
+
         # Accessing r-class results in Python can be tricky via pystata's run command.
         # We stash the result in a global macro that python sfi can easily read.
-        from sfi import Macro
+        from sfi import Macro  # type: ignore[import-not-found]
         self.stata.run("global mcp_graph_list `r(list)'")
         graph_list_str = Macro.getGlobal("mcp_graph_list")
         if not graph_list_str:
             return []
-        
+
         return graph_list_str.split()
 
     def list_graphs_structured(self) -> GraphListResponse:
@@ -539,9 +539,10 @@ class StataClient:
                 raise RuntimeError(msg)
 
             # 2) Prepare a do-file to export PNG externally
+            user_filename_fwd = user_filename.replace("\\", "/")
             do_lines = [
                 f'graph use "{gph_path_for_stata}"',
-                f'graph export "{user_filename.replace("\\", "/")}", replace as(png)',
+                f'graph export "{user_filename_fwd}", replace as(png)',
                 "exit",
             ]
             with tempfile.NamedTemporaryFile(prefix="mcp_stata_export_", suffix=".do", delete=False, mode="w", encoding="ascii") as do_tmp:
@@ -588,13 +589,13 @@ class StataClient:
         else:
             # Stata prefers forward slashes in its command parser on Windows
             filename_for_stata = user_filename.replace("\\", "/")
-                
+
             cmd = "graph export"
             if graph_name:
                 cmd += f' "{filename_for_stata}", name("{graph_name}") replace as({fmt})'
             else:
                 cmd += f' "{filename_for_stata}", replace as({fmt})'
-                
+
             # Avoid stdout/stderr redirection for graph export because PyStata's
             # output thread can crash on Windows when we swap stdio handles.
             resp = self._exec_no_capture(cmd, echo=False)
@@ -607,7 +608,7 @@ class StataClient:
                     msg = resp_retry.error.message if resp_retry.error else f"graph export failed (rc={resp_retry.rc})"
                     raise RuntimeError(msg)
                 resp = resp_retry
-        
+
         if os.path.exists(user_filename):
             try:
                 size = os.path.getsize(user_filename)
@@ -625,7 +626,7 @@ class StataClient:
                     pass
                 raise size_err
             return user_filename
-            
+
         # If file missing, it failed. Check output for details.
         msg = resp.error.message if resp.error else "graph export failed: file missing"
         raise RuntimeError(msg)
@@ -634,16 +635,16 @@ class StataClient:
         """Returns help text as Markdown (default) or plain text."""
         if not self._initialized:
             self.init()
-        
+
         # Try to locate the .sthlp help file
         # We use 'capture' to avoid crashing if not found
         self.stata.run(f"capture findfile {topic}.sthlp")
-        
+
         # Retrieve the found path from r(fn)
-        from sfi import Macro
+        from sfi import Macro  # type: ignore[import-not-found]
         self.stata.run("global mcp_help_file `r(fn)'")
         fn = Macro.getGlobal("mcp_help_file")
-        
+
         if fn and os.path.exists(fn):
             try:
                 with open(fn, 'r', encoding='utf-8', errors='replace') as f:
@@ -665,60 +666,61 @@ class StataClient:
         """Returns e() and r() results."""
         if not self._initialized:
             self.init()
-            
-        from sfi import Scalar, Macro
-        
+
         results = {"r": {}, "e": {}}
-        
+
         # We parse 'return list' output as there is no direct bulk export of stored results
         raw_r = self.run_command("return list")
         raw_e = self.run_command("ereturn list")
-        
+
         # Simple parser
         def parse_list(text):
             data = {}
             # We don't strictly need to track sections if we check patterns
             for line in text.splitlines():
                 line = line.strip()
-                if not line: continue
-                
+                if not line:
+                    continue
+
                 # scalars: r(name) = value
                 if "=" in line and ("r(" in line or "e(" in line):
                     try:
                         name_part, val_part = line.split("=", 1)
                         name_part = name_part.strip()  # "r(mean)"
                         val_part = val_part.strip()    # "6165.2..."
-                        
-                        # Extract just the name inside r(...) if desired, 
-                        # or keep full key "r(mean)". 
+
+                        # Extract just the name inside r(...) if desired,
+                        # or keep full key "r(mean)".
                         # User likely wants "mean" inside "r" dict.
-                        
+
                         if "(" in name_part and name_part.endswith(")"):
                             # r(mean) -> mean
                             start = name_part.find("(") + 1
                             end = name_part.find(")")
                             key = name_part[start:end]
                             data[key] = val_part
-                    except: pass
-                    
+                    except Exception:
+                        pass
+
                 # macros: r(name) : "value"
                 elif ":" in line and ("r(" in line or "e(" in line):
-                     try:
+                    try:
                         name_part, val_part = line.split(":", 1)
                         name_part = name_part.strip()
                         val_part = val_part.strip().strip('"')
-                        
+
                         if "(" in name_part and name_part.endswith(")"):
                             start = name_part.find("(") + 1
                             end = name_part.find(")")
                             key = name_part[start:end]
                             data[key] = val_part
-                     except: pass
+                    except Exception:
+                        pass
             return data
-            
+
         results["r"] = parse_list(raw_r)
         results["e"] = parse_list(raw_e)
-        
+
         return results
 
     def export_graphs_all(self) -> GraphExportResponse:
