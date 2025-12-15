@@ -55,15 +55,10 @@ class StataClient:
             return
 
         try:
-            print("[stata-init] import stata_setup...")
-            logger.info("Importing stata_setup")
             import stata_setup
-            print("[stata-init] import stata_setup done")
 
             try:
-                print("[stata-init] find_stata_path...")
                 stata_exec_path, edition = find_stata_path()
-                print(f"[stata-init] find_stata_path -> {stata_exec_path} ({edition})")
             except FileNotFoundError as e:
                 raise RuntimeError(f"Stata binary not found: {e}") from e
             except PermissionError as e:
@@ -71,57 +66,15 @@ class StataClient:
                     f"Stata binary is not executable: {e}. "
                     "Point STATA_PATH directly to the Stata binary (e.g., .../Contents/MacOS/stata-mp)."
                 ) from e
-            logger.info(f"Discovery found Stata at: {stata_exec_path} ({edition})")
             
-            def _config_with_timeout(path_to_try: str, timeout: float = 120.0) -> bool:
-                """Run stata_setup.config with a timeout to avoid hangs during discovery.
+            logger.info(f"Discovery found Stata at: {stata_exec_path} ({edition})")
 
-                Returns True on success, False on timeout, and raises if config throws.
-                """
-                done = threading.Event()
-                err: Optional[Exception] = None
-
-                def _worker():
-                    nonlocal err
-                    try:
-                        stata_setup.config(path_to_try, edition)
-                    except Exception as exc:  # noqa: BLE001
-                        err = exc
-                    finally:
-                        done.set()
-
-                t = threading.Thread(target=_worker, daemon=True)
-                t.start()
-                finished = done.wait(timeout)
-                if not finished:
-                    return False
-                if err:
-                    raise err
-                return True
-
-            def tries_init(path_to_try: str) -> bool:
-                try:
-                    logger.info("Attempting stata_setup.config with: %s", path_to_try)
-                    print(f"[stata-init] trying {path_to_try}", flush=True)
-                    ok = _config_with_timeout(path_to_try)
-                    if not ok:
-                        return False
-                    return True
-                except Exception as e:
-                    logger.warning("Init failed with %s: %s", path_to_try, e)
-                    print(f"[stata-init] init failed for {path_to_try}: {e}")
-                    return False
-
-            success = False
             candidates = []
 
             # Prefer the binary directory first (documented input for stata_setup)
             bin_dir = os.path.dirname(stata_exec_path)
             if bin_dir:
                 candidates.append(bin_dir)
-
-            # Also try the exact binary path as a fallback (Windows sometimes expects it)
-            candidates.append(stata_exec_path)
 
             # 2. App Bundle: .../StataMP.app (macOS only)
             curr = bin_dir
@@ -149,14 +102,14 @@ class StataClient:
                 deduped.append(c)
             candidates = deduped
 
-            print(f"[stata-init] candidates: {candidates}", flush=True)
-            for idx, path in enumerate(candidates):
-                print(f"[stata-init] candidate {idx+1}/{len(candidates)}: {path}", flush=True)
-                if tries_init(path):
+            success = False
+            for path in candidates:
+                try:
+                    stata_setup.config(path, edition)
                     success = True
-                    print(f"[stata-init] candidate {path} succeeded", flush=True)
                     break
-                print(f"[stata-init] candidate {path} failed/timeout", flush=True)
+                except Exception:
+                    continue
 
             if not success:
                 raise RuntimeError(
@@ -167,12 +120,9 @@ class StataClient:
             # Cache the binary path for later use (e.g., PNG export on Windows)
             self._stata_exec_path = os.path.abspath(stata_exec_path)
 
-            print("[stata-init] importing pystata.stata", flush=True)
             from pystata import stata  # type: ignore[import-not-found]
-            print("[stata-init] imported pystata.stata", flush=True)
             self.stata = stata
             self._initialized = True
-            print("[stata-init] initialization complete", flush=True)
 
         except ImportError:
             # Fallback for when stata_setup isn't in PYTHONPATH yet?

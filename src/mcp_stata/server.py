@@ -11,11 +11,11 @@ import logging
 import json
 import os
 
-LOG_LEVEL = os.getenv("STATA_MCP_LOGLEVEL", "INFO").upper()
+LOG_LEVEL = os.getenv("MCP_STATA_LOGLEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
 # Initialize FastMCP
-mcp = FastMCP("stata")
+mcp = FastMCP("mcp_stata")
 client = StataClient()
 
 @mcp.tool()
@@ -169,9 +169,9 @@ def get_metadata() -> str:
     return client.run_command("describe")
 
 @mcp.resource("stata://graphs/list")
-def get_graph_list() -> str:
-    """Returns list of active graphs."""
-    return client.list_graphs_structured().model_dump_json(indent=2)
+def list_graphs_resource() -> str:
+    """Resource wrapper for the graph list (uses tool list_graphs)."""
+    return list_graphs()
 
 @mcp.tool()
 def get_variable_list() -> str:
@@ -202,6 +202,18 @@ def export_graphs_all() -> str:
     return exports.model_dump_json(indent=2)
 
 def main():
+    # On Windows, Stata automation relies on COM, which is sensitive to threading models.
+    # The FastMCP server executes tool calls in a thread pool. If Stata is initialized
+    # lazily inside a worker thread, it may fail or hang due to COM/UI limitations.
+    # We explicitly initialize Stata here on the main thread to ensure the COM server
+    # is properly registered and accessible.
+    if os.name == "nt":
+        try:
+            client.init()
+        except Exception as e:
+            # Log error but let the server start; specific tools will fail gracefully later
+            logging.error(f"Stata initialization failed: {e}")
+
     mcp.run()
 
 if __name__ == "__main__":

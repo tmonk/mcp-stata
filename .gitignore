@@ -11,3 +11,4 @@ py.typed
 .cursor
 .vscode
 .gemini
+.claude

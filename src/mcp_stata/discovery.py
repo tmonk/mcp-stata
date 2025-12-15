@@ -23,7 +23,8 @@ def _is_executable(path: str, system: str) -> bool:
     if not os.path.exists(path):
         return False
     if system == "Windows":
-        return os.path.isfile(path)
+        # On Windows, check if it's a file and has .exe extension
+        return os.path.isfile(path) and path.lower().endswith('.exe')
     return os.access(path, os.X_OK)
 
 
@@ -220,10 +221,10 @@ def main() -> int:
     """CLI helper to print discovered Stata binary and edition."""
     try:
         path, edition = find_stata_path()
-        print(f"Stata executable: {path}\nEdition: {edition}")
+        logger.info(f"Stata executable: {path}\nEdition: {edition}")
         return 0
     except Exception as exc:  # pragma: no cover - exercised via tests with env
-        print(f"Discovery failed: {exc}")
+        logger.info(f"Discovery failed: {exc}")
         return 1
 
 
