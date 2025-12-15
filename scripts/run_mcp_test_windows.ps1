@@ -78,6 +78,6 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-'@ | Set-Content -Encoding UTF8 .\mcp_list_tools_and_graphs.py
+'@ | Set-Content -Encoding UTF8 ./scripts/mcp_list_tools_and_graphs.py
 
-uv run python .\mcp_list_tools_and_graphs.py
+uv run python ./scripts/mcp_list_tools_and_graphs.py
