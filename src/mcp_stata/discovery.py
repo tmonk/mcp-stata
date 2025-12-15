@@ -221,10 +221,11 @@ def main() -> int:
     """CLI helper to print discovered Stata binary and edition."""
     try:
         path, edition = find_stata_path()
-        logger.info(f"Stata executable: {path}\nEdition: {edition}")
+        # Print so CLI users and tests see the output on stdout.
+        print(f"Stata executable: {path}\nEdition: {edition}")
         return 0
     except Exception as exc:  # pragma: no cover - exercised via tests with env
-        logger.info(f"Discovery failed: {exc}")
+        print(f"Discovery failed: {exc}")
         return 1
 
 
