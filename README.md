@@ -208,3 +208,7 @@ See the LICENSE file for the full text.
 ## Logging
 
 Set `STATA_MCP_LOGLEVEL` (e.g., `DEBUG`, `INFO`) to control server logging. Logs include discovery details (edition/path) and command-init traces for easier troubleshooting.
+
+## Development
+uv sync --no-install-project
+uv sync --extra dev --no-install-project

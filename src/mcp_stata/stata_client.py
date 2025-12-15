@@ -4,6 +4,7 @@ import json
 import re
 import base64
 import logging
+import subprocess
 import threading
 import time
 from io import StringIO
@@ -55,11 +56,14 @@ class StataClient:
             return
 
         try:
-            # 1. Setup config
-            # 1. Setup config
+            print("[stata-init] import stata_setup..."); logger.info("Importing stata_setup")
             import stata_setup
+            print("[stata-init] import stata_setup done")
+
             try:
+                print("[stata-init] find_stata_path...")
                 stata_exec_path, edition = find_stata_path()
+                print(f"[stata-init] find_stata_path -> {stata_exec_path} ({edition})")
             except FileNotFoundError as e:
                 raise RuntimeError(f"Stata binary not found: {e}") from e
             except PermissionError as e:
@@ -67,48 +71,149 @@ class StataClient:
                     f"Stata binary is not executable: {e}. "
                     "Point STATA_PATH directly to the Stata binary (e.g., .../Contents/MacOS/stata-mp)."
                 ) from e
-            logger.info(f"Discovery found Stata at: {stata_exec_path} ({edition})")
-            
-            # Helper to try init
-            def tries_init(path_to_try):
+            logger.info("Discovery found Stata at: %s (%s)", stata_exec_path, edition)
+            self._stata_exec_path = stata_exec_path
+            self._stata_edition = edition
+
+            def _config_with_timeout(path_to_try: str, timeout: float = 10.0) -> bool:
+                """Run stata_setup.config with a hard timeout guard to avoid hangs."""
+                timeout_env = os.getenv("STATA_SETUP_TIMEOUT")
                 try:
-                    logger.info(f"Attempting stata_setup.config with: {path_to_try}")
+                    if timeout_env:
+                        timeout = float(timeout_env)
+                except Exception:
+                    pass
+
+                # Preflight in a separate Python process so we can hard-timeout even if
+                # stata_setup or its native components hang on import/config.
+                preflight_code = (
+                    "import sys; "
+                    "import stata_setup; "
+                    "path=sys.argv[1]; edition=sys.argv[2]; "
+                    "stata_setup.config(path, edition, splash=False); "
+                    "import sfi; "
+                    "print('sfi OK')"
+                )
+                cmd = [sys.executable, "-c", preflight_code, path_to_try, edition]
+
+                logger.info(
+                    "stata_setup.config preflight start path=%s timeout=%.1fs edition=%s",
+                    path_to_try,
+                    timeout,
+                    edition,
+                )
+                print(
+                    f"[stata-init] config preflight path={path_to_try} timeout={timeout}s edition={edition}",
+                    flush=True,
+                )
+
+                try:
+                    completed = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    logger.error("stata_setup.config preflight timed out after %.1fs for %s", timeout, path_to_try)
+                    print(f"[stata-init] timeout after {timeout:.2f}s for {path_to_try}", flush=True)
+                    return False
+
+                if completed.returncode != 0:
+                    err_msg = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
+
+                    if "No module named 'sfi'" in err_msg:
+                        err_msg = (
+                            "PyStata could not import sfi. Update Stata (19 or later) to the 12Nov2025 "
+                            "update or newer so that sfi binaries match this Python. On Windows use Python "
+                            "3.11/3.12, then rerun. Original error: " + err_msg
+                        )
+
+                    logger.warning("stata_setup.config preflight failed for %s: %s", path_to_try, err_msg)
+                    print(f"[stata-init] config preflight failed for {path_to_try}: {err_msg}", flush=True)
+                    raise RuntimeError(err_msg)
+
+                logger.info(
+                    "stata_setup.config start path=%s edition=%s (preflight ok)",
+                    path_to_try,
+                    edition,
+                )
+                print(
+                    f"[stata-init] config start path={path_to_try} edition={edition} (preflight ok)",
+                    flush=True,
+                )
+
+                real_start = time.time()
+                try:
                     stata_setup.config(path_to_try, edition)
+                except Exception as exc:
+                    logger.warning("stata_setup.config raised for %s: %s", path_to_try, exc)
+                    print(f"[stata-init] config failed for {path_to_try}: {exc}", flush=True)
+                    raise
+
+                real_elapsed = time.time() - real_start
+                logger.info("stata_setup.config succeeded for %s in %.2fs", path_to_try, real_elapsed)
+                print(f"[stata-init] config ok for {path_to_try} in {real_elapsed:.2f}s", flush=True)
+                return True
+
+            def tries_init(path_to_try: str) -> bool:
+                try:
+                    logger.info("Attempting stata_setup.config with: %s", path_to_try)
+                    print(f"[stata-init] trying {path_to_try}", flush=True)
+                    ok = _config_with_timeout(path_to_try)
+                    if not ok:
+                        return False
                     return True
                 except Exception as e:
-                    logger.warning(f"Init failed with {path_to_try}: {e}")
+                    logger.warning("Init failed with %s: %s", path_to_try, e)
+                    print(f"[stata-init] init failed for {path_to_try}: {e}")
                     return False
 
             success = False
             candidates = []
-            
-            # 1. Binary Dir: .../Contents/MacOS
+
+            # Prefer the binary directory first (documented input for stata_setup)
             bin_dir = os.path.dirname(stata_exec_path)
+            if bin_dir:
+                candidates.append(bin_dir)
+
+            # Also try the exact binary path as a fallback (Windows sometimes expects it)
+            candidates.append(stata_exec_path)
             
-            # 2. App Bundle: .../StataMP.app
-            # Walk up to find .app
+            # 2. App Bundle: .../StataMP.app (macOS only)
             curr = bin_dir
             app_bundle = None
             while len(curr) > 1:
                 if curr.endswith(".app"):
                     app_bundle = curr
                     break
-                curr = os.path.dirname(curr)
+                parent = os.path.dirname(curr)
+                if parent == curr:  # Reached root directory, prevent infinite loop on Windows
+                    break
+                curr = parent
                 
             if app_bundle:
-                # Priority 1: The installation root (parent of .app)
-                candidates.append(os.path.dirname(app_bundle))
-                
-                # Priority 2: The .app bundle itself
-                candidates.append(app_bundle)
+                candidates.insert(0, os.path.dirname(app_bundle))
+                candidates.insert(1, app_bundle)
             
-            # Priority 3: The binary directory
-            candidates.append(bin_dir)
-            
-            for path in candidates:
+            # Deduplicate preserving order
+            seen = set()
+            deduped = []
+            for c in candidates:
+                if c in seen:
+                    continue
+                seen.add(c)
+                deduped.append(c)
+            candidates = deduped
+
+            print(f"[stata-init] candidates: {candidates}", flush=True)
+            for idx, path in enumerate(candidates):
+                print(f"[stata-init] candidate {idx+1}/{len(candidates)}: {path}", flush=True)
                 if tries_init(path):
                     success = True
+                    print(f"[stata-init] candidate {path} succeeded", flush=True)
                     break
+                print(f"[stata-init] candidate {path} failed/timeout", flush=True)
             
             if not success:
                 raise RuntimeError(
@@ -116,10 +221,12 @@ class StataClient:
                     f"Derived from binary: {stata_exec_path}"
                 )
             
-            # 2. Import pystata
+            print("[stata-init] importing pystata.stata", flush=True)
             from pystata import stata
+            print("[stata-init] imported pystata.stata", flush=True)
             self.stata = stata
             self._initialized = True
+            print("[stata-init] initialization complete", flush=True)
             
         except ImportError:
             # Fallback for when stata_setup isn't in PYTHONPATH yet?
@@ -249,6 +356,51 @@ class StataClient:
             error=error,
         )
 
+    def _exec_no_capture(self, code: str, echo: bool = False, trace: bool = False) -> CommandResponse:
+        """Execute Stata code while leaving stdout/stderr alone.
+
+        PyStata's output bridge uses its own thread and can misbehave on Windows
+        when we redirect stdio (e.g., graph export). This path keeps the normal
+        handlers and just reads rc afterward.
+        """
+        if not self._initialized:
+            self.init()
+
+        exc: Optional[Exception] = None
+        with self._exec_lock:
+            try:
+                if trace:
+                    self.stata.run("set trace on")
+                self.stata.run(code, echo=echo)
+            except Exception as e:
+                exc = e
+            finally:
+                rc = self._read_return_code()
+                if exc is None and (rc is None or rc == -1):
+                    # Normalize spurious rc reads only when missing/invalid
+                    rc = 0
+                if trace:
+                    try:
+                        self.stata.run("set trace off")
+                    except Exception:
+                        pass
+
+        stdout = ""
+        stderr = ""
+        success = rc == 0 and exc is None
+        error = None
+        if not success:
+            error = self._build_error_envelope(code, rc, stdout, stderr, exc, trace)
+
+        return CommandResponse(
+            command=code,
+            rc=rc,
+            stdout=stdout,
+            stderr=None,
+            success=success,
+            error=error,
+        )
+
     def run_command(self, code: str, echo: bool = True) -> str:
         """Runs a Stata command and returns raw output (legacy)."""
         result = self._exec_with_capture(code, echo=echo)
@@ -345,7 +497,12 @@ class StataClient:
         return GraphListResponse(graphs=graphs)
 
     def export_graph(self, graph_name: str = None, filename: str = None, format: str = "pdf") -> str:
-        """Exports graph to a temp file (pdf or png) and returns the path."""
+        """Exports graph to a temp file (pdf or png) and returns the path.
+
+        On Windows, PyStata can crash when exporting PNGs directly. For PNG on
+        Windows, we save the graph to .gph and invoke the Stata executable in
+        batch mode to export the PNG out-of-process.
+        """
         import tempfile
 
         fmt = (format or "pdf").strip().lower()
@@ -363,35 +520,115 @@ class StataClient:
                     os.remove(filename)
                 except Exception:
                     pass
-            
-        cmd = "graph export"
-        if graph_name:
-            cmd += f' "{filename}", name("{graph_name}") replace as({fmt})'
-        else:
-            cmd += f' "{filename}", replace as({fmt})'
-            
-        output = self.run_command(cmd)
-        
-        if os.path.exists(filename):
+
+        # Keep the user-facing path as a normal absolute Windows path
+        user_filename = os.path.abspath(filename)
+
+        if fmt == "png" and os.name == "nt":
+            # 1) Save graph to a .gph file from the embedded session
+            with tempfile.NamedTemporaryFile(prefix="mcp_stata_graph_", suffix=".gph", delete=False) as gph_tmp:
+                gph_path = gph_tmp.name
+            gph_path_for_stata = gph_path.replace("\\", "/")
+            # Make the target graph current, then save without name() (which isn't accepted there)
+            if graph_name:
+                self._exec_no_capture(f'graph display "{graph_name}"', echo=False)
+            save_cmd = f'graph save "{gph_path_for_stata}", replace'
+            save_resp = self._exec_no_capture(save_cmd, echo=False)
+            if not save_resp.success:
+                msg = save_resp.error.message if save_resp.error else f"graph save failed (rc={save_resp.rc})"
+                raise RuntimeError(msg)
+
+            # 2) Prepare a do-file to export PNG externally
+            do_lines = [
+                f'graph use "{gph_path_for_stata}"',
+                f'graph export "{user_filename.replace("\\", "/")}", replace as(png)',
+                "exit",
+            ]
+            with tempfile.NamedTemporaryFile(prefix="mcp_stata_export_", suffix=".do", delete=False, mode="w", encoding="ascii") as do_tmp:
+                do_tmp.write("\n".join(do_lines))
+                do_path = do_tmp.name
+
+            stata_exe = getattr(self, "_stata_exec_path", None)
+            if not stata_exe or not os.path.exists(stata_exe):
+                raise RuntimeError("Stata executable path unavailable for PNG export")
+
+            workdir = os.path.dirname(do_path) or None
+            log_path = os.path.splitext(do_path)[0] + ".log"
+
+            cmd = [stata_exe, "/e", "do", do_path]
             try:
-                size = os.path.getsize(filename)
+                completed = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    cwd=workdir,
+                )
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("External Stata export timed out")
+            finally:
+                try:
+                    os.remove(do_path)
+                except Exception:
+                    pass
+                try:
+                    os.remove(gph_path)
+                except Exception:
+                    pass
+                try:
+                    if os.path.exists(log_path):
+                        os.remove(log_path)
+                except Exception:
+                    pass
+
+            if completed.returncode != 0:
+                err = completed.stderr.strip() or completed.stdout.strip() or str(completed.returncode)
+                raise RuntimeError(f"External Stata export failed: {err}")
+
+        else:
+            # Stata prefers forward slashes in its command parser on Windows
+            filename_for_stata = user_filename.replace("\\", "/")
+                
+            cmd = "graph export"
+            if graph_name:
+                cmd += f' "{filename_for_stata}", name("{graph_name}") replace as({fmt})'
+            else:
+                cmd += f' "{filename_for_stata}", replace as({fmt})'
+                
+            # Avoid stdout/stderr redirection for graph export because PyStata's
+            # output thread can crash on Windows when we swap stdio handles.
+            resp = self._exec_no_capture(cmd, echo=False)
+            if not resp.success:
+                msg = resp.error.message if resp.error else f"graph export failed (rc={resp.rc})"
+                # Retry once after a short pause in case Stata had a transient file handle issue
+                time.sleep(0.2)
+                resp_retry = self._exec_no_capture(cmd, echo=False)
+                if not resp_retry.success:
+                    msg = resp_retry.error.message if resp_retry.error else f"graph export failed (rc={resp_retry.rc})"
+                    raise RuntimeError(msg)
+                resp = resp_retry
+        
+        if os.path.exists(user_filename):
+            try:
+                size = os.path.getsize(user_filename)
                 if size == 0:
-                    raise RuntimeError(f"Graph export failed: produced empty file {filename}")
+                    raise RuntimeError(f"Graph export failed: produced empty file {user_filename}")
                 if size > self.MAX_GRAPH_BYTES:
                     raise RuntimeError(
-                        f"Graph export failed: file too large (> {self.MAX_GRAPH_BYTES} bytes): {filename}"
+                        f"Graph export failed: file too large (> {self.MAX_GRAPH_BYTES} bytes): {user_filename}"
                     )
             except Exception as size_err:
                 # Clean up oversized or unreadable files
                 try:
-                    os.remove(filename)
+                    os.remove(user_filename)
                 except Exception:
                     pass
                 raise size_err
-            return filename
+            return user_filename
             
         # If file missing, it failed. Check output for details.
-        raise RuntimeError(f"Graph export failed: {output}")
+        msg = resp.error.message if resp.error else "graph export failed: file missing"
+        raise RuntimeError(msg)
 
     def get_help(self, topic: str, plain_text: bool = False) -> str:
         """Returns help text as Markdown (default) or plain text."""

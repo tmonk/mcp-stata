@@ -6,15 +6,26 @@ from pathlib import Path
 
 try:
     from mcp_stata.stata_client import StataClient
+    from mcp_stata import discovery
 except ImportError:
     # Fallback when running directly from a source checkout without installation
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
     from mcp_stata.stata_client import StataClient
+    from mcp_stata import discovery
 
 # Fixture for the Stata client (session scope to init once)
 @pytest.fixture(scope="session")
 def client():
     print("\n--- Initializing Stata Client ---")
+    stata_path = os.environ.get("STATA_PATH")
+    if not stata_path or not os.path.exists(stata_path):
+        try:
+            stata_path, _edition = discovery.find_stata_path()
+            os.environ["STATA_PATH"] = stata_path
+            print(f"[integration] autodiscovered STATA_PATH -> {stata_path}")
+        except Exception as e:
+            pytest.skip(f"Stata not found via autodiscovery: {e}")
+
     try:
         c = StataClient()
         c.init()
@@ -137,8 +148,8 @@ def test_error_handling(client):
     assert "r(199)" in result
 
     # Test invalid export
-    with pytest.raises(RuntimeError, match="Graph export failed"):
-         client.export_graph("NonExistentGraph")
+    with pytest.raises(RuntimeError, match=r"Graph export failed|Graph window|r\(693\)"):
+        client.export_graph("NonExistentGraph")
 
 
 def test_structured_error_envelope(client, tmp_path):

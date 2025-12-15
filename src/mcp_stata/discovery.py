@@ -4,9 +4,27 @@ import glob
 import logging
 import shutil
 
-from typing import Tuple, Optional, List
+from typing import Tuple, List
 
 logger = logging.getLogger("mcp_stata.discovery")
+
+
+def _normalize_env_path(raw: str) -> str:
+    """Strip quotes/whitespace and expand variables for STATA_PATH."""
+    cleaned = raw.strip()
+    if (cleaned.startswith("\"") and cleaned.endswith("\"")) or (
+        cleaned.startswith("'") and cleaned.endswith("'")
+    ):
+        cleaned = cleaned[1:-1].strip()
+    return os.path.expandvars(os.path.expanduser(cleaned))
+
+
+def _is_executable(path: str, system: str) -> bool:
+    if not os.path.exists(path):
+        return False
+    if system == "Windows":
+        return os.path.isfile(path)
+    return os.access(path, os.X_OK)
 
 
 def _dedupe_preserve(items: List[tuple]) -> List[tuple]:
@@ -27,9 +45,60 @@ def find_stata_path() -> Tuple[str, str]:
     """
     system = platform.system()
 
-    # 1. Check Environment Variable
+    windows_binaries = [
+        ("StataMP-64.exe", "mp"),
+        ("StataMP.exe", "mp"),
+        ("StataSE-64.exe", "se"),
+        ("StataSE.exe", "se"),
+        ("Stata-64.exe", "be"),
+        ("Stata.exe", "be"),
+    ]
+
+    linux_binaries = [
+        ("stata-mp", "mp"),
+        ("stata-se", "se"),
+        ("stata-ic", "be"),
+        ("stata", "be"),
+        ("xstata-mp", "mp"),
+        ("xstata-se", "se"),
+        ("xstata-ic", "be"),
+        ("xstata", "be"),
+    ]
+
+    # 1. Check Environment Variable (supports quoted values and directory targets)
     if os.environ.get("STATA_PATH"):
-        path = os.environ["STATA_PATH"]
+        raw_path = os.environ["STATA_PATH"]
+        path = _normalize_env_path(raw_path)
+        logger.info("Using STATA_PATH override (normalized): %s", path)
+
+        # If a directory is provided, try standard binaries for the platform
+        if os.path.isdir(path):
+            search_set = []
+            if system == "Windows":
+                search_set = windows_binaries
+            elif system == "Linux":
+                search_set = linux_binaries
+            elif system == "Darwin":
+                search_set = [
+                    ("Contents/MacOS/stata-mp", "mp"),
+                    ("Contents/MacOS/stata-se", "se"),
+                    ("Contents/MacOS/stata", "be"),
+                    ("stata-mp", "mp"),
+                    ("stata-se", "se"),
+                    ("stata", "be"),
+                ]
+
+            for binary, edition in search_set:
+                candidate = os.path.join(path, binary)
+                if _is_executable(candidate, system):
+                    logger.info("Found Stata via STATA_PATH directory: %s (%s)", candidate, edition)
+                    return candidate, edition
+
+            raise FileNotFoundError(
+                f"STATA_PATH points to directory '{path}', but no Stata executable was found within. "
+                "Point STATA_PATH directly to the Stata binary (e.g., C:\\Program Files\\Stata18\\StataMP-64.exe)."
+            )
+
         edition = "be"
         lower_path = path.lower()
         if "mp" in lower_path:
@@ -44,7 +113,7 @@ def find_stata_path() -> Tuple[str, str]:
                 "Update STATA_PATH to your Stata binary (e.g., "
                 "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp or /usr/local/stata18/stata-mp)."
             )
-        if not os.access(path, os.X_OK):
+        if not _is_executable(path, system):
             raise PermissionError(
                 f"STATA_PATH points to '{path}', but it is not executable. "
                 "Ensure this is the Stata binary, not the .app directory."
@@ -84,29 +153,13 @@ def find_stata_path() -> Tuple[str, str]:
 
         for base_dir in base_dirs:
             for stata_dir in glob.glob(os.path.join(base_dir, "Stata*")):
-                for exe, edition in [
-                    ("StataMP-64.exe", "mp"),
-                    ("StataMP.exe", "mp"),
-                    ("StataSE-64.exe", "se"),
-                    ("StataSE.exe", "se"),
-                    ("Stata-64.exe", "be"),
-                    ("Stata.exe", "be"),
-                ]:
+                for exe, edition in windows_binaries:
                     full_path = os.path.join(stata_dir, exe)
                     if os.path.exists(full_path):
                         candidates.append((full_path, edition))
 
     elif system == "Linux":
-        linux_binaries = [
-            ("stata-mp", "mp"),
-            ("stata-se", "se"),
-            ("stata-ic", "be"),
-            ("stata", "be"),
-            ("xstata-mp", "mp"),
-            ("xstata-se", "se"),
-            ("xstata-ic", "be"),
-            ("xstata", "be"),
-        ]
+        home_base = os.environ.get("HOME") or os.path.expanduser("~")
 
         # 2a. Try binaries available on PATH first
         for binary, edition in linux_binaries:
@@ -118,8 +171,8 @@ def find_stata_path() -> Tuple[str, str]:
         linux_roots = [
             "/usr/local",
             "/opt",
-            os.path.expanduser("~/stata"),
-            os.path.expanduser("~/Stata"),
+            os.path.join(home_base, "stata"),
+            os.path.join(home_base, "Stata"),
         ]
 
         for root in linux_roots:
@@ -143,13 +196,15 @@ def find_stata_path() -> Tuple[str, str]:
                         if os.path.exists(full_path):
                             candidates.append((full_path, edition))
 
+                
+
     candidates = _dedupe_preserve(candidates)
 
     for path, edition in candidates:
         if not os.path.exists(path):
             logger.warning("Discovered candidate missing on disk: %s", path)
             continue
-        if not os.access(path, os.X_OK):
+        if not _is_executable(path, system):
             logger.warning("Discovered candidate is not executable: %s", path)
             continue
         logger.info("Auto-discovered Stata at %s (%s)", path, edition)
@@ -160,3 +215,18 @@ def find_stata_path() -> Tuple[str, str]:
         "Set STATA_PATH to your Stata executable (e.g., "
         "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp, /usr/local/stata18/stata-mp, or C:\\Program Files\\Stata18\\StataMP-64.exe)."
     )
+
+
+def main() -> int:
+    """CLI helper to print discovered Stata binary and edition."""
+    try:
+        path, edition = find_stata_path()
+        print(f"Stata executable: {path}\nEdition: {edition}")
+        return 0
+    except Exception as exc:  # pragma: no cover - exercised via tests with env
+        print(f"Discovery failed: {exc}")
+        return 1
+
+
+if __name__ == "__main__":  # pragma: no cover - manual utility
+    raise SystemExit(main())

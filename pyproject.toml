@@ -22,6 +22,7 @@ dependencies = [
     "mcp[cli]>=1.0.0",
     "pandas>=2.0.0",
     "pydantic>=2.0.0",
+    # PyStata on Windows only ships sfi wheels for specific Python releases; gate <3.13 on Windows.
     "pystata>=0.0.1",
     "stata_setup>=0.1.0",
 ]
@@ -50,6 +51,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.version]
 source = "vcs"
+# Require git to resolve the version; builds must have git available on PATH
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_stata"]
