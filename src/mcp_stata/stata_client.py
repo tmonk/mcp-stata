@@ -71,81 +71,12 @@ class StataClient:
                     f"Stata binary is not executable: {e}. "
                     "Point STATA_PATH directly to the Stata binary (e.g., .../Contents/MacOS/stata-mp)."
                 ) from e
-            logger.info("Discovery found Stata at: %s (%s)", stata_exec_path, edition)
-            self._stata_exec_path = stata_exec_path
-            self._stata_edition = edition
-
-            def _config_with_timeout(path_to_try: str, timeout: float = 10.0) -> bool:
-                """Run stata_setup.config with a hard timeout guard to avoid hangs."""
-                timeout_env = os.getenv("STATA_SETUP_TIMEOUT")
+            logger.info(f"Discovery found Stata at: {stata_exec_path} ({edition})")
+            
+            # Helper to try init
+            def tries_init(path_to_try):
                 try:
-                    if timeout_env:
-                        timeout = float(timeout_env)
-                except Exception:
-                    # Ignore errors if STATA_SETUP_TIMEOUT is not set or is invalid; use default timeout.
-                    pass
-
-                # Preflight in a separate Python process so we can hard-timeout even if
-                # stata_setup or its native components hang on import/config.
-                preflight_code = (
-                    "import sys; "
-                    "import stata_setup; "
-                    "path=sys.argv[1]; edition=sys.argv[2]; "
-                    "stata_setup.config(path, edition, splash=False); "
-                    "import sfi; "
-                    "print('sfi OK')"
-                )
-                cmd = [sys.executable, "-c", preflight_code, path_to_try, edition]
-
-                logger.info(
-                    "stata_setup.config preflight start path=%s timeout=%.1fs edition=%s",
-                    path_to_try,
-                    timeout,
-                    edition,
-                )
-                print(
-                    f"[stata-init] config preflight path={path_to_try} timeout={timeout}s edition={edition}",
-                    flush=True,
-                )
-
-                try:
-                    completed = subprocess.run(
-                        cmd,
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout,
-                    )
-                except subprocess.TimeoutExpired:
-                    logger.error("stata_setup.config preflight timed out after %.1fs for %s", timeout, path_to_try)
-                    print(f"[stata-init] timeout after {timeout:.2f}s for {path_to_try}", flush=True)
-                    return False
-
-                if completed.returncode != 0:
-                    err_msg = completed.stderr.strip() or completed.stdout.strip() or "unknown error"
-
-                    if "No module named 'sfi'" in err_msg:
-                        err_msg = (
-                            "PyStata could not import sfi. Update Stata (19 or later) to the 12Nov2025 "
-                            "update or newer so that sfi binaries match this Python. On Windows use Python "
-                            "3.11/3.12, then rerun. Original error: " + err_msg
-                        )
-
-                    logger.warning("stata_setup.config preflight failed for %s: %s", path_to_try, err_msg)
-                    print(f"[stata-init] config preflight failed for {path_to_try}: {err_msg}", flush=True)
-                    raise RuntimeError(err_msg)
-
-                logger.info(
-                    "stata_setup.config start path=%s edition=%s (preflight ok)",
-                    path_to_try,
-                    edition,
-                )
-                print(
-                    f"[stata-init] config start path={path_to_try} edition={edition} (preflight ok)",
-                    flush=True,
-                )
-
-                real_start = time.time()
-                try:
+                    logger.info(f"Attempting stata_setup.config with: {path_to_try}")
                     stata_setup.config(path_to_try, edition)
                 except Exception as exc:
                     logger.warning("stata_setup.config raised for %s: %s", path_to_try, exc)
