@@ -382,8 +382,8 @@ class StataClient:
                 if trace:
                     try:
                         self.stata.run("set trace off")
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("Failed to turn off Stata trace mode: %s", e)
 
         stdout = ""
         stderr = ""
