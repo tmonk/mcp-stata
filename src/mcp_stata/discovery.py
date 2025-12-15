@@ -196,7 +196,6 @@ def find_stata_path() -> Tuple[str, str]:
                         if os.path.exists(full_path):
                             candidates.append((full_path, edition))
 
-                
 
     candidates = _dedupe_preserve(candidates)
 

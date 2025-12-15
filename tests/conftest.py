@@ -7,7 +7,7 @@ import os
 if os.name == "nt":
     try:
         import _pytest.pathlib as _pl  # type: ignore
-    except Exception:
+    except ImportError:
         _pl = None
 
     if _pl is not None:

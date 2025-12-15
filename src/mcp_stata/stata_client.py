@@ -580,6 +580,7 @@ class StataClient:
                     if os.path.exists(log_path):
                         os.remove(log_path)
                 except Exception:
+                    # Ignore errors during log file cleanup; leftover temp files are not critical
                     pass
 
             if completed.returncode != 0:

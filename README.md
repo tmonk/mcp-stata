@@ -210,5 +210,8 @@ See the LICENSE file for the full text.
 Set `STATA_MCP_LOGLEVEL` (e.g., `DEBUG`, `INFO`) to control server logging. Logs include discovery details (edition/path) and command-init traces for easier troubleshooting.
 
 ## Development
-uv sync --no-install-project
-uv sync --extra dev --no-install-project
+
+To set up the development environment, synchronize dependencies using the following commands:
+
+- `uv sync --no-install-project`: Installs the main dependencies listed in `pyproject.toml` without installing the project itself.
+- `uv sync --extra dev --no-install-project`: Installs the main dependencies plus any additional development dependencies (such as testing or linting tools), again without installing the project itself.

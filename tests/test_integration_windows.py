@@ -87,7 +87,8 @@ def test_windows_end_to_end(monkeypatch, tmp_path):
 
     print("[win-e2e] codebook price")
     codebook = client.codebook("price", trace=True)
-    assert codebook.success or codebook.error is not None
+    if not codebook.success:
+        assert codebook.error is not None
 
     print("[win-e2e] run do-file")
     do_path = tmp_path / "win_e2e.do"
