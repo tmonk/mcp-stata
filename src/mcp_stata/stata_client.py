@@ -73,19 +73,30 @@ class StataClient:
                 ) from e
             logger.info(f"Discovery found Stata at: {stata_exec_path} ({edition})")
             
-            # Helper to try init
-            def tries_init(path_to_try):
-                try:
-                    logger.info(f"Attempting stata_setup.config with: {path_to_try}")
-                    stata_setup.config(path_to_try, edition)
-                except Exception as exc:
-                    logger.warning("stata_setup.config raised for %s: %s", path_to_try, exc)
-                    print(f"[stata-init] config failed for {path_to_try}: {exc}", flush=True)
-                    raise
+            def _config_with_timeout(path_to_try: str, timeout: float = 120.0) -> bool:
+                """Run stata_setup.config with a timeout to avoid hangs during discovery.
 
-                real_elapsed = time.time() - real_start
-                logger.info("stata_setup.config succeeded for %s in %.2fs", path_to_try, real_elapsed)
-                print(f"[stata-init] config ok for {path_to_try} in {real_elapsed:.2f}s", flush=True)
+                Returns True on success, False on timeout, and raises if config throws.
+                """
+                done = threading.Event()
+                err: Optional[Exception] = None
+
+                def _worker():
+                    nonlocal err
+                    try:
+                        stata_setup.config(path_to_try, edition)
+                    except Exception as exc:  # noqa: BLE001
+                        err = exc
+                    finally:
+                        done.set()
+
+                t = threading.Thread(target=_worker, daemon=True)
+                t.start()
+                finished = done.wait(timeout)
+                if not finished:
+                    return False
+                if err:
+                    raise err
                 return True
 
             def tries_init(path_to_try: str) -> bool:
@@ -152,6 +163,9 @@ class StataClient:
                     f"stata_setup.config failed. Tried: {candidates}. "
                     f"Derived from binary: {stata_exec_path}"
                 )
+
+            # Cache the binary path for later use (e.g., PNG export on Windows)
+            self._stata_exec_path = os.path.abspath(stata_exec_path)
 
             print("[stata-init] importing pystata.stata", flush=True)
             from pystata import stata  # type: ignore[import-not-found]
