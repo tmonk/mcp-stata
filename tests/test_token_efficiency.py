@@ -25,6 +25,9 @@ except ImportError:
         run_do_file,
     )
 
+# Mark all tests in this module as requiring Stata
+pytestmark = pytest.mark.requires_stata
+
 
 @pytest.fixture
 def client():

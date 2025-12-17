@@ -20,6 +20,9 @@ from mcp_stata.server import (
     run_do_file,
 )
 
+# Mark all tests in this module as requiring Stata
+pytestmark = pytest.mark.requires_stata
+
 # We can test the tool functions directly since they are just Python functions decorated
 # We assume the singleton client is initialized by the time we import server
 

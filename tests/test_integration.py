@@ -13,6 +13,9 @@ except ImportError:
     from mcp_stata.stata_client import StataClient
     from mcp_stata import discovery
 
+# Mark all tests in this module as requiring Stata
+pytestmark = pytest.mark.requires_stata
+
 # Fixture for the Stata client (session scope to init once)
 @pytest.fixture(scope="session")
 def client():

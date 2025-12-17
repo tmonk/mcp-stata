@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(platform.system() != "Windows", reason="Windows-only integration test")
+pytestmark = [
+    pytest.mark.skipif(platform.system() != "Windows", reason="Windows-only integration test"),
+    pytest.mark.requires_stata
+]
 
 try:
     from mcp_stata.stata_client import StataClient

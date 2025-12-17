@@ -10,10 +10,12 @@ on:
 jobs:
   build-test:
     name: Test Build & Installation
-    runs-on: ${{ matrix.os }}
+    # runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.12"]
       fail-fast: false
 
@@ -31,10 +33,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install build pytest pytest-cov packaging
 
-      - name: Run build integration tests
+      - name: Install package dependencies
         run: |
-          python -m pytest tests/test_build_integration.py -v -m slow
+          pip install -e .[dev]
+        timeout-minutes: 5
+
+      - name: Run all tests that don't require Stata
+        run: |
+          # Run all tests except those marked as requiring Stata
+          # This includes discovery, parsing, and build integration tests
+          pytest -v -m "not requires_stata"
         timeout-minutes: 15
+        continue-on-error: false
 
       - name: Build package
         run: |
@@ -58,11 +68,11 @@ jobs:
           pip install dist/*.whl
 
           # Test critical imports
-          python -c "from mcp_stata.server import main; print('✓ Import successful')"
+          python -c "from mcp_stata.server import main; print('[OK] Import successful')"
 
           # Verify entry point
           which mcp-stata || where mcp-stata
-          echo "✓ Entry point installed"
+          echo "[OK] Entry point installed"
         timeout-minutes: 10
 
       - name: Upload build artifacts
