@@ -29,7 +29,7 @@ jobs:
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install build pytest packaging
+          pip install build pytest pytest-cov packaging
 
       - name: Run build integration tests
         run: |
