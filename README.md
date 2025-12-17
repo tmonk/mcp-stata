@@ -250,3 +250,4 @@ To set up the development environment, synchronize dependencies using the follow
 - `uv sync --extra dev --no-install-project`: Installs the main dependencies plus any additional development dependencies (such as testing or linting tools), again without installing the project itself.
 
 [![MCP Badge](https://lobehub.com/badge/mcp/tmonk-mcp-stata)](https://lobehub.com/mcp/tmonk-mcp-stata)
+[![Tests](https://github.com/tmonk/mcp-stata/actions/workflows/build-test.yml/badge.svg)](https://github.com/tmonk/mcp-stata/actions/workflows/build-test.yml)
