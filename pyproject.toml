@@ -3,7 +3,7 @@ name = "mcp-stata"
 dynamic = ["version"]
 description = " A lightweight Model Context Protocol (MCP) server for Stata. Execute commands, inspect data, retrieve stored results (`r()`/`e()`), and view graphs in your chat interface. Built for economists who want to integrate LLM assistance into their Stata workflow. "
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "AGPL-3.0-or-later"
 authors = [
     { name = "Thomas Monk", email = "t.d.monk@lse.ac.uk" }
@@ -15,8 +15,9 @@ classifiers = [
     "Intended Audience :: Developers",
     "Topic :: Scientific/Engineering :: Information Analysis",
     "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14"
 ]
 dependencies = [
     "mcp[cli]>=1.0.0",
@@ -60,7 +61,7 @@ exclude = ["/tests", "/uv.lock"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
