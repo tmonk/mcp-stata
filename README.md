@@ -203,16 +203,16 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 
 ## Tools Available (from server.py)
 
-* `run_command(code, echo=True, as_json=True, trace=False, raw=False)`: Execute Stata syntax. JSON envelope by default; `raw=True` returns plain stdout/stderr.
-* `load_data(source, clear=True, as_json=True, raw=False)`: Heuristic loader (sysuse/webuse/use/path/URL) with JSON envelope unless `raw=True`.
+* `run_command(code, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None)`: Execute Stata syntax. JSON envelope by default; `raw=True` returns plain stdout/stderr. Use `max_output_lines` to limit output.
+* `load_data(source, clear=True, as_json=True, raw=False, max_output_lines=None)`: Heuristic loader (sysuse/webuse/use/path/URL) with JSON envelope unless `raw=True`. Supports output truncation.
 * `get_data(start=0, count=50)`: View dataset rows (JSON response, capped to 500 rows).
 * `describe()`: View dataset structure via Stata `describe`.
 * `list_graphs()`: See available graphs in memory (JSON list with an `active` flag).
 * `export_graph(graph_name=None, format="pdf")`: Export a graph to a file path (default PDF; use `format="png"` for PNG).
-* `export_graphs_all()`: Export all in-memory graphs as base64-encoded PNGs (JSON response).
+* `export_graphs_all()`: Export all in-memory graphs. Returns file paths by default.
 * `get_help(topic, plain_text=False)`: Markdown-rendered Stata help by default; `plain_text=True` strips formatting.
-* `codebook(variable, as_json=True, trace=False, raw=False)`: Variable-level metadata (JSON envelope by default; supports `trace=True`).
-* `run_do_file(path, echo=True, as_json=True, trace=False, raw=False)`: Execute a .do file with rich error capture (JSON by default).
+* `codebook(variable, as_json=True, trace=False, raw=False, max_output_lines=None)`: Variable-level metadata (JSON envelope by default; supports `trace=True` and output truncation).
+* `run_do_file(path, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None)`: Execute a .do file with rich error capture (JSON by default). Supports output truncation.
 * `get_stored_results()`: Get `r()` and `e()` scalars/macros as JSON.
 * `get_variable_list()`: JSON list of variables and labels.
 
@@ -242,12 +242,25 @@ See the LICENSE file for the full text.
 
 Set `MCP_STATA_LOGLEVEL` (e.g., `DEBUG`, `INFO`) to control server logging. Logs include discovery details (edition/path) and command-init traces for easier troubleshooting.
 
-## Development
+## Development & Contributing
 
-To set up the development environment, synchronize dependencies using the following commands:
+For detailed information on building, testing, and contributing to this project, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-- `uv sync --no-install-project`: Installs the main dependencies listed in `pyproject.toml` without installing the project itself.
-- `uv sync --extra dev --no-install-project`: Installs the main dependencies plus any additional development dependencies (such as testing or linting tools), again without installing the project itself.
+Quick setup:
+
+```bash
+# Install dependencies
+uv sync --extra dev --no-install-project
+
+# Run tests (requires Stata)
+pytest
+
+# Run tests without Stata
+pytest -v -m "not requires_stata"
+
+# Build the package
+python -m build
+```
 
 [![MCP Badge](https://lobehub.com/badge/mcp/tmonk-mcp-stata)](https://lobehub.com/mcp/tmonk-mcp-stata)
 [![Tests](https://github.com/tmonk/mcp-stata/actions/workflows/build-test.yml/badge.svg)](https://github.com/tmonk/mcp-stata/actions/workflows/build-test.yml)
