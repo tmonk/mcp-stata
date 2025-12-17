@@ -223,3 +223,5 @@ To set up the development environment, synchronize dependencies using the follow
 
 - `uv sync --no-install-project`: Installs the main dependencies listed in `pyproject.toml` without installing the project itself.
 - `uv sync --extra dev --no-install-project`: Installs the main dependencies plus any additional development dependencies (such as testing or linting tools), again without installing the project itself.
+
+[![MCP Badge](https://lobehub.com/badge/mcp/tmonk-mcp-stata)](https://lobehub.com/mcp/tmonk-mcp-stata)
