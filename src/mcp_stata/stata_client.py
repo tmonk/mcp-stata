@@ -243,11 +243,12 @@ class StataClient:
             duration * 1000,
             code_preview[:120],
         )
+        # Mutually exclusive - when error, output is in ErrorEnvelope only
         return CommandResponse(
             command=code,
             rc=rc,
-            stdout=stdout,
-            stderr=stderr or None,
+            stdout="" if not success else stdout,
+            stderr=None,
             success=success,
             error=error,
         )
@@ -304,11 +305,35 @@ class StataClient:
             return result.stdout
         if result.error:
             return f"Error executing Stata code (r({result.error.rc})):\n{result.error.message}"
-        return result.stdout or "Unknown Stata error"
+        return "Unknown Stata error"
 
-    def run_command_structured(self, code: str, echo: bool = True, trace: bool = False) -> CommandResponse:
-        """Runs a Stata command and returns a structured envelope."""
-        return self._exec_with_capture(code, echo=echo, trace=trace)
+    def run_command_structured(self, code: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None) -> CommandResponse:
+        """Runs a Stata command and returns a structured envelope.
+
+        Args:
+            code: The Stata command to execute.
+            echo: If True, the command itself is included in the output.
+            trace: If True, enables trace mode for debugging.
+            max_output_lines: If set, truncates stdout to this many lines (token efficiency).
+        """
+        result = self._exec_with_capture(code, echo=echo, trace=trace)
+
+        # Truncate stdout if requested
+        if max_output_lines is not None and result.stdout:
+            lines = result.stdout.splitlines()
+            if len(lines) > max_output_lines:
+                truncated_lines = lines[:max_output_lines]
+                truncated_lines.append(f"\n... (output truncated: showing {max_output_lines} of {len(lines)} lines)")
+                result = CommandResponse(
+                    command=result.command,
+                    rc=result.rc,
+                    stdout="\n".join(truncated_lines),
+                    stderr=result.stderr,
+                    success=result.success,
+                    error=result.error,
+                )
+
+        return result
 
     def get_data(self, start: int = 0, count: int = 50) -> List[Dict[str, Any]]:
         """Returns valid JSON-serializable data."""
@@ -621,21 +646,29 @@ class StataClient:
 
         return results
 
-    def export_graphs_all(self) -> GraphExportResponse:
-        """Exports all graphs to base64-encoded strings."""
+    def export_graphs_all(self, use_base64: bool = False) -> GraphExportResponse:
+        """Exports all graphs to file paths (default) or base64-encoded strings.
+
+        Args:
+            use_base64: If True, returns base64-encoded images. If False (default),
+                       returns file paths to exported PNG files.
+        """
         exports: List[GraphExport] = []
         for name in self.list_graphs():
             try:
                 path = self.export_graph(name, format="png")
-                with open(path, "rb") as f:
-                    b64 = base64.b64encode(f.read()).decode("ascii")
-                exports.append(GraphExport(name=name, image_base64=b64))
+                if use_base64:
+                    with open(path, "rb") as f:
+                        b64 = base64.b64encode(f.read()).decode("ascii")
+                    exports.append(GraphExport(name=name, image_base64=b64))
+                else:
+                    exports.append(GraphExport(name=name, file_path=path))
             except Exception as e:
                 logger.warning("Failed to export graph '%s': %s", name, e)
                 continue
         return GraphExportResponse(graphs=exports)
 
-    def run_do_file(self, path: str, echo: bool = True, trace: bool = False) -> CommandResponse:
+    def run_do_file(self, path: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None) -> CommandResponse:
         if not os.path.exists(path):
             return CommandResponse(
                 command=f'do "{path}"',
@@ -649,9 +682,26 @@ class StataClient:
                     command=path,
                 ),
             )
-        return self._exec_with_capture(f'do "{path}"', echo=echo, trace=trace)
+        result = self._exec_with_capture(f'do "{path}"', echo=echo, trace=trace)
 
-    def load_data(self, source: str, clear: bool = True) -> CommandResponse:
+        # Truncate stdout if requested
+        if max_output_lines is not None and result.stdout:
+            lines = result.stdout.splitlines()
+            if len(lines) > max_output_lines:
+                truncated_lines = lines[:max_output_lines]
+                truncated_lines.append(f"\n... (output truncated: showing {max_output_lines} of {len(lines)} lines)")
+                result = CommandResponse(
+                    command=result.command,
+                    rc=result.rc,
+                    stdout="\n".join(truncated_lines),
+                    stderr=result.stderr,
+                    success=result.success,
+                    error=result.error,
+                )
+
+        return result
+
+    def load_data(self, source: str, clear: bool = True, max_output_lines: Optional[int] = None) -> CommandResponse:
         src = source.strip()
         clear_suffix = ", clear" if clear else ""
 
@@ -666,8 +716,42 @@ class StataClient:
         else:
             cmd = f"sysuse {src}{clear_suffix}"
 
-        return self._exec_with_capture(cmd, echo=True, trace=False)
+        result = self._exec_with_capture(cmd, echo=True, trace=False)
 
-    def codebook(self, varname: str, trace: bool = False) -> CommandResponse:
-        return self._exec_with_capture(f"codebook {varname}", trace=trace)
+        # Truncate stdout if requested
+        if max_output_lines is not None and result.stdout:
+            lines = result.stdout.splitlines()
+            if len(lines) > max_output_lines:
+                truncated_lines = lines[:max_output_lines]
+                truncated_lines.append(f"\n... (output truncated: showing {max_output_lines} of {len(lines)} lines)")
+                result = CommandResponse(
+                    command=result.command,
+                    rc=result.rc,
+                    stdout="\n".join(truncated_lines),
+                    stderr=result.stderr,
+                    success=result.success,
+                    error=result.error,
+                )
+
+        return result
+
+    def codebook(self, varname: str, trace: bool = False, max_output_lines: Optional[int] = None) -> CommandResponse:
+        result = self._exec_with_capture(f"codebook {varname}", trace=trace)
+
+        # Truncate stdout if requested
+        if max_output_lines is not None and result.stdout:
+            lines = result.stdout.splitlines()
+            if len(lines) > max_output_lines:
+                truncated_lines = lines[:max_output_lines]
+                truncated_lines.append(f"\n... (output truncated: showing {max_output_lines} of {len(lines)} lines)")
+                result = CommandResponse(
+                    command=result.command,
+                    rc=result.rc,
+                    stdout="\n".join(truncated_lines),
+                    stderr=result.stderr,
+                    success=result.success,
+                    error=result.error,
+                )
+
+        return result
 
