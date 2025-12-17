@@ -93,10 +93,14 @@ def test_server_tools(init_server):
     cb_resp = json.loads(codebook("price", as_json=True))
     assert cb_resp["rc"] == 0
 
-    # Test export all graphs
+    # Test export all graphs (default: token-efficient file paths)
     all_graphs = json.loads(export_graphs_all())
     assert any(g["name"] == "ServerGraph" for g in all_graphs.get("graphs", []))
-    assert all_graphs["graphs"][0]["image_base64"]
+    assert all_graphs["graphs"][0]["file_path"]
+
+    # Also test base64 export for backward compatibility
+    all_graphs_b64 = json.loads(export_graphs_all(use_base64=True))
+    assert all_graphs_b64["graphs"][0]["image_base64"]
 
     # Test run_do_file success
     from pathlib import Path

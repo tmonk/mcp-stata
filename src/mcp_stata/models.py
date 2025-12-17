@@ -49,7 +49,8 @@ class GraphListResponse(BaseModel):
 
 class GraphExport(BaseModel):
     name: str
-    image_base64: str
+    file_path: Optional[str] = None
+    image_base64: Optional[str] = None
 
 
 class GraphExportResponse(BaseModel):
