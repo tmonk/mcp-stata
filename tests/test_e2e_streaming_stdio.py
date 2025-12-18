@@ -3,6 +3,7 @@ import shutil
 from contextlib import AsyncExitStack
 import sys
 from pathlib import Path
+import sysconfig
 
 import anyio
 import pytest
@@ -16,10 +17,19 @@ pytestmark = [pytest.mark.requires_stata, pytest.mark.integration]
 def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):
     cli = shutil.which("mcp-stata")
     if not cli:
-        exe_dir = Path(sys.executable).resolve().parent
-        candidates = [exe_dir / "mcp-stata"]
+        candidates: list[Path] = []
+
+        scripts_dir = sysconfig.get_path("scripts")
+        if scripts_dir:
+            scripts_path = Path(scripts_dir)
+            if sys.platform == "win32":
+                candidates.append(scripts_path / "mcp-stata.exe")
+            candidates.append(scripts_path / "mcp-stata")
+
+        exe_dir = Path(sys.executable).parent
         if sys.platform == "win32":
-            candidates.insert(0, exe_dir / "mcp-stata.exe")
+            candidates.append(exe_dir / "mcp-stata.exe")
+        candidates.append(exe_dir / "mcp-stata")
 
         for candidate in candidates:
             if candidate.exists():
@@ -55,8 +65,8 @@ def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):
 
             tools = await session.list_tools()
             tool_names = {t.name for t in tools.tools}
-            if "run_do_file_stream" not in tool_names:
-                pytest.skip("Server does not expose run_do_file_stream")
+            if "run_do_file" not in tool_names:
+                pytest.skip("Server does not expose run_do_file")
 
             saw_start = anyio.Event()
             done = anyio.Event()
@@ -74,7 +84,7 @@ def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):
             async def call_tool() -> None:
                 try:
                     result = await session.call_tool(
-                        "run_do_file_stream",
+                        "run_do_file",
                         {
                             "path": str(dofile),
                             "echo": True,

@@ -2,6 +2,7 @@
 import json
 import pytest
 from pathlib import Path
+import anyio
 
 try:
     from mcp_stata.stata_client import StataClient
@@ -27,6 +28,20 @@ except ImportError:
 
 # Mark all tests in this module as requiring Stata
 pytestmark = pytest.mark.requires_stata
+
+
+def _run_command_sync(*args, **kwargs) -> str:
+    async def _main() -> str:
+        return await run_command(*args, **kwargs)
+
+    return anyio.run(_main)
+
+
+def _run_do_file_sync(*args, **kwargs) -> str:
+    async def _main() -> str:
+        return await run_do_file(*args, **kwargs)
+
+    return anyio.run(_main)
 
 
 @pytest.fixture
@@ -193,7 +208,7 @@ class TestJSONCompactness:
 
     def test_run_command_returns_compact_json(self):
         """Server tools should return compact JSON without indentation."""
-        result_str = run_command("display 1+1")
+        result_str = _run_command_sync("display 1+1")
 
         # Parse to ensure it's valid JSON
         result = json.loads(result_str)
@@ -215,8 +230,8 @@ class TestJSONCompactness:
     def test_graph_export_returns_compact_json(self):
         """Graph export should return compact JSON."""
         # Initialize with a graph
-        run_command("sysuse auto, clear")
-        run_command("scatter price mpg, name(CompactTest, replace)")
+        _run_command_sync("sysuse auto, clear")
+        _run_command_sync("scatter price mpg, name(CompactTest, replace)")
 
         result_str = export_graphs_all()
         result = json.loads(result_str)
