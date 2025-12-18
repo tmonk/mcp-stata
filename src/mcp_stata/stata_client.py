@@ -8,7 +8,9 @@ import threading
 import time
 from contextlib import contextmanager
 from io import StringIO
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
+
+import anyio
 
 from .discovery import find_stata_path
 from .models import (
@@ -22,6 +24,7 @@ from .models import (
     VariablesResponse,
 )
 from .smcl.smcl2html import smcl_to_markdown
+from .streaming_io import StreamBuffer, StreamingTeeIO, drain_queue_and_notify
 
 logger = logging.getLogger("mcp_stata")
 
@@ -46,6 +49,15 @@ class StataClient:
         sys.stdout, sys.stderr = out_buf, err_buf
         try:
             yield out_buf, err_buf
+        finally:
+            sys.stdout, sys.stderr = backup_stdout, backup_stderr
+
+    @contextmanager
+    def _redirect_io_streaming(self, out_stream, err_stream):
+        backup_stdout, backup_stderr = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out_stream, err_stream
+        try:
+            yield
         finally:
             sys.stdout, sys.stderr = backup_stdout, backup_stderr
 
@@ -297,6 +309,326 @@ class StataClient:
             success=success,
             error=error,
         )
+
+    async def run_command_streaming(
+        self,
+        code: str,
+        *,
+        notify_log: Callable[[str], Awaitable[None]],
+        notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
+        echo: bool = True,
+        trace: bool = False,
+        max_output_lines: Optional[int] = None,
+        min_interval_ms: int = 200,
+        max_chunk_chars: int = 4000,
+        max_total_chars: int = 2_000_000,
+    ) -> CommandResponse:
+        if not self._initialized:
+            self.init()
+
+        start_time = time.time()
+        exc: Optional[Exception] = None
+
+        import queue
+
+        out_q: queue.Queue = queue.Queue()
+        err_q: queue.Queue = queue.Queue()
+        out_buf = StreamBuffer(max_total_chars=max_total_chars)
+        err_buf = StreamBuffer(max_total_chars=max_total_chars)
+        out_tee = StreamingTeeIO(out_buf, out_q, max_fragment_chars=max_chunk_chars)
+        err_tee = StreamingTeeIO(err_buf, err_q, max_fragment_chars=max_chunk_chars)
+
+        rc = -1
+
+        def _run_blocking() -> None:
+            nonlocal rc, exc
+            with self._exec_lock:
+                with self._redirect_io_streaming(out_tee, err_tee):
+                    try:
+                        if trace:
+                            self.stata.run("set trace on")
+                        self.stata.run(code, echo=echo)
+                    except Exception as e:
+                        exc = e
+                    finally:
+                        rc = self._read_return_code()
+                        if trace:
+                            try:
+                                self.stata.run("set trace off")
+                            except Exception:
+                                pass
+
+        async with anyio.create_task_group() as tg:
+            async def _drain_out() -> None:
+                await drain_queue_and_notify(
+                    out_q,
+                    notify_log,
+                    min_interval_ms=min_interval_ms,
+                    max_chunk_chars=max_chunk_chars,
+                )
+
+            async def _drain_err() -> None:
+                await drain_queue_and_notify(
+                    err_q,
+                    notify_log,
+                    min_interval_ms=min_interval_ms,
+                    max_chunk_chars=max_chunk_chars,
+                )
+
+            tg.start_soon(_drain_out)
+            tg.start_soon(_drain_err)
+
+            if notify_progress is not None:
+                await notify_progress(0, None, "Running Stata command")
+
+            try:
+                await anyio.to_thread.run_sync(_run_blocking)
+            finally:
+                out_tee.close()
+                err_tee.close()
+
+        stdout = out_buf.get_value()
+        stderr = err_buf.get_value()
+
+        if exc is None and (not stderr or not stderr.strip()):
+            rc = 0 if rc is None or rc != 0 else rc
+        success = rc == 0 and exc is None
+        error = None
+        if not success:
+            error = self._build_error_envelope(code, rc, stdout, stderr, exc, trace)
+
+        duration = time.time() - start_time
+        code_preview = code.replace("\n", "\\n")
+        logger.info(
+            "stata.run(stream) rc=%s success=%s trace=%s duration_ms=%.2f code_preview=%s",
+            rc,
+            success,
+            trace,
+            duration * 1000,
+            code_preview[:120],
+        )
+
+        result = CommandResponse(
+            command=code,
+            rc=rc,
+            stdout="" if not success else stdout,
+            stderr=None,
+            success=success,
+            error=error,
+        )
+
+        if max_output_lines is not None and result.stdout:
+            lines = result.stdout.splitlines()
+            if len(lines) > max_output_lines:
+                truncated_lines = lines[:max_output_lines]
+                truncated_lines.append(
+                    f"\n... (output truncated: showing {max_output_lines} of {len(lines)} lines)"
+                )
+                result = CommandResponse(
+                    command=result.command,
+                    rc=result.rc,
+                    stdout="\n".join(truncated_lines),
+                    stderr=result.stderr,
+                    success=result.success,
+                    error=result.error,
+                )
+
+        if notify_progress is not None:
+            await notify_progress(1, 1, "Finished")
+
+        return result
+
+    def _count_do_file_lines(self, path: str) -> int:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except Exception:
+            return 0
+
+        total = 0
+        for line in lines:
+            s = line.strip()
+            if not s:
+                continue
+            if s.startswith("*"):
+                continue
+            if s.startswith("//"):
+                continue
+            total += 1
+        return total
+
+    async def run_do_file_streaming(
+        self,
+        path: str,
+        *,
+        notify_log: Callable[[str], Awaitable[None]],
+        notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
+        echo: bool = True,
+        trace: bool = False,
+        max_output_lines: Optional[int] = None,
+        min_interval_ms: int = 200,
+        max_chunk_chars: int = 4000,
+        max_total_chars: int = 2_000_000,
+    ) -> CommandResponse:
+        if not os.path.exists(path):
+            return CommandResponse(
+                command=f'do "{path}"',
+                rc=601,
+                stdout="",
+                stderr=None,
+                success=False,
+                error=ErrorEnvelope(
+                    message=f"Do-file not found: {path}",
+                    rc=601,
+                    command=path,
+                ),
+            )
+
+        total_lines = self._count_do_file_lines(path)
+        executed_lines = 0
+        last_progress_time = 0.0
+        dot_prompt = re.compile(r"^\.\s+\S")
+
+        async def on_chunk_for_progress(chunk: str) -> None:
+            nonlocal executed_lines, last_progress_time
+            if total_lines <= 0 or notify_progress is None:
+                return
+            for line in chunk.splitlines():
+                if dot_prompt.match(line):
+                    executed_lines += 1
+                    if executed_lines > total_lines:
+                        executed_lines = total_lines
+
+            now = time.monotonic()
+            if executed_lines > 0 and (now - last_progress_time) >= 0.25:
+                last_progress_time = now
+                await notify_progress(
+                    float(executed_lines),
+                    float(total_lines),
+                    f"Executing do-file: {executed_lines}/{total_lines}",
+                )
+
+        if not self._initialized:
+            self.init()
+
+        start_time = time.time()
+        exc: Optional[Exception] = None
+
+        import queue
+
+        out_q: queue.Queue = queue.Queue()
+        err_q: queue.Queue = queue.Queue()
+        out_buf = StreamBuffer(max_total_chars=max_total_chars)
+        err_buf = StreamBuffer(max_total_chars=max_total_chars)
+        out_tee = StreamingTeeIO(out_buf, out_q, max_fragment_chars=max_chunk_chars)
+        err_tee = StreamingTeeIO(err_buf, err_q, max_fragment_chars=max_chunk_chars)
+
+        rc = -1
+        command = f'do "{path}"'
+
+        def _run_blocking() -> None:
+            nonlocal rc, exc
+            with self._exec_lock:
+                with self._redirect_io_streaming(out_tee, err_tee):
+                    try:
+                        if trace:
+                            self.stata.run("set trace on")
+                        self.stata.run(command, echo=echo)
+                    except Exception as e:
+                        exc = e
+                    finally:
+                        rc = self._read_return_code()
+                        if trace:
+                            try:
+                                self.stata.run("set trace off")
+                            except Exception:
+                                pass
+
+        async with anyio.create_task_group() as tg:
+            async def _drain_out() -> None:
+                await drain_queue_and_notify(
+                    out_q,
+                    notify_log,
+                    min_interval_ms=min_interval_ms,
+                    max_chunk_chars=max_chunk_chars,
+                    on_chunk=on_chunk_for_progress,
+                )
+
+            async def _drain_err() -> None:
+                await drain_queue_and_notify(
+                    err_q,
+                    notify_log,
+                    min_interval_ms=min_interval_ms,
+                    max_chunk_chars=max_chunk_chars,
+                )
+
+            tg.start_soon(_drain_out)
+            tg.start_soon(_drain_err)
+
+            if notify_progress is not None:
+                if total_lines > 0:
+                    await notify_progress(0, float(total_lines), f"Executing do-file: 0/{total_lines}")
+                else:
+                    await notify_progress(0, None, "Running do-file")
+
+            try:
+                await anyio.to_thread.run_sync(_run_blocking)
+            finally:
+                out_tee.close()
+                err_tee.close()
+
+        stdout = out_buf.get_value()
+        stderr = err_buf.get_value()
+
+        if exc is None and (not stderr or not stderr.strip()):
+            rc = 0 if rc is None or rc != 0 else rc
+        success = rc == 0 and exc is None
+        error = None
+        if not success:
+            error = self._build_error_envelope(command, rc, stdout, stderr, exc, trace)
+
+        duration = time.time() - start_time
+        logger.info(
+            "stata.run(do stream) rc=%s success=%s trace=%s duration_ms=%.2f path=%s",
+            rc,
+            success,
+            trace,
+            duration * 1000,
+            path,
+        )
+
+        result = CommandResponse(
+            command=command,
+            rc=rc,
+            stdout="" if not success else stdout,
+            stderr=None,
+            success=success,
+            error=error,
+        )
+
+        if max_output_lines is not None and result.stdout:
+            lines = result.stdout.splitlines()
+            if len(lines) > max_output_lines:
+                truncated_lines = lines[:max_output_lines]
+                truncated_lines.append(
+                    f"\n... (output truncated: showing {max_output_lines} of {len(lines)} lines)"
+                )
+                result = CommandResponse(
+                    command=result.command,
+                    rc=result.rc,
+                    stdout="\n".join(truncated_lines),
+                    stderr=result.stderr,
+                    success=result.success,
+                    error=result.error,
+                )
+
+        if notify_progress is not None:
+            if total_lines > 0:
+                await notify_progress(float(total_lines), float(total_lines), f"Executing do-file: {total_lines}/{total_lines}")
+            else:
+                await notify_progress(1, 1, "Finished")
+
+        return result
 
     def run_command(self, code: str, echo: bool = True) -> str:
         """Runs a Stata command and returns raw output (legacy)."""

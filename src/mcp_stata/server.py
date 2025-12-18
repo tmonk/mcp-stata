@@ -1,4 +1,4 @@
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 import mcp.types as types
 from .stata_client import StataClient
 from .models import (
@@ -46,6 +46,61 @@ def run_command(code: str, echo: bool = True, as_json: bool = True, trace: bool 
     if as_json:
         return result.model_dump_json()
     # Default structured string for compatibility when as_json is False but raw is also False
+    return result.model_dump_json()
+
+
+@mcp.tool()
+async def run_command_stream(
+    code: str,
+    ctx: Context,
+    echo: bool = True,
+    as_json: bool = True,
+    trace: bool = False,
+    raw: bool = False,
+    max_output_lines: int = None,
+) -> str:
+    session = ctx.request_context.session if ctx is not None else None
+
+    async def notify_log(text: str) -> None:
+        if session is None:
+            return
+        await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
+
+    progress_token = None
+    if ctx is not None and ctx.request_context.meta is not None:
+        progress_token = ctx.request_context.meta.progressToken
+
+    async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
+        if session is None or progress_token is None:
+            return
+        await session.send_progress_notification(
+            progress_token=progress_token,
+            progress=progress,
+            total=total,
+            message=message,
+            related_request_id=ctx.request_id,
+        )
+
+    result = await client.run_command_streaming(
+        code,
+        notify_log=notify_log,
+        notify_progress=notify_progress if progress_token is not None else None,
+        echo=echo,
+        trace=trace,
+        max_output_lines=max_output_lines,
+    )
+
+    if raw:
+        if result.success:
+            return result.stdout
+        if result.error:
+            msg = result.error.message
+            if result.error.rc is not None:
+                msg = f"{msg}\nrc={result.error.rc}"
+            return msg
+        return result.stdout
+    if as_json:
+        return result.model_dump_json()
     return result.model_dump_json()
 
 @mcp.tool()
@@ -139,6 +194,58 @@ def load_data(source: str, clear: bool = True, as_json: bool = True, raw: bool =
     result = client.load_data(source, clear=clear, max_output_lines=max_output_lines)
     if raw:
         return result.stdout if result.success else (result.error.message if result.error else result.stdout)
+    return result.model_dump_json()
+
+
+@mcp.tool()
+async def run_do_file_stream(
+    path: str,
+    ctx: Context,
+    echo: bool = True,
+    as_json: bool = True,
+    trace: bool = False,
+    raw: bool = False,
+    max_output_lines: int = None,
+) -> str:
+    session = ctx.request_context.session if ctx is not None else None
+
+    async def notify_log(text: str) -> None:
+        if session is None:
+            return
+        await session.send_log_message(
+            level="info",
+            data=text,
+            related_request_id=ctx.request_id,
+        )
+
+    progress_token = None
+    if ctx is not None and ctx.request_context.meta is not None:
+        progress_token = ctx.request_context.meta.progressToken
+
+    async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
+        if session is None or progress_token is None:
+            return
+        await session.send_progress_notification(
+            progress_token=progress_token,
+            progress=progress,
+            total=total,
+            message=message,
+            related_request_id=ctx.request_id,
+        )
+
+    result = await client.run_do_file_streaming(
+        path,
+        notify_log=notify_log,
+        notify_progress=notify_progress if progress_token is not None else None,
+        echo=echo,
+        trace=trace,
+        max_output_lines=max_output_lines,
+    )
+
+    if raw:
+        return result.stdout if result.success else (result.error.message if result.error else result.stdout)
+    if as_json:
+        return result.model_dump_json()
     return result.model_dump_json()
 
 @mcp.tool()
