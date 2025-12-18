@@ -1,6 +1,8 @@
 import os
 import shutil
 from contextlib import AsyncExitStack
+import sys
+from pathlib import Path
 
 import anyio
 import pytest
@@ -14,7 +16,18 @@ pytestmark = [pytest.mark.requires_stata, pytest.mark.integration]
 def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):
     cli = shutil.which("mcp-stata")
     if not cli:
-        pytest.skip("mcp-stata CLI not found on PATH")
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates = [exe_dir / "mcp-stata"]
+        if sys.platform == "win32":
+            candidates.insert(0, exe_dir / "mcp-stata.exe")
+
+        for candidate in candidates:
+            if candidate.exists():
+                cli = str(candidate)
+                break
+
+    if not cli:
+        pytest.skip("mcp-stata CLI not found on PATH or next to the active Python interpreter")
 
     dofile = tmp_path / "mcp_streaming_e2e.do"
     dofile.write_text('display "streaming_start"\n' 'sleep 1000\n' 'display "streaming_end"\n')
