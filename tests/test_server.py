@@ -1,5 +1,6 @@
 import json
 import pytest
+import anyio
 from mcp_stata.server import (
     mcp,
     run_command,
@@ -26,21 +27,38 @@ pytestmark = pytest.mark.requires_stata
 # We can test the tool functions directly since they are just Python functions decorated
 # We assume the singleton client is initialized by the time we import server
 
+def _run_command_sync(*args, **kwargs) -> str:
+    async def _main() -> str:
+        return await run_command(*args, **kwargs)
+
+    return anyio.run(_main)
+
+
+def _run_do_file_sync(*args, **kwargs) -> str:
+    async def _main() -> str:
+        return await run_do_file(*args, **kwargs)
+
+    return anyio.run(_main)
+
 @pytest.fixture(scope="session")
 def init_server():
     # Ensure client init
     # The server module creates 'client = StataClient()' at module level
     # We just need to trigger one init
-    run_command("display 1")
+    _run_command_sync("display 1")
 
 def test_server_tools(init_server):
     # Test run_command tool
-    res = json.loads(run_command("display 5+5"))
+    res = json.loads(_run_command_sync("display 5+5"))
     assert res["rc"] == 0
     assert "10" in res["stdout"]
-    res_struct = json.loads(run_command("display 2+3"))
+    res_struct = json.loads(_run_command_sync("display 2+3"))
     assert res_struct["rc"] == 0
     assert "5" in res_struct["stdout"]
+
+    # Non-streaming path should still work
+    res_nostream = json.loads(_run_command_sync("display 1+1", streaming=False))
+    assert res_nostream["rc"] == 0
 
     # list_graphs should work even before any graph exists / prior init
     empty_graphs = json.loads(list_graphs())
@@ -48,7 +66,7 @@ def test_server_tools(init_server):
 
     # Test get_data tool
     # Need data first
-    run_command("sysuse auto, clear")
+    _run_command_sync("sysuse auto, clear")
     data_str = get_data(count=2)
     parsed_data = json.loads(data_str)
     assert parsed_data["data"][0].get("price") is not None
@@ -58,7 +76,7 @@ def test_server_tools(init_server):
     assert "Contains data" in desc or "obs:" in desc
 
     # Test graphs tool
-    run_command("scatter price mpg, name(ServerGraph, replace)")
+    _run_command_sync("scatter price mpg, name(ServerGraph, replace)")
     g_list = json.loads(list_graphs())
     names = [g["name"] for g in g_list["graphs"]]
     assert "ServerGraph" in names
@@ -84,7 +102,7 @@ def test_server_tools(init_server):
     assert "sysuse" in h.lower()
     
     # Test stored results tool
-    run_command("summarize price")
+    _run_command_sync("summarize price")
     res_json = get_stored_results()
     assert "mean" in res_json
 
@@ -110,15 +128,19 @@ def test_server_tools(init_server):
     tmp = Path("tmp_server_test.do")
     tmp.write_text('display "ok"\n')
     try:
-        do_resp = json.loads(run_do_file(str(tmp), as_json=True))
+        do_resp = json.loads(_run_do_file_sync(str(tmp), as_json=True))
         assert do_resp["rc"] == 0
+
+        # Non-streaming do-file path should still work
+        do_resp2 = json.loads(_run_do_file_sync(str(tmp), as_json=True, streaming=False))
+        assert do_resp2["rc"] == 0
     finally:
         if tmp.exists():
             tmp.unlink()
     
 def test_server_resources(init_server):
     # Load data for resources to have content
-    run_command("sysuse auto, clear")
+    _run_command_sync("sysuse auto, clear")
 
     # Test summary resource
     summary = get_summary()
@@ -131,7 +153,7 @@ def test_server_resources(init_server):
 
     # Test graph list resource
     # Ensure a graph exists
-    run_command("scatter price mpg, name(ResourceGraph, replace)")
+    _run_command_sync("scatter price mpg, name(ResourceGraph, replace)")
     g_list = json.loads(list_graphs_resource())
     names = [g["name"] for g in g_list.get("graphs", [])]
     assert "ResourceGraph" in names
@@ -143,6 +165,6 @@ def test_server_resources(init_server):
     assert "price" in names
 
     # Test stored results resource
-    run_command("summarize mpg")
+    _run_command_sync("summarize mpg")
     stored = get_stored_results_resource()
     assert "mean" in stored
