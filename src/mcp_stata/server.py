@@ -32,6 +32,7 @@ async def run_command(
     trace: bool = False,
     raw: bool = False,
     max_output_lines: int = None,
+    cwd: str | None = None,
 ) -> str:
     """
     Executes Stata code.
@@ -87,6 +88,7 @@ async def run_command(
         echo=echo,
         trace=trace,
         max_output_lines=max_output_lines,
+        cwd=cwd,
     )
 
     # Conservative invalidation: arbitrary Stata commands may change data.
@@ -271,6 +273,7 @@ async def run_do_file(
     trace: bool = False,
     raw: bool = False,
     max_output_lines: int = None,
+    cwd: str | None = None,
 ) -> str:
     """
     Executes a .do file.
@@ -323,6 +326,7 @@ async def run_do_file(
         echo=echo,
         trace=trace,
         max_output_lines=max_output_lines,
+        cwd=cwd,
     )
 
     ui_channel.notify_potential_dataset_change()

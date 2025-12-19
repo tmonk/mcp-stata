@@ -169,3 +169,30 @@ def test_server_resources(init_server):
     _run_command_sync("summarize mpg")
     stored = get_stored_results_resource()
     assert "mean" in stored
+
+
+def test_server_tools_with_cwd(tmp_path, init_server):
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    child = project / "child.do"
+    child.write_text('display "child-ok"\n')
+    parent = project / "parent.do"
+    parent.write_text('do "child.do"\ndisplay "parent-ok"\n')
+
+    # run_do_file should resolve relative path via cwd and also allow nested relative do
+    do_resp = json.loads(_run_do_file_sync("parent.do", as_json=True, cwd=str(project)))
+    assert do_resp["rc"] == 0
+    assert do_resp["stdout"] == ""
+    assert do_resp.get("log_path")
+    text = Path(do_resp["log_path"]).read_text(encoding="utf-8", errors="replace")
+    assert "child-ok" in text
+    assert "parent-ok" in text
+
+    # run_command should honor cwd as well
+    cmd_resp = json.loads(_run_command_sync('do "child.do"', as_json=True, cwd=str(project)))
+    assert cmd_resp["rc"] == 0
+    assert cmd_resp["stdout"] == ""
+    assert cmd_resp.get("log_path")
+    text2 = Path(cmd_resp["log_path"]).read_text(encoding="utf-8", errors="replace")
+    assert "child-ok" in text2

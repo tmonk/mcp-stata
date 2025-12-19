@@ -63,6 +63,18 @@ class StataClient:
         finally:
             sys.stdout, sys.stderr = backup_stdout, backup_stderr
 
+    @contextmanager
+    def _temp_cwd(self, cwd: Optional[str]):
+        if cwd is None:
+            yield
+            return
+        prev = os.getcwd()
+        os.chdir(cwd)
+        try:
+            yield
+        finally:
+            os.chdir(prev)
+
     def init(self):
         """Initializes usage of pystata."""
         if self._initialized:
@@ -215,28 +227,43 @@ class StataClient:
             trace=trace or None,
         )
 
-    def _exec_with_capture(self, code: str, echo: bool = True, trace: bool = False) -> CommandResponse:
+    def _exec_with_capture(self, code: str, echo: bool = True, trace: bool = False, cwd: Optional[str] = None) -> CommandResponse:
         """Execute Stata code with stdout/stderr capture and rc detection."""
         if not self._initialized:
             self.init()
 
+        if cwd is not None and not os.path.isdir(cwd):
+            return CommandResponse(
+                command=code,
+                rc=601,
+                stdout="",
+                stderr=None,
+                success=False,
+                error=ErrorEnvelope(
+                    message=f"cwd not found: {cwd}",
+                    rc=601,
+                    command=code,
+                ),
+            )
+
         start_time = time.time()
         exc: Optional[Exception] = None
         with self._exec_lock:
-            with self._redirect_io() as (out_buf, err_buf):
-                try:
-                    if trace:
-                        self.stata.run("set trace on")
-                    self.stata.run(code, echo=echo)
-                except Exception as e:
-                    exc = e
-                finally:
-                    rc = self._read_return_code()
-                    if trace:
-                        try:
-                            self.stata.run("set trace off")
-                        except Exception:
-                            pass
+            with self._temp_cwd(cwd):
+                with self._redirect_io() as (out_buf, err_buf):
+                    try:
+                        if trace:
+                            self.stata.run("set trace on")
+                        self.stata.run(code, echo=echo)
+                    except Exception as e:
+                        exc = e
+                    finally:
+                        rc = self._read_return_code()
+                        if trace:
+                            try:
+                                self.stata.run("set trace off")
+                            except Exception:
+                                pass
 
         stdout = out_buf.getvalue()
         stderr = err_buf.getvalue()
@@ -327,9 +354,24 @@ class StataClient:
         echo: bool = True,
         trace: bool = False,
         max_output_lines: Optional[int] = None,
+        cwd: Optional[str] = None,
     ) -> CommandResponse:
         if not self._initialized:
             self.init()
+
+        if cwd is not None and not os.path.isdir(cwd):
+            return CommandResponse(
+                command=code,
+                rc=601,
+                stdout="",
+                stderr=None,
+                success=False,
+                error=ErrorEnvelope(
+                    message=f"cwd not found: {cwd}",
+                    rc=601,
+                    command=code,
+                ),
+            )
 
         start_time = time.time()
         exc: Optional[Exception] = None
@@ -355,20 +397,21 @@ class StataClient:
         def _run_blocking() -> None:
             nonlocal rc, exc
             with self._exec_lock:
-                with self._redirect_io_streaming(tee, tee):
-                    try:
-                        if trace:
-                            self.stata.run("set trace on")
-                        self.stata.run(code, echo=echo)
-                    except Exception as e:
-                        exc = e
-                    finally:
-                        rc = self._read_return_code()
-                        if trace:
-                            try:
-                                self.stata.run("set trace off")
-                            except Exception:
-                                pass
+                with self._temp_cwd(cwd):
+                    with self._redirect_io_streaming(tee, tee):
+                        try:
+                            if trace:
+                                self.stata.run("set trace on")
+                            self.stata.run(code, echo=echo)
+                        except Exception as e:
+                            exc = e
+                        finally:
+                            rc = self._read_return_code()
+                            if trace:
+                                try:
+                                    self.stata.run("set trace off")
+                                except Exception:
+                                    pass
 
         try:
             if notify_progress is not None:
@@ -465,8 +508,9 @@ class StataClient:
         echo: bool = True,
         trace: bool = False,
         max_output_lines: Optional[int] = None,
+        cwd: Optional[str] = None,
     ) -> CommandResponse:
-        if not os.path.exists(path):
+        if cwd is not None and not os.path.isdir(cwd):
             return CommandResponse(
                 command=f'do "{path}"',
                 rc=601,
@@ -474,13 +518,31 @@ class StataClient:
                 stderr=None,
                 success=False,
                 error=ErrorEnvelope(
-                    message=f"Do-file not found: {path}",
+                    message=f"cwd not found: {cwd}",
                     rc=601,
                     command=path,
                 ),
             )
 
-        total_lines = self._count_do_file_lines(path)
+        effective_path = path
+        if cwd is not None and not os.path.isabs(path):
+            effective_path = os.path.abspath(os.path.join(cwd, path))
+
+        if not os.path.exists(effective_path):
+            return CommandResponse(
+                command=f'do "{effective_path}"',
+                rc=601,
+                stdout="",
+                stderr=None,
+                success=False,
+                error=ErrorEnvelope(
+                    message=f"Do-file not found: {effective_path}",
+                    rc=601,
+                    command=effective_path,
+                ),
+            )
+
+        total_lines = self._count_do_file_lines(effective_path)
         executed_lines = 0
         last_progress_time = 0.0
         dot_prompt = re.compile(r"^\.\s+\S")
@@ -527,25 +589,27 @@ class StataClient:
         await notify_log(json.dumps({"event": "log_path", "path": log_path}))
 
         rc = -1
-        command = f'do "{path}"'
+        path_for_stata = effective_path.replace("\\", "/")
+        command = f'do "{path_for_stata}"'
 
         def _run_blocking() -> None:
             nonlocal rc, exc
             with self._exec_lock:
-                with self._redirect_io_streaming(tee, tee):
-                    try:
-                        if trace:
-                            self.stata.run("set trace on")
-                        self.stata.run(command, echo=echo)
-                    except Exception as e:
-                        exc = e
-                    finally:
-                        rc = self._read_return_code()
-                        if trace:
-                            try:
-                                self.stata.run("set trace off")
-                            except Exception:
-                                pass
+                with self._temp_cwd(cwd):
+                    with self._redirect_io_streaming(tee, tee):
+                        try:
+                            if trace:
+                                self.stata.run("set trace on")
+                            self.stata.run(command, echo=echo)
+                        except Exception as e:
+                            exc = e
+                        finally:
+                            rc = self._read_return_code()
+                            if trace:
+                                try:
+                                    self.stata.run("set trace off")
+                                except Exception:
+                                    pass
 
         done = anyio.Event()
 
@@ -625,7 +689,7 @@ class StataClient:
             success,
             trace,
             duration * 1000,
-            path,
+            effective_path,
         )
 
         result = CommandResponse(
@@ -646,7 +710,7 @@ class StataClient:
 
         return result
 
-    def run_command_structured(self, code: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None) -> CommandResponse:
+    def run_command_structured(self, code: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None, cwd: Optional[str] = None) -> CommandResponse:
         """Runs a Stata command and returns a structured envelope.
 
         Args:
@@ -655,7 +719,7 @@ class StataClient:
             trace: If True, enables trace mode for debugging.
             max_output_lines: If set, truncates stdout to this many lines (token efficiency).
         """
-        result = self._exec_with_capture(code, echo=echo, trace=trace)
+        result = self._exec_with_capture(code, echo=echo, trace=trace, cwd=cwd)
 
         # Truncate stdout if requested
         if max_output_lines is not None and result.stdout:
@@ -1268,8 +1332,8 @@ class StataClient:
                 continue
         return GraphExportResponse(graphs=exports)
 
-    def run_do_file(self, path: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None) -> CommandResponse:
-        if not os.path.exists(path):
+    def run_do_file(self, path: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None, cwd: Optional[str] = None) -> CommandResponse:
+        if cwd is not None and not os.path.isdir(cwd):
             return CommandResponse(
                 command=f'do "{path}"',
                 rc=601,
@@ -1277,9 +1341,27 @@ class StataClient:
                 stderr=None,
                 success=False,
                 error=ErrorEnvelope(
-                    message=f"Do-file not found: {path}",
+                    message=f"cwd not found: {cwd}",
                     rc=601,
                     command=path,
+                ),
+            )
+
+        effective_path = path
+        if cwd is not None and not os.path.isabs(path):
+            effective_path = os.path.abspath(os.path.join(cwd, path))
+
+        if not os.path.exists(effective_path):
+            return CommandResponse(
+                command=f'do "{effective_path}"',
+                rc=601,
+                stdout="",
+                stderr=None,
+                success=False,
+                error=ErrorEnvelope(
+                    message=f"Do-file not found: {effective_path}",
+                    rc=601,
+                    command=effective_path,
                 ),
             )
 
@@ -1288,7 +1370,8 @@ class StataClient:
 
         start_time = time.time()
         exc: Optional[Exception] = None
-        command = f'do "{path}"'
+        path_for_stata = effective_path.replace("\\", "/")
+        command = f'do "{path_for_stata}"'
 
         log_file = tempfile.NamedTemporaryFile(
             prefix="mcp_stata_",
@@ -1306,20 +1389,21 @@ class StataClient:
         rc = -1
 
         with self._exec_lock:
-            with self._redirect_io_streaming(tee, tee):
-                try:
-                    if trace:
-                        self.stata.run("set trace on")
-                    self.stata.run(command, echo=echo)
-                except Exception as e:
-                    exc = e
-                finally:
-                    rc = self._read_return_code()
-                    if trace:
-                        try:
-                            self.stata.run("set trace off")
-                        except Exception:
-                            pass
+            with self._temp_cwd(cwd):
+                with self._redirect_io_streaming(tee, tee):
+                    try:
+                        if trace:
+                            self.stata.run("set trace on")
+                        self.stata.run(command, echo=echo)
+                    except Exception as e:
+                        exc = e
+                    finally:
+                        rc = self._read_return_code()
+                        if trace:
+                            try:
+                                self.stata.run("set trace off")
+                            except Exception:
+                                pass
 
         tee.close()
 
@@ -1364,7 +1448,7 @@ class StataClient:
             success,
             trace,
             duration * 1000,
-            path,
+            effective_path,
         )
 
         return CommandResponse(
