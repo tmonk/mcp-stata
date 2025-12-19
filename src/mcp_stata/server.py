@@ -12,12 +12,16 @@ import logging
 import json
 import os
 
+from .ui_http import UIChannelManager
+
+
 LOG_LEVEL = os.getenv("MCP_STATA_LOGLEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 
 # Initialize FastMCP
 mcp = FastMCP("mcp_stata")
 client = StataClient()
+ui_channel = UIChannelManager(client)
 
 @mcp.tool()
 async def run_command(
@@ -28,18 +32,17 @@ async def run_command(
     trace: bool = False,
     raw: bool = False,
     max_output_lines: int = None,
-    streaming: bool = True,
 ) -> str:
     """
     Executes Stata code.
 
     This is the primary tool for interacting with Stata.
 
-    By default (`streaming=True`), output is streamed to the MCP client as it is produced via
-    `notifications/logMessage`. If the client supplies a progress callback/token, progress
-    updates may also be emitted via `notifications/progress`.
-
-    Set `streaming=False` to fall back to non-streaming capture.
+    Stata output is written to a temporary log file on disk.
+    The server emits a single `notifications/logMessage` event containing the log file path
+    (JSON payload: {"event":"log_path","path":"..."}) so the client can tail it locally.
+    If the client supplies a progress callback/token, progress updates may also be emitted
+    via `notifications/progress`.
 
     Args:
         code: The Stata command(s) to execute (e.g., "sysuse auto", "regress price mpg", "summarize").
@@ -50,81 +53,7 @@ async def run_command(
         raw: If True, return raw output/error message rather than a JSON envelope.
         max_output_lines: If set, truncates stdout to this many lines for token efficiency.
                          Useful for verbose commands (regress, codebook, etc.).
-        streaming: If True (default), stream output via MCP notifications while running.
-    """
-    if streaming:
-        session = ctx.request_context.session if ctx is not None else None
-
-        async def notify_log(text: str) -> None:
-            if session is None:
-                return
-            await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
-
-        progress_token = None
-        if ctx is not None and ctx.request_context.meta is not None:
-            progress_token = ctx.request_context.meta.progressToken
-
-        async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
-            if session is None or progress_token is None:
-                return
-            await session.send_progress_notification(
-                progress_token=progress_token,
-                progress=progress,
-                total=total,
-                message=message,
-                related_request_id=ctx.request_id,
-            )
-
-        async def _noop_log(_text: str) -> None:
-            return
-
-        result = await client.run_command_streaming(
-            code,
-            notify_log=notify_log if session is not None else _noop_log,
-            notify_progress=notify_progress if progress_token is not None else None,
-            echo=echo,
-            trace=trace,
-            max_output_lines=max_output_lines,
-        )
-    else:
-        result = await anyio.to_thread.run_sync(
-            client.run_command_structured,
-            code,
-            echo,
-            trace,
-            max_output_lines,
-        )
-    if raw:
-        if result.success:
-            return result.stdout
-        if result.error:
-            msg = result.error.message
-            if result.error.rc is not None:
-                msg = f"{msg}\nrc={result.error.rc}"
-            return msg
-        return result.stdout
-    if as_json:
-        return result.model_dump_json()
-    # Default structured string for compatibility when as_json is False but raw is also False
-    return result.model_dump_json()
-
-
-@mcp.tool()
-async def run_command_stream(
-    code: str,
-    ctx: Context,
-    echo: bool = True,
-    as_json: bool = True,
-    trace: bool = False,
-    raw: bool = False,
-    max_output_lines: int = None,
-) -> str:
-    """
-    Executes Stata code with streaming output.
-
-    This tool always streams output via MCP `notifications/logMessage` (and may emit
-    `notifications/progress` when the client provides a progress token). It is equivalent to
-    calling `run_command(..., streaming=True)`.
+        Note: This tool always uses log-file streaming semantics; there is no non-streaming mode.
     """
     session = ctx.request_context.session if ctx is not None else None
 
@@ -148,27 +77,61 @@ async def run_command_stream(
             related_request_id=ctx.request_id,
         )
 
+    async def _noop_log(_text: str) -> None:
+        return
+
     result = await client.run_command_streaming(
         code,
-        notify_log=notify_log,
+        notify_log=notify_log if session is not None else _noop_log,
         notify_progress=notify_progress if progress_token is not None else None,
         echo=echo,
         trace=trace,
         max_output_lines=max_output_lines,
     )
 
+    # Conservative invalidation: arbitrary Stata commands may change data.
+    ui_channel.notify_potential_dataset_change()
     if raw:
         if result.success:
-            return result.stdout
+            return result.log_path or ""
         if result.error:
             msg = result.error.message
             if result.error.rc is not None:
                 msg = f"{msg}\nrc={result.error.rc}"
             return msg
-        return result.stdout
+        return result.log_path or ""
     if as_json:
         return result.model_dump_json()
-    return result.model_dump_json()
+
+
+@mcp.tool()
+def read_log(path: str, offset: int = 0, max_bytes: int = 65536) -> str:
+    """Read a slice of a log file.
+
+    Intended for clients that want to display a terminal-like view without pushing MBs of
+    output through MCP log notifications.
+
+    Args:
+        path: Absolute path to the log file previously provided by the server.
+        offset: Byte offset to start reading from.
+        max_bytes: Maximum bytes to read.
+
+    Returns a compact JSON string: {"path":..., "offset":..., "next_offset":..., "data":...}
+    """
+    try:
+        if offset < 0:
+            offset = 0
+        with open(path, "rb") as f:
+            f.seek(offset)
+            data = f.read(max_bytes)
+            next_offset = f.tell()
+        text = data.decode("utf-8", errors="replace")
+        return json.dumps({"path": path, "offset": offset, "next_offset": next_offset, "data": text})
+    except FileNotFoundError:
+        return json.dumps({"path": path, "offset": offset, "next_offset": offset, "data": ""})
+    except Exception as e:
+        return json.dumps({"path": path, "offset": offset, "next_offset": offset, "data": f"ERROR: {e}"})
+
 
 @mcp.tool()
 def get_data(start: int = 0, count: int = 50) -> str:
@@ -185,6 +148,19 @@ def get_data(start: int = 0, count: int = 50) -> str:
     resp = DataResponse(start=start, count=count, data=data)
     return resp.model_dump_json()
 
+
+@mcp.tool()
+def get_ui_channel() -> str:
+    """Return localhost HTTP endpoint + bearer token for the extension UI data plane."""
+    info = ui_channel.get_channel()
+    payload = {
+        "baseUrl": info.base_url,
+        "token": info.token,
+        "expiresAt": info.expires_at,
+        "capabilities": ui_channel.capabilities(),
+    }
+    return json.dumps(payload)
+
 @mcp.tool()
 def describe() -> str:
     """
@@ -192,7 +168,12 @@ def describe() -> str:
 
     Use this to understand the structure of the dataset, variable names, and their formats before running analysis.
     """
-    return client.run_command("describe")
+    result = client.run_command_structured("describe", echo=True)
+    if result.success:
+        return result.stdout
+    if result.error:
+        return result.error.message
+    return ""
 
 @mcp.tool()
 def list_graphs() -> str:
@@ -259,67 +240,9 @@ def load_data(source: str, clear: bool = True, as_json: bool = True, raw: bool =
         max_output_lines: If set, truncates stdout to this many lines for token efficiency.
     """
     result = client.load_data(source, clear=clear, max_output_lines=max_output_lines)
+    ui_channel.notify_potential_dataset_change()
     if raw:
         return result.stdout if result.success else (result.error.message if result.error else result.stdout)
-    return result.model_dump_json()
-
-
-@mcp.tool()
-async def run_do_file_stream(
-    path: str,
-    ctx: Context,
-    echo: bool = True,
-    as_json: bool = True,
-    trace: bool = False,
-    raw: bool = False,
-    max_output_lines: int = None,
-) -> str:
-    """
-    Executes a .do file with streaming output.
-
-    This tool always streams output via MCP `notifications/logMessage` and emits incremental
-    progress via `notifications/progress` when the client provides a progress token.
-    It is equivalent to calling `run_do_file(..., streaming=True)`.
-    """
-    session = ctx.request_context.session if ctx is not None else None
-
-    async def notify_log(text: str) -> None:
-        if session is None:
-            return
-        await session.send_log_message(
-            level="info",
-            data=text,
-            related_request_id=ctx.request_id,
-        )
-
-    progress_token = None
-    if ctx is not None and ctx.request_context.meta is not None:
-        progress_token = ctx.request_context.meta.progressToken
-
-    async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
-        if session is None or progress_token is None:
-            return
-        await session.send_progress_notification(
-            progress_token=progress_token,
-            progress=progress,
-            total=total,
-            message=message,
-            related_request_id=ctx.request_id,
-        )
-
-    result = await client.run_do_file_streaming(
-        path,
-        notify_log=notify_log,
-        notify_progress=notify_progress if progress_token is not None else None,
-        echo=echo,
-        trace=trace,
-        max_output_lines=max_output_lines,
-    )
-
-    if raw:
-        return result.stdout if result.success else (result.error.message if result.error else result.stdout)
-    if as_json:
-        return result.model_dump_json()
     return result.model_dump_json()
 
 @mcp.tool()
@@ -348,16 +271,15 @@ async def run_do_file(
     trace: bool = False,
     raw: bool = False,
     max_output_lines: int = None,
-    streaming: bool = True,
 ) -> str:
     """
     Executes a .do file.
 
-    By default (`streaming=True`), output is streamed to the MCP client as it is produced via
-    `notifications/logMessage`. If the client supplies a progress callback/token, progress
-    updates are emitted via `notifications/progress`.
-
-    Set `streaming=False` to fall back to non-streaming capture.
+    Stata output is written to a temporary log file on disk.
+    The server emits a single `notifications/logMessage` event containing the log file path
+    (JSON payload: {"event":"log_path","path":"..."}) so the client can tail it locally.
+    If the client supplies a progress callback/token, progress updates are emitted via
+    `notifications/progress`.
 
     Args:
         path: Path to the .do file to execute.
@@ -367,53 +289,50 @@ async def run_do_file(
         trace: If True, enables trace mode.
         raw: If True, returns raw output only.
         max_output_lines: If set, truncates stdout to this many lines for token efficiency.
-        streaming: If True (default), stream output via MCP notifications while running.
+        Note: This tool always uses log-file streaming semantics; there is no non-streaming mode.
     """
-    if streaming:
-        session = ctx.request_context.session if ctx is not None else None
+    session = ctx.request_context.session if ctx is not None else None
 
-        async def notify_log(text: str) -> None:
-            if session is None:
-                return
-            await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
-
-        progress_token = None
-        if ctx is not None and ctx.request_context.meta is not None:
-            progress_token = ctx.request_context.meta.progressToken
-
-        async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
-            if session is None or progress_token is None:
-                return
-            await session.send_progress_notification(
-                progress_token=progress_token,
-                progress=progress,
-                total=total,
-                message=message,
-                related_request_id=ctx.request_id,
-            )
-
-        async def _noop_log(_text: str) -> None:
+    async def notify_log(text: str) -> None:
+        if session is None:
             return
+        await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
 
-        result = await client.run_do_file_streaming(
-            path,
-            notify_log=notify_log if session is not None else _noop_log,
-            notify_progress=notify_progress if progress_token is not None else None,
-            echo=echo,
-            trace=trace,
-            max_output_lines=max_output_lines,
+    progress_token = None
+    if ctx is not None and ctx.request_context.meta is not None:
+        progress_token = ctx.request_context.meta.progressToken
+
+    async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
+        if session is None or progress_token is None:
+            return
+        await session.send_progress_notification(
+            progress_token=progress_token,
+            progress=progress,
+            total=total,
+            message=message,
+            related_request_id=ctx.request_id,
         )
-    else:
-        result = await anyio.to_thread.run_sync(
-            client.run_do_file,
-            path,
-            echo,
-            trace,
-            max_output_lines,
-        )
+
+    async def _noop_log(_text: str) -> None:
+        return
+
+    result = await client.run_do_file_streaming(
+        path,
+        notify_log=notify_log if session is not None else _noop_log,
+        notify_progress=notify_progress if progress_token is not None else None,
+        echo=echo,
+        trace=trace,
+        max_output_lines=max_output_lines,
+    )
+
+    ui_channel.notify_potential_dataset_change()
 
     if raw:
-        return result.stdout if result.success else (result.error.message if result.error else result.stdout)
+        if result.success:
+            return result.log_path or ""
+        if result.error:
+            return result.error.message
+        return result.log_path or ""
     return result.model_dump_json()
 
 @mcp.resource("stata://data/summary")
@@ -422,7 +341,12 @@ def get_summary() -> str:
     Returns the output of the `summarize` command for the dataset in memory.
     Provides descriptive statistics (obs, mean, std. dev, min, max) for all variables.
     """
-    return client.run_command("summarize")
+    result = client.run_command_structured("summarize", echo=True)
+    if result.success:
+        return result.stdout
+    if result.error:
+        return result.error.message
+    return ""
 
 @mcp.resource("stata://data/metadata")
 def get_metadata() -> str:
@@ -430,7 +354,12 @@ def get_metadata() -> str:
     Returns the output of the `describe` command.
     Provides metadata about the dataset, including variable names, storage types, display formats, and labels.
     """
-    return client.run_command("describe")
+    result = client.run_command_structured("describe", echo=True)
+    if result.success:
+        return result.stdout
+    if result.error:
+        return result.error.message
+    return ""
 
 @mcp.resource("stata://graphs/list")
 def list_graphs_resource() -> str:

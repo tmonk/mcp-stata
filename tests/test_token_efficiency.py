@@ -81,7 +81,8 @@ class TestMutuallyExclusiveOutput:
 
     def test_error_with_missing_variable(self, client):
         """Test error case with missing variable - output only in ErrorEnvelope."""
-        client.run_command("sysuse auto, clear")
+        s = client.run_command_structured("sysuse auto, clear")
+        assert s.success is True
         result = client.codebook("nonexistent_variable_xyz")
 
         assert result.success is False
@@ -107,8 +108,10 @@ class TestGraphExportTokenEfficiency:
 
     def test_export_graphs_default_returns_file_paths(self, client):
         """Default export_graphs_all() returns file paths, not base64."""
-        client.run_command("sysuse auto, clear")
-        client.run_command("scatter price mpg, name(TestGraph, replace)")
+        s = client.run_command_structured("sysuse auto, clear")
+        assert s.success is True
+        g = client.run_command_structured("scatter price mpg, name(TestGraph, replace)")
+        assert g.success is True
 
         result = client.export_graphs_all()
 
@@ -123,8 +126,10 @@ class TestGraphExportTokenEfficiency:
 
     def test_export_graphs_with_base64_flag(self, client):
         """With use_base64=True, returns base64 data."""
-        client.run_command("sysuse auto, clear")
-        client.run_command("scatter price mpg, name(TestGraph2, replace)")
+        s = client.run_command_structured("sysuse auto, clear")
+        assert s.success is True
+        g = client.run_command_structured("scatter price mpg, name(TestGraph2, replace)")
+        assert g.success is True
 
         result = client.export_graphs_all(use_base64=True)
 
@@ -138,8 +143,10 @@ class TestGraphExportTokenEfficiency:
 
     def test_file_path_much_smaller_than_base64(self, client):
         """File path should be orders of magnitude smaller than base64."""
-        client.run_command("sysuse auto, clear")
-        client.run_command("scatter price mpg, name(TestGraph3, replace)")
+        s = client.run_command_structured("sysuse auto, clear")
+        assert s.success is True
+        g = client.run_command_structured("scatter price mpg, name(TestGraph3, replace)")
+        assert g.success is True
 
         # Get file path version
         result_path = client.export_graphs_all(use_base64=False)
@@ -158,7 +165,8 @@ class TestOutputTruncation:
 
     def test_truncation_with_max_output_lines(self, client):
         """Test that max_output_lines truncates output correctly."""
-        client.run_command("sysuse auto, clear")
+        s = client.run_command_structured("sysuse auto, clear")
+        assert s.success is True
 
         # Get full output
         result_full = client.run_command_structured("describe")
@@ -175,7 +183,8 @@ class TestOutputTruncation:
 
     def test_truncation_with_codebook(self, client):
         """Test truncation with codebook command."""
-        client.run_command("sysuse auto, clear")
+        s = client.run_command_structured("sysuse auto, clear")
+        assert s.success is True
 
         result = client.codebook("price", max_output_lines=3)
         lines = result.stdout.splitlines()
@@ -274,7 +283,8 @@ class TestTokenSavingsIntegration:
         assert "output truncated" in load_result.stdout or len(load_result.stdout.splitlines()) <= 4
 
         # Create graph and export with file path
-        client.run_command("scatter price mpg, name(WorkflowGraph, replace)")
+        g = client.run_command_structured("scatter price mpg, name(WorkflowGraph, replace)")
+        assert g.success
         graph_result = client.export_graphs_all(use_base64=False)
 
         # File path should be tiny
