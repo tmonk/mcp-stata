@@ -37,8 +37,9 @@ def client():
         pytest.skip(f"Stata initialization failed: {e}")
 
 def test_connection_and_math(client):
-    result = client.run_command("display 2+2")
-    assert "4" in result
+    result = client.run_command_structured("display 2+2")
+    assert result.success is True
+    assert "4" in result.stdout
 
 def test_list_graphs_without_prior_init():
     from mcp_stata.stata_client import StataClient
@@ -52,15 +53,19 @@ def test_list_graphs_without_prior_init():
 
 
 def test_export_graph_invalid_format(client):
-    client.run_command("sysuse auto, clear")
-    client.run_command("scatter price mpg, name(BadFmtGraph, replace)")
+    s = client.run_command_structured("sysuse auto, clear")
+    assert s.success is True
+    g = client.run_command_structured("scatter price mpg, name(BadFmtGraph, replace)")
+    assert g.success is True
     with pytest.raises(ValueError, match="Unsupported graph export format"):
         client.export_graph("BadFmtGraph", format="jpg")
 
 
 def test_export_graph_pdf_with_explicit_filename(client, tmp_path):
-    client.run_command("sysuse auto, clear")
-    client.run_command("scatter price mpg, name(PdfGraph, replace)")
+    s = client.run_command_structured("sysuse auto, clear")
+    assert s.success is True
+    g = client.run_command_structured("scatter price mpg, name(PdfGraph, replace)")
+    assert g.success is True
     pdf_path = tmp_path / "explicit.pdf"
     if pdf_path.exists():
         pdf_path.unlink()
@@ -70,7 +75,8 @@ def test_export_graph_pdf_with_explicit_filename(client, tmp_path):
     assert pdf_path.stat().st_size > 0
 
 def test_data_and_variables(client):
-    client.run_command("sysuse auto, clear")
+    s = client.run_command_structured("sysuse auto, clear")
+    assert s.success is True
     
     # Test get_data
     data = client.get_data(count=5)
@@ -88,8 +94,10 @@ def test_data_and_variables(client):
     assert len(details) > 0
 
 def test_graphs(client, tmp_path):
-    client.run_command("sysuse auto, clear")
-    client.run_command("scatter price mpg, name(MyGraph, replace)")
+    s = client.run_command_structured("sysuse auto, clear")
+    assert s.success is True
+    g = client.run_command_structured("scatter price mpg, name(MyGraph, replace)")
+    assert g.success is True
     
     # Test list_graphs
     graphs = client.list_graphs()
@@ -111,8 +119,10 @@ def test_graphs(client, tmp_path):
     assert Path(returned_path).stat().st_size > 0
 
 def test_stored_results(client):
-    client.run_command("sysuse auto, clear")
-    client.run_command("summarize price")
+    s = client.run_command_structured("sysuse auto, clear")
+    assert s.success is True
+    summ = client.run_command_structured("summarize price")
+    assert summ.success is True
     
     results = client.get_stored_results()
     r_results = results.get("r", {})
@@ -129,8 +139,11 @@ def test_help(client):
 
 def test_standard_commands(client):
     """Verifies standard analysis commands like regress conform to expected output."""
-    client.run_command("sysuse auto, clear")
-    out = client.run_command("regress price mpg")
+    s = client.run_command_structured("sysuse auto, clear")
+    assert s.success is True
+    reg = client.run_command_structured("regress price mpg")
+    assert reg.success is True
+    out = reg.stdout
     
     # Check for standard Regression Table parts
     assert "Source" in out
@@ -147,8 +160,10 @@ def test_standard_commands(client):
 
 def test_error_handling(client):
     # Test invalid command
-    result = client.run_command("invalid_command_xyz")
-    assert "r(199)" in result
+    result = client.run_command_structured("invalid_command_xyz")
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.rc == 199 or "r(199)" in (result.error.snippet or "")
 
     # Test invalid export
     with pytest.raises(RuntimeError, match=r"Graph export failed|Graph window|r\(693\)"):
@@ -174,7 +189,8 @@ def test_structured_error_envelope(client, tmp_path):
 
 def test_nested_do_and_program_errors(client, tmp_path):
     # Prepare data
-    client.run_command("sysuse auto, clear")
+    s = client.run_command_structured("sysuse auto, clear")
+    assert s.success is True
 
     # Child do-file with invalid variable to trigger r(111)
     child = tmp_path / "child_bad.do"
@@ -223,7 +239,8 @@ def test_additional_error_cases(client, tmp_path):
     assert missing.error.rc is not None
 
     # codebook on missing variable
-    client.run_command("sysuse auto, clear")
+    s = client.run_command_structured("sysuse auto, clear")
+    assert s.success is True
     cb = client.codebook("definitely_not_a_var", trace=True)
     assert cb.success is False
     assert cb.error is not None
@@ -265,4 +282,7 @@ def test_success_paths(client, tmp_path):
     do_ok = client.run_do_file(str(good_do), trace=True)
     assert do_ok.success is True
     assert do_ok.rc == 0
-    assert "hello ok" in (do_ok.stdout or "") or "hello ok" in (do_ok.error.stdout if do_ok.error else "")
+    assert do_ok.log_path is not None
+    assert Path(do_ok.log_path).exists()
+    log_text = Path(do_ok.log_path).read_text(encoding="utf-8", errors="replace")
+    assert "hello ok" in log_text

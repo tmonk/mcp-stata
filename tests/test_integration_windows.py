@@ -50,7 +50,8 @@ def test_windows_end_to_end(monkeypatch, tmp_path):
     assert res.success
     assert "4" in res.stdout
 
-    client.run_command("sysuse auto, clear")
+    s = client.run_command_structured("sysuse auto, clear")
+    assert s.success
     data = client.get_data(count=3)
     assert len(data) == 3
     assert "price" in data[0]
@@ -65,7 +66,8 @@ def test_windows_end_to_end(monkeypatch, tmp_path):
     assert reg.success
     assert "Number of obs" in reg.stdout
 
-    client.run_command('scatter price mpg, name(WinGraph, replace)')
+    g = client.run_command_structured('scatter price mpg, name(WinGraph, replace)')
+    assert g.success
     graphs = client.list_graphs_structured()
     graph_names = [g.name for g in graphs.graphs]
     assert "WinGraph" in graph_names
@@ -98,5 +100,8 @@ def test_windows_end_to_end(monkeypatch, tmp_path):
     do_path.write_text('display "windows e2e ok"\n')
     do_resp = client.run_do_file(str(do_path))
     assert do_resp.success
-    assert "windows e2e ok" in (do_resp.stdout or "")
+    assert do_resp.log_path is not None
+    assert Path(do_resp.log_path).exists()
+    text = Path(do_resp.log_path).read_text(encoding="utf-8", errors="replace")
+    assert "windows e2e ok" in text
     print("[win-e2e] completed")

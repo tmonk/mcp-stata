@@ -108,6 +108,96 @@ class StreamingTeeIO:
             self._queue.put_nowait(_SENTINEL)
 
 
+class TailBuffer:
+    def __init__(self, *, max_chars: int = 8000):
+        self._lock = threading.Lock()
+        self._parts: list[str] = []
+        self._total = 0
+        self._max_chars = max_chars
+
+    def append(self, data: Any) -> None:
+        text = StreamBuffer._normalize(data)
+        if not text:
+            return
+
+        with self._lock:
+            self._parts.append(text)
+            self._total += len(text)
+
+            if self._total <= self._max_chars:
+                return
+
+            # Trim from the left until we are within budget.
+            over = self._total - self._max_chars
+            while over > 0 and self._parts:
+                head = self._parts[0]
+                if len(head) <= over:
+                    self._parts.pop(0)
+                    self._total -= len(head)
+                    over = self._total - self._max_chars
+                    continue
+
+                self._parts[0] = head[over:]
+                self._total -= over
+                over = 0
+
+    def get_value(self) -> str:
+        with self._lock:
+            return "".join(self._parts)
+
+
+class FileTeeIO:
+    def __init__(self, file_obj, tail: TailBuffer):
+        self._file = file_obj
+        self._tail = tail
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def write(self, data: Any) -> int:
+        text = StreamBuffer._normalize(data)
+        if not text:
+            return 0
+
+        with self._lock:
+            if self._closed:
+                return len(text)
+
+            self._tail.append(text)
+            self._file.write(text)
+            if "\n" in text:
+                try:
+                    self._file.flush()
+                except Exception:
+                    pass
+            return len(text)
+
+    def flush(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            try:
+                self._file.flush()
+            except Exception:
+                return
+
+    def isatty(self) -> bool:
+        return False
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                self._file.flush()
+            except Exception:
+                pass
+            try:
+                self._file.close()
+            except Exception:
+                pass
+
+
 async def drain_queue_and_notify(
     q: queue.Queue,
     notify_log: Callable[[str], Awaitable[None]],

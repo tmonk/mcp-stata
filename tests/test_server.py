@@ -1,6 +1,7 @@
 import json
 import pytest
 import anyio
+from pathlib import Path
 from mcp_stata.server import (
     mcp,
     run_command,
@@ -51,14 +52,16 @@ def test_server_tools(init_server):
     # Test run_command tool
     res = json.loads(_run_command_sync("display 5+5"))
     assert res["rc"] == 0
-    assert "10" in res["stdout"]
+    assert res["stdout"] == ""
+    assert res.get("log_path")
+    log_text = Path(res["log_path"]).read_text(encoding="utf-8", errors="replace")
+    assert "10" in log_text
     res_struct = json.loads(_run_command_sync("display 2+3"))
     assert res_struct["rc"] == 0
-    assert "5" in res_struct["stdout"]
-
-    # Non-streaming path should still work
-    res_nostream = json.loads(_run_command_sync("display 1+1", streaming=False))
-    assert res_nostream["rc"] == 0
+    assert res_struct["stdout"] == ""
+    assert res_struct.get("log_path")
+    log_text2 = Path(res_struct["log_path"]).read_text(encoding="utf-8", errors="replace")
+    assert "5" in log_text2
 
     # list_graphs should work even before any graph exists / prior init
     empty_graphs = json.loads(list_graphs())
@@ -85,7 +88,6 @@ def test_server_tools(init_server):
     pdf_path = export_graph("ServerGraph")
     assert isinstance(pdf_path, str)
     assert pdf_path.endswith(".pdf")
-    from pathlib import Path
     assert Path(pdf_path).exists()
     assert Path(pdf_path).stat().st_size > 0
     
@@ -124,16 +126,15 @@ def test_server_tools(init_server):
     assert all_graphs_b64["graphs"][0]["image_base64"]
 
     # Test run_do_file success
-    from pathlib import Path
     tmp = Path("tmp_server_test.do")
     tmp.write_text('display "ok"\n')
     try:
         do_resp = json.loads(_run_do_file_sync(str(tmp), as_json=True))
         assert do_resp["rc"] == 0
-
-        # Non-streaming do-file path should still work
-        do_resp2 = json.loads(_run_do_file_sync(str(tmp), as_json=True, streaming=False))
-        assert do_resp2["rc"] == 0
+        assert do_resp["stdout"] == ""
+        assert do_resp.get("log_path")
+        do_log_text = Path(do_resp["log_path"]).read_text(encoding="utf-8", errors="replace")
+        assert "ok" in do_log_text
     finally:
         if tmp.exists():
             tmp.unlink()
@@ -168,3 +169,30 @@ def test_server_resources(init_server):
     _run_command_sync("summarize mpg")
     stored = get_stored_results_resource()
     assert "mean" in stored
+
+
+def test_server_tools_with_cwd(tmp_path, init_server):
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    child = project / "child.do"
+    child.write_text('display "child-ok"\n')
+    parent = project / "parent.do"
+    parent.write_text('do "child.do"\ndisplay "parent-ok"\n')
+
+    # run_do_file should resolve relative path via cwd and also allow nested relative do
+    do_resp = json.loads(_run_do_file_sync("parent.do", as_json=True, cwd=str(project)))
+    assert do_resp["rc"] == 0
+    assert do_resp["stdout"] == ""
+    assert do_resp.get("log_path")
+    text = Path(do_resp["log_path"]).read_text(encoding="utf-8", errors="replace")
+    assert "child-ok" in text
+    assert "parent-ok" in text
+
+    # run_command should honor cwd as well
+    cmd_resp = json.loads(_run_command_sync('do "child.do"', as_json=True, cwd=str(project)))
+    assert cmd_resp["rc"] == 0
+    assert cmd_resp["stdout"] == ""
+    assert cmd_resp.get("log_path")
+    text2 = Path(cmd_resp["log_path"]).read_text(encoding="utf-8", errors="replace")
+    assert "child-ok" in text2

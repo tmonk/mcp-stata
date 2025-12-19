@@ -1,10 +1,12 @@
 import base64
+import json
 import logging
 import os
 import re
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 from contextlib import contextmanager
 from io import StringIO
@@ -24,7 +26,7 @@ from .models import (
     VariablesResponse,
 )
 from .smcl.smcl2html import smcl_to_markdown
-from .streaming_io import StreamBuffer, StreamingTeeIO, drain_queue_and_notify
+from .streaming_io import FileTeeIO, TailBuffer
 
 logger = logging.getLogger("mcp_stata")
 
@@ -60,6 +62,18 @@ class StataClient:
             yield
         finally:
             sys.stdout, sys.stderr = backup_stdout, backup_stderr
+
+    @contextmanager
+    def _temp_cwd(self, cwd: Optional[str]):
+        if cwd is None:
+            yield
+            return
+        prev = os.getcwd()
+        os.chdir(cwd)
+        try:
+            yield
+        finally:
+            os.chdir(prev)
 
     def init(self):
         """Initializes usage of pystata."""
@@ -198,7 +212,7 @@ class StataClient:
     ) -> ErrorEnvelope:
         combined = "\n".join(filter(None, [stdout, stderr, str(exc) if exc else ""])).strip()
         rc_hint = self._parse_rc_from_text(combined) if combined else None
-        rc_final = rc if rc not in (-1, None) else rc_hint
+        rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
         line_no = self._parse_line_from_text(combined) if combined else None
         snippet = combined[-800:] if combined else None
         message = (stderr or (str(exc) if exc else "") or stdout or "Stata error").strip()
@@ -213,33 +227,54 @@ class StataClient:
             trace=trace or None,
         )
 
-    def _exec_with_capture(self, code: str, echo: bool = True, trace: bool = False) -> CommandResponse:
+    def _exec_with_capture(self, code: str, echo: bool = True, trace: bool = False, cwd: Optional[str] = None) -> CommandResponse:
         """Execute Stata code with stdout/stderr capture and rc detection."""
         if not self._initialized:
             self.init()
 
+        if cwd is not None and not os.path.isdir(cwd):
+            return CommandResponse(
+                command=code,
+                rc=601,
+                stdout="",
+                stderr=None,
+                success=False,
+                error=ErrorEnvelope(
+                    message=f"cwd not found: {cwd}",
+                    rc=601,
+                    command=code,
+                ),
+            )
+
         start_time = time.time()
         exc: Optional[Exception] = None
         with self._exec_lock:
-            with self._redirect_io() as (out_buf, err_buf):
-                try:
-                    if trace:
-                        self.stata.run("set trace on")
-                    self.stata.run(code, echo=echo)
-                except Exception as e:
-                    exc = e
-                finally:
-                    rc = self._read_return_code()
-                    if trace:
-                        try:
-                            self.stata.run("set trace off")
-                        except Exception:
-                            pass
+            with self._temp_cwd(cwd):
+                with self._redirect_io() as (out_buf, err_buf):
+                    try:
+                        if trace:
+                            self.stata.run("set trace on")
+                        self.stata.run(code, echo=echo)
+                    except Exception as e:
+                        exc = e
+                    finally:
+                        rc = self._read_return_code()
+                        if trace:
+                            try:
+                                self.stata.run("set trace off")
+                            except Exception:
+                                pass
 
         stdout = out_buf.getvalue()
         stderr = err_buf.getvalue()
-        # If no exception and stderr is empty, treat rc anomalies as success (e.g., spurious rc reads)
-        if exc is None and (not stderr or not stderr.strip()):
+        combined = "\n".join(filter(None, [stdout, stderr, str(exc) if exc else ""])).strip()
+        rc_hint = self._parse_rc_from_text(combined) if combined else None
+        if exc is None and rc_hint is not None and rc_hint != 0:
+            # Prefer r(#) parsed from the current command output when present.
+            rc = rc_hint
+        # If no exception and stderr is empty and no r(#) is present, treat rc anomalies as success
+        # (e.g., stale/spurious c(rc) reads).
+        if exc is None and (not stderr or not stderr.strip()) and rc_hint is None:
             rc = 0 if rc is None or rc != 0 else rc
         success = rc == 0 and exc is None
         error = None
@@ -319,83 +354,105 @@ class StataClient:
         echo: bool = True,
         trace: bool = False,
         max_output_lines: Optional[int] = None,
-        min_interval_ms: int = 200,
-        max_chunk_chars: int = 4000,
-        max_total_chars: int = 2_000_000,
+        cwd: Optional[str] = None,
     ) -> CommandResponse:
         if not self._initialized:
             self.init()
 
+        if cwd is not None and not os.path.isdir(cwd):
+            return CommandResponse(
+                command=code,
+                rc=601,
+                stdout="",
+                stderr=None,
+                success=False,
+                error=ErrorEnvelope(
+                    message=f"cwd not found: {cwd}",
+                    rc=601,
+                    command=code,
+                ),
+            )
+
         start_time = time.time()
         exc: Optional[Exception] = None
 
-        import queue
+        log_file = tempfile.NamedTemporaryFile(
+            prefix="mcp_stata_",
+            suffix=".log",
+            delete=False,
+            mode="w",
+            encoding="utf-8",
+            errors="replace",
+            buffering=1,
+        )
+        log_path = log_file.name
+        tail = TailBuffer(max_chars=8000)
+        tee = FileTeeIO(log_file, tail)
 
-        out_q: queue.Queue = queue.Queue()
-        err_q: queue.Queue = queue.Queue()
-        out_buf = StreamBuffer(max_total_chars=max_total_chars)
-        err_buf = StreamBuffer(max_total_chars=max_total_chars)
-        out_tee = StreamingTeeIO(out_buf, out_q, max_fragment_chars=max_chunk_chars)
-        err_tee = StreamingTeeIO(err_buf, err_q, max_fragment_chars=max_chunk_chars)
+        # Inform the MCP client immediately where to read/tail the output.
+        await notify_log(json.dumps({"event": "log_path", "path": log_path}))
 
         rc = -1
 
         def _run_blocking() -> None:
             nonlocal rc, exc
             with self._exec_lock:
-                with self._redirect_io_streaming(out_tee, err_tee):
-                    try:
-                        if trace:
-                            self.stata.run("set trace on")
-                        self.stata.run(code, echo=echo)
-                    except Exception as e:
-                        exc = e
-                    finally:
-                        rc = self._read_return_code()
-                        if trace:
-                            try:
-                                self.stata.run("set trace off")
-                            except Exception:
-                                pass
+                with self._temp_cwd(cwd):
+                    with self._redirect_io_streaming(tee, tee):
+                        try:
+                            if trace:
+                                self.stata.run("set trace on")
+                            self.stata.run(code, echo=echo)
+                        except Exception as e:
+                            exc = e
+                        finally:
+                            rc = self._read_return_code()
+                            if trace:
+                                try:
+                                    self.stata.run("set trace off")
+                                except Exception:
+                                    pass
 
-        async with anyio.create_task_group() as tg:
-            async def _drain_out() -> None:
-                await drain_queue_and_notify(
-                    out_q,
-                    notify_log,
-                    min_interval_ms=min_interval_ms,
-                    max_chunk_chars=max_chunk_chars,
-                )
-
-            async def _drain_err() -> None:
-                await drain_queue_and_notify(
-                    err_q,
-                    notify_log,
-                    min_interval_ms=min_interval_ms,
-                    max_chunk_chars=max_chunk_chars,
-                )
-
-            tg.start_soon(_drain_out)
-            tg.start_soon(_drain_err)
-
+        try:
             if notify_progress is not None:
                 await notify_progress(0, None, "Running Stata command")
 
-            try:
-                await anyio.to_thread.run_sync(_run_blocking)
-            finally:
-                out_tee.close()
-                err_tee.close()
+            await anyio.to_thread.run_sync(_run_blocking)
+        finally:
+            tee.close()
 
-        stdout = out_buf.get_value()
-        stderr = err_buf.get_value()
-
-        if exc is None and (not stderr or not stderr.strip()):
+        tail_text = tail.get_value()
+        combined = (tail_text or "") + (f"\n{exc}" if exc else "")
+        rc_hint = self._parse_rc_from_text(combined) if combined else None
+        if exc is None and rc_hint is not None and rc_hint != 0:
+            rc = rc_hint
+        if exc is None and rc_hint is None:
             rc = 0 if rc is None or rc != 0 else rc
         success = rc == 0 and exc is None
         error = None
         if not success:
-            error = self._build_error_envelope(code, rc, stdout, stderr, exc, trace)
+            snippet = (tail_text[-800:] if tail_text else None) or (str(exc) if exc else None)
+            rc_hint = self._parse_rc_from_text(combined) if combined else None
+            rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
+            line_no = self._parse_line_from_text(combined) if combined else None
+            message = "Stata error"
+            if tail_text and tail_text.strip():
+                for line in reversed(tail_text.splitlines()):
+                    if line.strip():
+                        message = line.strip()
+                        break
+            elif exc is not None:
+                message = str(exc).strip() or message
+
+            error = ErrorEnvelope(
+                message=message,
+                rc=rc_final,
+                line=line_no,
+                command=code,
+                log_path=log_path,
+                snippet=snippet,
+                trace=trace or None,
+            )
 
         duration = time.time() - start_time
         code_preview = code.replace("\n", "\\n")
@@ -411,27 +468,12 @@ class StataClient:
         result = CommandResponse(
             command=code,
             rc=rc,
-            stdout="" if not success else stdout,
+            stdout="",
             stderr=None,
+            log_path=log_path,
             success=success,
             error=error,
         )
-
-        if max_output_lines is not None and result.stdout:
-            lines = result.stdout.splitlines()
-            if len(lines) > max_output_lines:
-                truncated_lines = lines[:max_output_lines]
-                truncated_lines.append(
-                    f"\n... (output truncated: showing {max_output_lines} of {len(lines)} lines)"
-                )
-                result = CommandResponse(
-                    command=result.command,
-                    rc=result.rc,
-                    stdout="\n".join(truncated_lines),
-                    stderr=result.stderr,
-                    success=result.success,
-                    error=result.error,
-                )
 
         if notify_progress is not None:
             await notify_progress(1, 1, "Finished")
@@ -466,11 +508,9 @@ class StataClient:
         echo: bool = True,
         trace: bool = False,
         max_output_lines: Optional[int] = None,
-        min_interval_ms: int = 200,
-        max_chunk_chars: int = 4000,
-        max_total_chars: int = 2_000_000,
+        cwd: Optional[str] = None,
     ) -> CommandResponse:
-        if not os.path.exists(path):
+        if cwd is not None and not os.path.isdir(cwd):
             return CommandResponse(
                 command=f'do "{path}"',
                 rc=601,
@@ -478,13 +518,31 @@ class StataClient:
                 stderr=None,
                 success=False,
                 error=ErrorEnvelope(
-                    message=f"Do-file not found: {path}",
+                    message=f"cwd not found: {cwd}",
                     rc=601,
                     command=path,
                 ),
             )
 
-        total_lines = self._count_do_file_lines(path)
+        effective_path = path
+        if cwd is not None and not os.path.isabs(path):
+            effective_path = os.path.abspath(os.path.join(cwd, path))
+
+        if not os.path.exists(effective_path):
+            return CommandResponse(
+                command=f'do "{effective_path}"',
+                rc=601,
+                stdout="",
+                stderr=None,
+                success=False,
+                error=ErrorEnvelope(
+                    message=f"Do-file not found: {effective_path}",
+                    rc=601,
+                    command=effective_path,
+                ),
+            )
+
+        total_lines = self._count_do_file_lines(effective_path)
         executed_lines = 0
         last_progress_time = 0.0
         dot_prompt = re.compile(r"^\.\s+\S")
@@ -514,56 +572,70 @@ class StataClient:
         start_time = time.time()
         exc: Optional[Exception] = None
 
-        import queue
+        log_file = tempfile.NamedTemporaryFile(
+            prefix="mcp_stata_",
+            suffix=".log",
+            delete=False,
+            mode="w",
+            encoding="utf-8",
+            errors="replace",
+            buffering=1,
+        )
+        log_path = log_file.name
+        tail = TailBuffer(max_chars=8000)
+        tee = FileTeeIO(log_file, tail)
 
-        out_q: queue.Queue = queue.Queue()
-        err_q: queue.Queue = queue.Queue()
-        out_buf = StreamBuffer(max_total_chars=max_total_chars)
-        err_buf = StreamBuffer(max_total_chars=max_total_chars)
-        out_tee = StreamingTeeIO(out_buf, out_q, max_fragment_chars=max_chunk_chars)
-        err_tee = StreamingTeeIO(err_buf, err_q, max_fragment_chars=max_chunk_chars)
+        # Inform the MCP client immediately where to read/tail the output.
+        await notify_log(json.dumps({"event": "log_path", "path": log_path}))
 
         rc = -1
-        command = f'do "{path}"'
+        path_for_stata = effective_path.replace("\\", "/")
+        command = f'do "{path_for_stata}"'
 
         def _run_blocking() -> None:
             nonlocal rc, exc
             with self._exec_lock:
-                with self._redirect_io_streaming(out_tee, err_tee):
-                    try:
-                        if trace:
-                            self.stata.run("set trace on")
-                        self.stata.run(command, echo=echo)
-                    except Exception as e:
-                        exc = e
-                    finally:
-                        rc = self._read_return_code()
-                        if trace:
-                            try:
-                                self.stata.run("set trace off")
-                            except Exception:
-                                pass
+                with self._temp_cwd(cwd):
+                    with self._redirect_io_streaming(tee, tee):
+                        try:
+                            if trace:
+                                self.stata.run("set trace on")
+                            self.stata.run(command, echo=echo)
+                        except Exception as e:
+                            exc = e
+                        finally:
+                            rc = self._read_return_code()
+                            if trace:
+                                try:
+                                    self.stata.run("set trace off")
+                                except Exception:
+                                    pass
+
+        done = anyio.Event()
+
+        async def _monitor_progress_from_log() -> None:
+            if notify_progress is None or total_lines <= 0:
+                return
+            last_pos = 0
+            try:
+                with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                    while not done.is_set():
+                        f.seek(last_pos)
+                        chunk = f.read()
+                        if chunk:
+                            last_pos = f.tell()
+                            await on_chunk_for_progress(chunk)
+                        await anyio.sleep(0.05)
+
+                    f.seek(last_pos)
+                    chunk = f.read()
+                    if chunk:
+                        await on_chunk_for_progress(chunk)
+            except Exception:
+                return
 
         async with anyio.create_task_group() as tg:
-            async def _drain_out() -> None:
-                await drain_queue_and_notify(
-                    out_q,
-                    notify_log,
-                    min_interval_ms=min_interval_ms,
-                    max_chunk_chars=max_chunk_chars,
-                    on_chunk=on_chunk_for_progress,
-                )
-
-            async def _drain_err() -> None:
-                await drain_queue_and_notify(
-                    err_q,
-                    notify_log,
-                    min_interval_ms=min_interval_ms,
-                    max_chunk_chars=max_chunk_chars,
-                )
-
-            tg.start_soon(_drain_out)
-            tg.start_soon(_drain_err)
+            tg.start_soon(_monitor_progress_from_log)
 
             if notify_progress is not None:
                 if total_lines > 0:
@@ -574,18 +646,41 @@ class StataClient:
             try:
                 await anyio.to_thread.run_sync(_run_blocking)
             finally:
-                out_tee.close()
-                err_tee.close()
+                done.set()
+                tee.close()
 
-        stdout = out_buf.get_value()
-        stderr = err_buf.get_value()
-
-        if exc is None and (not stderr or not stderr.strip()):
+        tail_text = tail.get_value()
+        combined = (tail_text or "") + (f"\n{exc}" if exc else "")
+        rc_hint = self._parse_rc_from_text(combined) if combined else None
+        if exc is None and rc_hint is not None and rc_hint != 0:
+            rc = rc_hint
+        if exc is None and rc_hint is None:
             rc = 0 if rc is None or rc != 0 else rc
         success = rc == 0 and exc is None
         error = None
         if not success:
-            error = self._build_error_envelope(command, rc, stdout, stderr, exc, trace)
+            snippet = (tail_text[-800:] if tail_text else None) or (str(exc) if exc else None)
+            rc_hint = self._parse_rc_from_text(combined) if combined else None
+            rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
+            line_no = self._parse_line_from_text(combined) if combined else None
+            message = "Stata error"
+            if tail_text and tail_text.strip():
+                for line in reversed(tail_text.splitlines()):
+                    if line.strip():
+                        message = line.strip()
+                        break
+            elif exc is not None:
+                message = str(exc).strip() or message
+
+            error = ErrorEnvelope(
+                message=message,
+                rc=rc_final,
+                line=line_no,
+                command=command,
+                log_path=log_path,
+                snippet=snippet,
+                trace=trace or None,
+            )
 
         duration = time.time() - start_time
         logger.info(
@@ -594,33 +689,18 @@ class StataClient:
             success,
             trace,
             duration * 1000,
-            path,
+            effective_path,
         )
 
         result = CommandResponse(
             command=command,
             rc=rc,
-            stdout="" if not success else stdout,
+            stdout="",
             stderr=None,
+            log_path=log_path,
             success=success,
             error=error,
         )
-
-        if max_output_lines is not None and result.stdout:
-            lines = result.stdout.splitlines()
-            if len(lines) > max_output_lines:
-                truncated_lines = lines[:max_output_lines]
-                truncated_lines.append(
-                    f"\n... (output truncated: showing {max_output_lines} of {len(lines)} lines)"
-                )
-                result = CommandResponse(
-                    command=result.command,
-                    rc=result.rc,
-                    stdout="\n".join(truncated_lines),
-                    stderr=result.stderr,
-                    success=result.success,
-                    error=result.error,
-                )
 
         if notify_progress is not None:
             if total_lines > 0:
@@ -630,16 +710,7 @@ class StataClient:
 
         return result
 
-    def run_command(self, code: str, echo: bool = True) -> str:
-        """Runs a Stata command and returns raw output (legacy)."""
-        result = self._exec_with_capture(code, echo=echo)
-        if result.success:
-            return result.stdout
-        if result.error:
-            return f"Error executing Stata code (r({result.error.rc})):\n{result.error.message}"
-        return "Unknown Stata error"
-
-    def run_command_structured(self, code: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None) -> CommandResponse:
+    def run_command_structured(self, code: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None, cwd: Optional[str] = None) -> CommandResponse:
         """Runs a Stata command and returns a structured envelope.
 
         Args:
@@ -648,7 +719,7 @@ class StataClient:
             trace: If True, enables trace mode for debugging.
             max_output_lines: If set, truncates stdout to this many lines (token efficiency).
         """
-        result = self._exec_with_capture(code, echo=echo, trace=trace)
+        result = self._exec_with_capture(code, echo=echo, trace=trace, cwd=cwd)
 
         # Truncate stdout if requested
         if max_output_lines is not None and result.stdout:
@@ -708,9 +779,268 @@ class StataClient:
             })
         return vars_info
 
+    def get_dataset_state(self) -> Dict[str, Any]:
+        """Return basic dataset state without mutating the dataset."""
+        if not self._initialized:
+            self.init()
+
+        from sfi import Data, Macro  # type: ignore[import-not-found]
+
+        n = int(Data.getObsTotal())
+        k = int(Data.getVarCount())
+
+        frame = "default"
+        sortlist = ""
+        changed = False
+        try:
+            frame = str(Macro.getCValue("frame") or "default")
+        except Exception:
+            frame = "default"
+        try:
+            sortlist = str(Macro.getCValue("sortlist") or "")
+        except Exception:
+            sortlist = ""
+        try:
+            changed = bool(int(float(Macro.getCValue("changed") or "0")))
+        except Exception:
+            changed = False
+
+        return {"frame": frame, "n": n, "k": k, "sortlist": sortlist, "changed": changed}
+
+    def _require_data_in_memory(self) -> None:
+        state = self.get_dataset_state()
+        if int(state.get("k", 0) or 0) == 0 and int(state.get("n", 0) or 0) == 0:
+            # Stata empty dataset could still have k>0 n==0; treat that as ok.
+            raise RuntimeError("No data in memory")
+
+    def _get_var_index_map(self) -> Dict[str, int]:
+        from sfi import Data  # type: ignore[import-not-found]
+
+        out: Dict[str, int] = {}
+        for i in range(int(Data.getVarCount())):
+            try:
+                out[str(Data.getVarName(i))] = i
+            except Exception:
+                continue
+        return out
+
+    def list_variables_rich(self) -> List[Dict[str, Any]]:
+        """Return variable metadata (name/type/label/format/valueLabel) without modifying the dataset."""
+        if not self._initialized:
+            self.init()
+
+        from sfi import Data  # type: ignore[import-not-found]
+
+        vars_info: List[Dict[str, Any]] = []
+        for i in range(int(Data.getVarCount())):
+            name = str(Data.getVarName(i))
+            label = None
+            fmt = None
+            vtype = None
+            value_label = None
+            try:
+                label = Data.getVarLabel(i)
+            except Exception:
+                label = None
+            try:
+                fmt = Data.getVarFormat(i)
+            except Exception:
+                fmt = None
+            try:
+                vtype = Data.getVarType(i)
+            except Exception:
+                vtype = None
+
+            vars_info.append(
+                {
+                    "name": name,
+                    "type": str(vtype) if vtype is not None else None,
+                    "label": label if label else None,
+                    "format": fmt if fmt else None,
+                    "valueLabel": value_label,
+                }
+            )
+        return vars_info
+
+    @staticmethod
+    def _is_stata_missing(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, float):
+            # Stata missing values typically show up as very large floats via sfi.Data.get
+            return value > 8.0e307
+        return False
+
+    def _normalize_cell(self, value: Any, *, max_chars: int) -> tuple[Any, bool]:
+        if self._is_stata_missing(value):
+            return ".", False
+        if isinstance(value, str):
+            if len(value) > max_chars:
+                return value[:max_chars], True
+            return value, False
+        return value, False
+
+    def get_page(
+        self,
+        *,
+        offset: int,
+        limit: int,
+        vars: List[str],
+        include_obs_no: bool,
+        max_chars: int,
+        obs_indices: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
+        if not self._initialized:
+            self.init()
+
+        from sfi import Data  # type: ignore[import-not-found]
+
+        state = self.get_dataset_state()
+        n = int(state.get("n", 0) or 0)
+        k = int(state.get("k", 0) or 0)
+        if k == 0 and n == 0:
+            raise RuntimeError("No data in memory")
+
+        var_map = self._get_var_index_map()
+        for v in vars:
+            if v not in var_map:
+                raise ValueError(f"Invalid variable: {v}")
+
+        if obs_indices is None:
+            start = offset
+            end = min(offset + limit, n)
+            if start >= n:
+                rows: list[list[Any]] = []
+                returned = 0
+                obs_list: list[int] = []
+            else:
+                obs_list = list(range(start, end))
+                raw_rows = Data.get(var=vars, obs=obs_list)
+                rows = raw_rows
+                returned = len(rows)
+        else:
+            start = offset
+            end = min(offset + limit, len(obs_indices))
+            obs_list = obs_indices[start:end]
+            raw_rows = Data.get(var=vars, obs=obs_list) if obs_list else []
+            rows = raw_rows
+            returned = len(rows)
+
+        out_vars = list(vars)
+        out_rows: list[list[Any]] = []
+        truncated_cells = 0
+
+        if include_obs_no:
+            out_vars = ["_n"] + out_vars
+
+        for idx, raw in enumerate(rows):
+            norm_row: list[Any] = []
+            if include_obs_no:
+                norm_row.append(int(obs_list[idx]) + 1)
+            for cell in raw:
+                norm, truncated = self._normalize_cell(cell, max_chars=max_chars)
+                if truncated:
+                    truncated_cells += 1
+                norm_row.append(norm)
+            out_rows.append(norm_row)
+
+        return {
+            "vars": out_vars,
+            "rows": out_rows,
+            "returned": returned,
+            "truncated_cells": truncated_cells,
+        }
+
+    _FILTER_IDENT = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+
+    def _extract_filter_vars(self, filter_expr: str) -> List[str]:
+        tokens = set(self._FILTER_IDENT.findall(filter_expr or ""))
+        # Exclude python keywords we might inject.
+        exclude = {"and", "or", "not", "True", "False", "None"}
+        var_map = self._get_var_index_map()
+        vars_used = [t for t in tokens if t not in exclude and t in var_map]
+        return sorted(vars_used)
+
+    def _compile_filter_expr(self, filter_expr: str) -> Any:
+        expr = (filter_expr or "").strip()
+        if not expr:
+            raise ValueError("Empty filter")
+
+        # Stata boolean operators.
+        expr = expr.replace("&", " and ").replace("|", " or ")
+
+        # Replace missing literal '.' (but not numeric decimals like 0.5).
+        expr = re.sub(r"(?<![0-9])\.(?![0-9A-Za-z_])", "None", expr)
+
+        try:
+            return compile(expr, "<filterExpr>", "eval")
+        except Exception as e:
+            raise ValueError(f"Invalid filter expression: {e}")
+
+    def validate_filter_expr(self, filter_expr: str) -> None:
+        if not self._initialized:
+            self.init()
+        state = self.get_dataset_state()
+        if int(state.get("k", 0) or 0) == 0 and int(state.get("n", 0) or 0) == 0:
+            raise RuntimeError("No data in memory")
+
+        vars_used = self._extract_filter_vars(filter_expr)
+        if not vars_used:
+            # still allow constant expressions like "1" or "True"
+            self._compile_filter_expr(filter_expr)
+            return
+        self._compile_filter_expr(filter_expr)
+
+    def compute_view_indices(self, filter_expr: str, *, chunk_size: int = 5000) -> List[int]:
+        if not self._initialized:
+            self.init()
+
+        from sfi import Data  # type: ignore[import-not-found]
+
+        state = self.get_dataset_state()
+        n = int(state.get("n", 0) or 0)
+        k = int(state.get("k", 0) or 0)
+        if k == 0 and n == 0:
+            raise RuntimeError("No data in memory")
+
+        vars_used = self._extract_filter_vars(filter_expr)
+        code = self._compile_filter_expr(filter_expr)
+        _ = self._get_var_index_map()
+
+        indices: List[int] = []
+        for start in range(0, n, chunk_size):
+            end = min(start + chunk_size, n)
+            obs_list = list(range(start, end))
+            raw_rows = Data.get(var=vars_used, obs=obs_list) if vars_used else [[None] for _ in obs_list]
+
+            for row_i, obs in enumerate(obs_list):
+                env: Dict[str, Any] = {}
+                if vars_used:
+                    for j, v in enumerate(vars_used):
+                        val = raw_rows[row_i][j]
+                        env[v] = None if self._is_stata_missing(val) else val
+
+                ok = False
+                try:
+                    ok = bool(eval(code, {"__builtins__": {}}, env))
+                except NameError as e:
+                    raise ValueError(f"Invalid filter: {e}")
+                except Exception as e:
+                    raise ValueError(f"Invalid filter: {e}")
+
+                if ok:
+                    indices.append(int(obs))
+
+        return indices
+
     def get_variable_details(self, varname: str) -> str:
         """Returns codebook/summary for a specific variable."""
-        return self.run_command(f"codebook {varname}")
+        resp = self.run_command_structured(f"codebook {varname}", echo=True)
+        if resp.success:
+            return resp.stdout
+        if resp.error:
+            return resp.error.message
+        return ""
 
     def list_variables_structured(self) -> VariablesResponse:
         vars_info: List[VariableInfo] = []
@@ -925,8 +1255,10 @@ class StataClient:
         results = {"r": {}, "e": {}}
 
         # We parse 'return list' output as there is no direct bulk export of stored results
-        raw_r = self.run_command("return list")
-        raw_e = self.run_command("ereturn list")
+        raw_r_resp = self.run_command_structured("return list", echo=True)
+        raw_e_resp = self.run_command_structured("ereturn list", echo=True)
+        raw_r = raw_r_resp.stdout if raw_r_resp.success else (raw_r_resp.error.snippet if raw_r_resp.error else "")
+        raw_e = raw_e_resp.stdout if raw_e_resp.success else (raw_e_resp.error.snippet if raw_e_resp.error else "")
 
         # Simple parser
         def parse_list(text):
@@ -1000,8 +1332,8 @@ class StataClient:
                 continue
         return GraphExportResponse(graphs=exports)
 
-    def run_do_file(self, path: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None) -> CommandResponse:
-        if not os.path.exists(path):
+    def run_do_file(self, path: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None, cwd: Optional[str] = None) -> CommandResponse:
+        if cwd is not None and not os.path.isdir(cwd):
             return CommandResponse(
                 command=f'do "{path}"',
                 rc=601,
@@ -1009,29 +1341,125 @@ class StataClient:
                 stderr=None,
                 success=False,
                 error=ErrorEnvelope(
-                    message=f"Do-file not found: {path}",
+                    message=f"cwd not found: {cwd}",
                     rc=601,
                     command=path,
                 ),
             )
-        result = self._exec_with_capture(f'do "{path}"', echo=echo, trace=trace)
 
-        # Truncate stdout if requested
-        if max_output_lines is not None and result.stdout:
-            lines = result.stdout.splitlines()
-            if len(lines) > max_output_lines:
-                truncated_lines = lines[:max_output_lines]
-                truncated_lines.append(f"\n... (output truncated: showing {max_output_lines} of {len(lines)} lines)")
-                result = CommandResponse(
-                    command=result.command,
-                    rc=result.rc,
-                    stdout="\n".join(truncated_lines),
-                    stderr=result.stderr,
-                    success=result.success,
-                    error=result.error,
-                )
+        effective_path = path
+        if cwd is not None and not os.path.isabs(path):
+            effective_path = os.path.abspath(os.path.join(cwd, path))
 
-        return result
+        if not os.path.exists(effective_path):
+            return CommandResponse(
+                command=f'do "{effective_path}"',
+                rc=601,
+                stdout="",
+                stderr=None,
+                success=False,
+                error=ErrorEnvelope(
+                    message=f"Do-file not found: {effective_path}",
+                    rc=601,
+                    command=effective_path,
+                ),
+            )
+
+        if not self._initialized:
+            self.init()
+
+        start_time = time.time()
+        exc: Optional[Exception] = None
+        path_for_stata = effective_path.replace("\\", "/")
+        command = f'do "{path_for_stata}"'
+
+        log_file = tempfile.NamedTemporaryFile(
+            prefix="mcp_stata_",
+            suffix=".log",
+            delete=False,
+            mode="w",
+            encoding="utf-8",
+            errors="replace",
+            buffering=1,
+        )
+        log_path = log_file.name
+        tail = TailBuffer(max_chars=8000)
+        tee = FileTeeIO(log_file, tail)
+
+        rc = -1
+
+        with self._exec_lock:
+            with self._temp_cwd(cwd):
+                with self._redirect_io_streaming(tee, tee):
+                    try:
+                        if trace:
+                            self.stata.run("set trace on")
+                        self.stata.run(command, echo=echo)
+                    except Exception as e:
+                        exc = e
+                    finally:
+                        rc = self._read_return_code()
+                        if trace:
+                            try:
+                                self.stata.run("set trace off")
+                            except Exception:
+                                pass
+
+        tee.close()
+
+        tail_text = tail.get_value()
+        combined = (tail_text or "") + (f"\n{exc}" if exc else "")
+        rc_hint = self._parse_rc_from_text(combined) if combined else None
+        if exc is None and rc_hint is not None and rc_hint != 0:
+            rc = rc_hint
+        if exc is None and rc_hint is None:
+            rc = 0 if rc is None or rc != 0 else rc
+        success = rc == 0 and exc is None
+
+        error = None
+        if not success:
+            snippet = (tail_text[-800:] if tail_text else None) or (str(exc) if exc else None)
+            rc_hint = self._parse_rc_from_text(combined) if combined else None
+            rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
+            line_no = self._parse_line_from_text(combined) if combined else None
+            message = "Stata error"
+            if tail_text and tail_text.strip():
+                for line in reversed(tail_text.splitlines()):
+                    if line.strip():
+                        message = line.strip()
+                        break
+            elif exc is not None:
+                message = str(exc).strip() or message
+
+            error = ErrorEnvelope(
+                message=message,
+                rc=rc_final,
+                line=line_no,
+                command=command,
+                log_path=log_path,
+                snippet=snippet,
+                trace=trace or None,
+            )
+
+        duration = time.time() - start_time
+        logger.info(
+            "stata.run(do) rc=%s success=%s trace=%s duration_ms=%.2f path=%s",
+            rc,
+            success,
+            trace,
+            duration * 1000,
+            effective_path,
+        )
+
+        return CommandResponse(
+            command=command,
+            rc=rc,
+            stdout="",
+            stderr=None,
+            log_path=log_path,
+            success=success,
+            error=error,
+        )
 
     def load_data(self, source: str, clear: bool = True, max_output_lines: Optional[int] = None) -> CommandResponse:
         src = source.strip()

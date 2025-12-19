@@ -19,7 +19,7 @@ This server enables LLMs to:
 ## Prerequisites
 
 - **Stata 17+** (required for `pystata` integration)
-- **Python 3.11+** (recommended)
+- **Python 3.12+** (required)
 - **uv** (recommended for install/run)
 
 ## Installation
@@ -203,21 +203,22 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 
 ## Tools Available (from server.py)
 
-* `run_command(code, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, streaming=True)`: Execute Stata syntax.
-  - Default (`streaming=True`): streams live output via MCP `notifications/message` while the command runs, and may emit `notifications/progress` when the client provides a progress token/callback.
-  - Set `streaming=false` to disable streaming and return output only at completion.
+* `run_command(code, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None)`: Execute Stata syntax.
+  - Always writes output to a temporary log file and emits a single `notifications/logMessage` containing `{"event":"log_path","path":"..."}` so the client can tail it locally.
+  - May emit `notifications/progress` when the client provides a progress token/callback.
+* `read_log(path, offset=0, max_bytes=65536)`: Read a slice of a previously-provided log file (JSON: `path`, `offset`, `next_offset`, `data`).
 * `load_data(source, clear=True, as_json=True, raw=False, max_output_lines=None)`: Heuristic loader (sysuse/webuse/use/path/URL) with JSON envelope unless `raw=True`. Supports output truncation.
 * `get_data(start=0, count=50)`: View dataset rows (JSON response, capped to 500 rows).
+* `get_ui_channel()`: Return a short-lived localhost HTTP endpoint + bearer token for the UI-only data browser.
 * `describe()`: View dataset structure via Stata `describe`.
 * `list_graphs()`: See available graphs in memory (JSON list with an `active` flag).
 * `export_graph(graph_name=None, format="pdf")`: Export a graph to a file path (default PDF; use `format="png"` for PNG).
 * `export_graphs_all()`: Export all in-memory graphs. Returns file paths by default.
 * `get_help(topic, plain_text=False)`: Markdown-rendered Stata help by default; `plain_text=True` strips formatting.
 * `codebook(variable, as_json=True, trace=False, raw=False, max_output_lines=None)`: Variable-level metadata (JSON envelope by default; supports `trace=True` and output truncation).
-* `run_do_file(path, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, streaming=True)`: Execute a .do file.
-  - Default (`streaming=True`): streams live output via MCP `notifications/message` and emits incremental `notifications/progress` (when the client provides a progress token/callback).
-  - Set `streaming=false` to disable streaming and return output only at completion.
-* `run_command_stream(...)`, `run_do_file_stream(...)`: Explicit streaming-only variants (equivalent to `streaming=true`).
+* `run_do_file(path, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None)`: Execute a .do file.
+  - Always writes output to a temporary log file and emits a single `notifications/logMessage` containing `{"event":"log_path","path":"..."}` so the client can tail it locally.
+  - Emits incremental `notifications/progress` when the client provides a progress token/callback.
 * `get_stored_results()`: Get `r()` and `e()` scalars/macros as JSON.
 * `get_variable_list()`: JSON list of variables and labels.
 
@@ -229,6 +230,77 @@ Resources exposed for MCP clients:
 * `stata://variables/list` → variable list (resource wrapper)
 * `stata://results/stored` → stored r()/e() results
 
+## UI-only Data Browser (Local HTTP API)
+
+This server also hosts a **localhost-only HTTP API** intended for a VS Code extension UI to browse data at high volume (paging, filtering) without sending large payloads over MCP.
+
+Important properties:
+
+- **Loopback only**: binds to `127.0.0.1`.
+- **Bearer auth**: every request requires an `Authorization: Bearer <token>` header.
+- **Short-lived tokens**: clients should call `get_ui_channel()` to obtain a fresh token as needed.
+- **No Stata dataset mutation** for browsing/filtering:
+  - No generated variables.
+  - Paging uses `sfi.Data.get`.
+  - Filtering is evaluated in Python over chunked reads.
+
+### Discovery via MCP (`get_ui_channel`)
+
+Call the MCP tool `get_ui_channel()` and parse the JSON:
+
+```json
+{
+  "baseUrl": "http://127.0.0.1:53741",
+  "token": "...",
+  "expiresAt": 1730000000,
+  "capabilities": {
+    "dataBrowser": true,
+    "filtering": true
+  }
+}
+```
+
+Server-enforced limits (current defaults):
+
+- **maxLimit**: 500
+- **maxVars**: 200
+- **maxChars**: 500
+- **maxRequestBytes**: 1,000,000
+
+### Endpoints
+
+All endpoints are under `baseUrl` and require the bearer token.
+
+- `GET /v1/dataset`
+  - Returns dataset identity and basic state (`id`, `frame`, `n`, `k`).
+- `GET /v1/vars`
+  - Returns variable metadata (`name`, `type`, `label`, `format`).
+- `POST /v1/page`
+  - Returns a page of data for selected variables.
+- `POST /v1/views`
+  - Creates a server-side filtered view (handle-based filtering).
+- `POST /v1/views/:viewId/page`
+  - Pages within a filtered view.
+- `DELETE /v1/views/:viewId`
+  - Deletes a view handle.
+- `POST /v1/filters/validate`
+  - Validates a filter expression.
+
+### Paging request example
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"datasetId":"...","frame":"default","offset":0,"limit":50,"vars":["price","mpg"],"includeObsNo":true,"maxChars":200}' \
+  "$BASE_URL/v1/page"
+```
+
+Notes:
+
+- `datasetId` is used for cache invalidation. If the dataset changes due to running Stata commands, the server will report a new dataset id and view handles become invalid.
+- Filter expressions are evaluated in Python using values read from Stata via `sfi.Data.get`. Use boolean operators like `==`, `!=`, `<`, `>`, and `and`/`or` (Stata-style `&`/`|` are also accepted).
+
 ## License
 
 This project is licensed under the GNU Affero General Public License v3.0 or later.
@@ -237,7 +309,7 @@ See the LICENSE file for the full text.
 ## Error reporting
 
 - All tools that execute Stata commands support JSON envelopes (`as_json=true`) carrying:
-  - `rc` (from r()/c(rc)), `stdout`, `stderr`, `message`, optional `line` (when Stata reports it), `command`, and a `snippet` excerpt of error output.
+  - `rc` (from r()/c(rc)), `stdout`, `stderr`, `message`, optional `line` (when Stata reports it), `command`, optional `log_path` (for log-file streaming), and a `snippet` excerpt of error output.
 - Stata-specific cues are preserved:
   - `r(XXX)` codes are parsed when present in output.
   - “Red text” is captured via stderr where available.

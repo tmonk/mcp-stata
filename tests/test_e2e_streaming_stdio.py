@@ -7,6 +7,7 @@ import sysconfig
 
 import anyio
 import pytest
+import json
 
 from mcp import ClientSession, StdioServerParameters, stdio_client
 
@@ -45,10 +46,20 @@ def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):
     logs: list[str] = []
     progress_events: list[tuple[float, float | None, str | None]] = []
 
+    log_path_holder: dict[str, str] = {}
+
     async def logging_callback(params):
         # params is LoggingMessageNotificationParams
         text = str(getattr(params, "data", ""))
         logs.append(text)
+
+        # Expect a single log_path event.
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return
+        if payload.get("event") == "log_path" and isinstance(payload.get("path"), str):
+            log_path_holder["path"] = payload["path"]
 
     async def progress_callback(progress: float, total: float | None, message: str | None):
         progress_events.append((progress, total, message))
@@ -72,13 +83,28 @@ def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):
             done = anyio.Event()
             result_holder: dict[str, object] = {}
 
-            async def watch_for_start() -> None:
-                # Wait until a log message contains our marker.
+            saw_log_path = anyio.Event()
+
+            async def watch_for_log_path() -> None:
                 while True:
-                    for entry in logs:
-                        if "streaming_start" in entry:
-                            saw_start.set()
-                            return
+                    if "path" in log_path_holder:
+                        saw_log_path.set()
+                        return
+                    await anyio.sleep(0.05)
+
+            async def watch_log_file_for_start() -> None:
+                await saw_log_path.wait()
+                p = Path(log_path_holder["path"])
+                # Wait until the file exists and contains our marker.
+                while True:
+                    if p.exists():
+                        try:
+                            txt = p.read_text(encoding="utf-8", errors="replace")
+                            if "streaming_start" in txt:
+                                saw_start.set()
+                                return
+                        except Exception:
+                            pass
                     await anyio.sleep(0.05)
 
             async def call_tool() -> None:
@@ -99,7 +125,8 @@ def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):
                     done.set()
 
             async with anyio.create_task_group() as tg:
-                tg.start_soon(watch_for_start)
+                tg.start_soon(watch_for_log_path)
+                tg.start_soon(watch_log_file_for_start)
                 tg.start_soon(call_tool)
 
                 with anyio.fail_after(5):
@@ -113,7 +140,11 @@ def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):
 
             # Basic sanity checks.
             assert logs, "Expected to receive at least one log message notification"
-            assert any("streaming_end" in e for e in logs), "Expected to see end marker in logs"
+            # End marker should be present in the log file.
+            p = Path(log_path_holder["path"])
+            assert p.exists()
+            txt = p.read_text(encoding="utf-8", errors="replace")
+            assert "streaming_end" in txt, "Expected to see end marker in log file"
             assert progress_events, "Expected to receive at least one progress notification"
 
     anyio.run(main)
