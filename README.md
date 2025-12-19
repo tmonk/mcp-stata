@@ -204,7 +204,7 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 ## Tools Available (from server.py)
 
 * `run_command(code, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, streaming=True)`: Execute Stata syntax.
-  - Default (`streaming=True`): streams live output via MCP `notifications/logMessage` while the command runs, and may emit `notifications/progress` when the client provides a progress token/callback.
+  - Default (`streaming=True`): streams live output via MCP `notifications/message` while the command runs, and may emit `notifications/progress` when the client provides a progress token/callback.
   - Set `streaming=false` to disable streaming and return output only at completion.
 * `load_data(source, clear=True, as_json=True, raw=False, max_output_lines=None)`: Heuristic loader (sysuse/webuse/use/path/URL) with JSON envelope unless `raw=True`. Supports output truncation.
 * `get_data(start=0, count=50)`: View dataset rows (JSON response, capped to 500 rows).
@@ -215,7 +215,7 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 * `get_help(topic, plain_text=False)`: Markdown-rendered Stata help by default; `plain_text=True` strips formatting.
 * `codebook(variable, as_json=True, trace=False, raw=False, max_output_lines=None)`: Variable-level metadata (JSON envelope by default; supports `trace=True` and output truncation).
 * `run_do_file(path, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, streaming=True)`: Execute a .do file.
-  - Default (`streaming=True`): streams live output via MCP `notifications/logMessage` and emits incremental `notifications/progress` (when the client provides a progress token/callback).
+  - Default (`streaming=True`): streams live output via MCP `notifications/message` and emits incremental `notifications/progress` (when the client provides a progress token/callback).
   - Set `streaming=false` to disable streaming and return output only at completion.
 * `run_command_stream(...)`, `run_do_file_stream(...)`: Explicit streaming-only variants (equivalent to `streaming=true`).
 * `get_stored_results()`: Get `r()` and `e()` scalars/macros as JSON.
