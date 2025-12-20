@@ -9,10 +9,9 @@ import asyncio
 import re
 import threading
 import time
-from typing import List, Optional, Set, Callable, Dict, Any
+from typing import List, Set, Callable, Dict, Any
 import logging
 
-from sfi import Data, Macro  # type: ignore[import-not-found]
 
 # SFI is always available
 SFI_AVAILABLE = True
@@ -298,7 +297,7 @@ class StreamingGraphCache:
         if self.stata_client:
             try:
                 # Get current state and check for new graphs
-                current_graphs = self.stata_client.list_graphs()
+
                 pystata_detected = self.detector._detect_graphs_via_pystata()
                 
                 # Add any newly detected graphs to cache queue

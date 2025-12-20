@@ -8,7 +8,7 @@ import threading
 import time
 import tempfile
 import os
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Mock the Stata dependencies to avoid import errors
@@ -482,9 +482,7 @@ class TestErrorRecoveryScenarios:
         # Fill cache to near capacity
         large_items = 80  # Close to MAX_CACHE_SIZE of 100
         item_size = 5 * 1024  # 5KB each
-        
-        for i in range(large_items):
-            graph_name = f"large_graph_{i}"
+
             with mock_stata_client._cache_lock:
                 mock_stata_client._preemptive_cache[graph_name] = f"/tmp/{graph_name}.svg"
                 mock_stata_client._cache_access_times[graph_name] = time.time() - (i * 100)  # Staggered access times

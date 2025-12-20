@@ -5,7 +5,7 @@ Tests for enhanced pystata integration using actual sfi interface (no mocks).
 import pytest
 import sys
 import os
-import tempfile
+
 
 # Add the src directory to Python path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))

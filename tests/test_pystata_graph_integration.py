@@ -5,7 +5,7 @@ Tests for enhanced pystata integration in graph detection using actual implement
 import pytest
 import sys
 import os
-import tempfile
+
 
 # Add the src directory to Python path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -20,7 +20,7 @@ try:
 except (FileNotFoundError, PermissionError) as e:
     pytest.skip(f"Stata not found or not executable: {e}", allow_module_level=True)
 
-from mcp_stata.graph_detector import GraphCreationDetector, StreamingGraphCache, SFI_AVAILABLE
+from mcp_stata.graph_detector import GraphCreationDetector, StreamingGraphCache
 from mcp_stata.stata_client import StataClient
 
 

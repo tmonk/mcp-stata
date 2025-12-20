@@ -3,11 +3,11 @@ Test TTL cache functionality for list_graphs() method.
 """
 
 import pytest
-import time
+
 import threading
 import sys
 import os
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 # Mock the Stata dependencies to avoid import errors
 sys.modules['sfi'] = Mock()

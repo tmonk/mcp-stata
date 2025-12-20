@@ -1,7 +1,7 @@
 import os
 import sys
-import json
-import asyncio
+
+
 from pathlib import Path
 
 import pytest
@@ -47,8 +47,7 @@ async def test_external_figure3_do_file():
         # Initialize streaming cache with auto-caching enabled
         cache = StreamingGraphCache(client, auto_cache=True)
         
-        # Track graphs detected during execution
-        graphs_detected_during_run = []
+
         graphs_cached_at_creation = []
         
         async def log_notifier(text: str):
