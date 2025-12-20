@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from mcp_stata import discovery
+# Import discovery module directly to avoid import chain issues
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
+from mcp_stata.discovery import discovery
 
 # Linux-only: these discovery cases rely on Linux filesystem layout/exec bits.
 pytestmark = pytest.mark.skipif(platform.system() != "Linux", reason="Linux-only discovery tests")

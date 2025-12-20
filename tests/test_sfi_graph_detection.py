@@ -24,7 +24,7 @@ try:
     stata_path, stata_flavor = find_stata_path()
     stata_setup.config(stata_path, stata_flavor)
 except (FileNotFoundError, PermissionError) as e:
-    pytest.skip(f"Stata not found or not executable: {e}")
+    pytest.skip(f"Stata not found or not executable: {e}", allow_module_level=True)
 
 from mcp_stata.graph_detector import GraphCreationDetector, StreamingGraphCache, SFI_AVAILABLE
 from mcp_stata.stata_client import StataClient

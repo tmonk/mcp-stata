@@ -11,8 +11,17 @@ import os
 from unittest.mock import Mock, patch, MagicMock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from src.mcp_stata.stata_client import StataClient
-from src.mcp_stata.graph_detector import StreamingGraphCache
+# Mock the Stata dependencies to avoid import errors
+import sys
+sys.modules['sfi'] = Mock()
+sys.modules['pystata'] = Mock()
+sys.modules['stata_setup'] = Mock()
+
+# Add src to path for importing StataClient
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
+
+from mcp_stata.stata_client import StataClient
+from mcp_stata.graph_detector import StreamingGraphCache
 
 
 class TestConcurrentGraphCaching:

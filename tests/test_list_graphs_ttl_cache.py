@@ -17,7 +17,7 @@ sys.modules['stata_setup'] = Mock()
 # Add src to path for importing StataClient
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 
-from src.mcp_stata.stata_client import StataClient
+from mcp_stata.stata_client import StataClient
 
 
 class TestListGraphsTTLCache:

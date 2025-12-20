@@ -4,12 +4,12 @@ import sys
 
 
 
-# Import discovery with source fallback
+# Import discovery module directly to avoid import chain issues
 try:
-    from mcp_stata import discovery
-except ImportError:
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
-    from mcp_stata import discovery
+    from mcp_stata.discovery import discovery
+except ImportError:
+    from mcp_stata.discovery import discovery
 
 
 def test_discovery_cli_main_success(monkeypatch, tmp_path, capsys):
