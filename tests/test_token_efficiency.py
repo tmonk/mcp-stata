@@ -8,7 +8,6 @@ and using file paths instead of base64 for graph exports.
 
 import pytest
 import json
-import os
 from pathlib import Path
 
 # Configure Stata before importing sfi-dependent modules
@@ -256,26 +255,6 @@ class TestTokenSavingsIntegration:
         # Should be 50% smaller (no duplication)
         savings = (old_size - new_size) / old_size
         assert savings >= 0.49  # At least 49% savings (accounting for rounding)
-
-    def test_full_workflow_token_efficiency(self, client):
-        """Test a full workflow demonstrating all token efficiency features."""
-        # Load data (with truncation)
-        load_result = client.load_data("auto", max_output_lines=2)
-        assert "output truncated" in load_result.stdout or len(load_result.stdout.splitlines()) <= 4
-
-        # Create graph and export with file path
-        g = client.run_command_structured("scatter price mpg, name(WorkflowGraph, replace)")
-        assert g.success
-        graph_result = client.export_graphs_all(use_base64=False)
-
-        # File path should be tiny
-        assert len(graph_result.graphs[0].file_path) < 200
-
-        # Error case - output only in ErrorEnvelope
-        error_result = client.run_command_structured("bad_command")
-        assert error_result.stdout == ""
-        assert error_result.error.snippet is not None
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

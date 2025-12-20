@@ -211,6 +211,27 @@ class TestPystataGraphIntegration:
             pass
         real_stata_client.stata.run("clear", quietly=True)
 
+    def test_svg_export_integration(self, real_stata_client):
+        """Test SVG export integration with real Stata."""
+        stata = real_stata_client.stata
+        
+        # Create a graph
+        stata.run("sysuse auto, clear", quietly=True)
+        stata.run("scatter price mpg, name(SVGTestGraph)", quietly=True)
+        
+        # Export to SVG
+        svg_path = os.path.abspath("SVGTestGraph.svg")
+        stata.run(f"graph export {svg_path}, as(svg) replace", quietly=True)
+        
+        # Check if SVG file was created
+        assert os.path.isfile(svg_path), "SVG file should be created"
+        
+        # Clean up
+        stata.run("graph drop SVGTestGraph", quietly=True)
+        stata.run("clear", quietly=True)
+        if os.path.isfile(svg_path):
+            os.remove(svg_path)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
