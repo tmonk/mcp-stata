@@ -12,3 +12,4 @@ py.typed
 .vscode
 .gemini
 .claude
+.coverage

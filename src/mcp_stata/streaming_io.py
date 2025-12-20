@@ -70,12 +70,14 @@ class StreamingTeeIO:
         q: queue.Queue,
         *,
         max_fragment_chars: int = 4000,
+        on_chunk_callback=None,
     ):
         self._buffer = buffer
         self._queue = q
         self._max_fragment_chars = max_fragment_chars
         self._closed = False
         self._lock = threading.Lock()
+        self._on_chunk_callback = on_chunk_callback
 
     def write(self, data: Any) -> int:
         text = StreamBuffer._normalize(data)
@@ -83,6 +85,14 @@ class StreamingTeeIO:
             return 0
 
         n = self._buffer.write(text)
+
+        # Call chunk callback for graph detection
+        if self._on_chunk_callback:
+            try:
+                self._on_chunk_callback(text)
+            except Exception:
+                # Don't let callback errors break streaming
+                pass
 
         with self._lock:
             if self._closed:
@@ -147,9 +157,10 @@ class TailBuffer:
 
 
 class FileTeeIO:
-    def __init__(self, file_obj, tail: TailBuffer):
+    def __init__(self, file_obj, tail: TailBuffer, chunk_callback: Optional[Callable[[str], None]] = None):
         self._file = file_obj
         self._tail = tail
+        self._chunk_callback = chunk_callback
         self._lock = threading.Lock()
         self._closed = False
 
@@ -164,6 +175,14 @@ class FileTeeIO:
 
             self._tail.append(text)
             self._file.write(text)
+            
+            # Call chunk callback if provided
+            if self._chunk_callback:
+                try:
+                    self._chunk_callback(text)
+                except Exception:
+                    pass  # Don't let callback errors break writing
+            
             if "\n" in text:
                 try:
                     self._file.flush()
