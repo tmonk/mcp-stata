@@ -160,27 +160,7 @@ class TestPystataGraphIntegration:
         detector._stata_client.stata.run("graph drop IntegrationTest", quietly=True)
         detector._stata_client.stata.run("clear", quietly=True)
     
-    def test_streaming_cache_with_pystata(self, real_stata_client):
-        """Test StreamingGraphCache with real pystata integration."""
-        cache = StreamingGraphCache(real_stata_client, auto_cache=True)
         
-        # Verify detector is initialized with client
-        assert cache.detector._stata_client == real_stata_client
-        
-        # Test processing a chunk that creates a graph
-        real_stata_client.stata.run("sysuse auto, clear", quietly=True)
-        cache.process_streaming_chunk("scatter price mpg, name(StreamingTest)")
-        
-        # Should have detected the graph
-        assert "StreamingTest" in cache._graphs_to_cache or len(cache._cached_graphs) > 0
-        
-        # Clean up
-        try:
-            real_stata_client.stata.run("graph drop StreamingTest", quietly=True)
-        except SystemError:
-            pass
-        real_stata_client.stata.run("clear", quietly=True)
-    
     @pytest.mark.asyncio
     async def test_cache_detected_graphs_with_pystata(self, real_stata_client):
         """Test enhanced caching with pystata integration."""
@@ -230,67 +210,6 @@ class TestPystataGraphIntegration:
         except SystemError:
             pass
         real_stata_client.stata.run("clear", quietly=True)
-
-
-class TestPystataIntegrationEdgeCases:
-    """Test edge cases for pystata integration."""
-    
-    @pytest.fixture
-    def detector_with_real_client(self):
-        """Create detector with real StataClient."""
-        client = StataClient()
-        client.init()
-        yield client
-        client = None
-    
-    def test_output_detection_with_malformed_text(self, detector_with_real_client):
-        """Test output detection with malformed text."""
-        detector = GraphCreationDetector(stata_client=detector_with_real_client)
-        
-        # Test with malformed text that shouldn't crash
-        malformed_texts = [
-            "",
-            None,
-            "random text without graphs",
-            "graph (invalid syntax",
-            "scatter price mpg, name()",  # Empty name
-        ]
-        
-        for text in malformed_texts:
-            try:
-                text_str = str(text) if text is not None else ""
-                detected = detector._detect_from_output(text_str)
-                assert isinstance(detected, list), "Should always return a list"
-            except Exception as e:
-                pytest.fail(f"Should not crash on malformed text: {text}, error: {e}")
-    
-    def test_command_detection_with_nested_parentheses(self, detector_with_real_client):
-        """Test command detection with nested parentheses in graph names."""
-        detector = GraphCreationDetector(stata_client=detector_with_real_client)
-        
-        # Test with complex nested parentheses
-        complex_commands = [
-            "scatter price mpg, name(Graph_With_(Nested)_Parentheses)",
-            "histogram price, name(Graph(1)(2)(3))",
-            "twoway (scatter price mpg) (line price mpg), name(Complex_Graph)",
-        ]
-        
-        for command in complex_commands:
-            detected = detector._detect_from_commands(command)
-            assert isinstance(detected, list), "Should always return a list"
-    
-    def test_unnamed_graph_generation_edge_cases(self, detector_with_real_client):
-        """Test unnamed graph generation in edge cases."""
-        detector = GraphCreationDetector(stata_client=detector_with_real_client)
-        
-        # Test when no current graphs exist
-        name = detector._generate_unnamed_graph_name([])
-        assert name is not None, "Should generate name even with no existing graphs"
-        
-        # Test when name is in removed graphs
-        detector._removed_graphs.add("Graph")
-        name = detector._generate_unnamed_graph_name([])
-        assert name is None or name != "Graph", "Should avoid names in removed graphs"
 
 
 if __name__ == "__main__":

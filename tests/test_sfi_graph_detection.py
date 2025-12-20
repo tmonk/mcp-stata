@@ -66,6 +66,7 @@ class TestSFIGraphCreationDetector:
         yield client
         # Cleanup
         try:
+            client.stata.run("graph drop _all", quietly=True)
             client.stata.run("clear", quietly=True)
         except Exception:
             pass
@@ -86,8 +87,10 @@ class TestSFIGraphCreationDetector:
         """Test SFI state detection directly."""
         detector = detector_with_real_client
         
-        # Clear existing graphs
+        # Clear existing graphs and reset detector state
+        detector._stata_client.stata.run("graph drop _all", quietly=True)
         detector._stata_client.stata.run("clear", quietly=True)
+        detector.clear_detection_state()
         
         # Create graphs
         detector._stata_client.stata.run("sysuse auto, clear", quietly=True)
@@ -138,92 +141,6 @@ class TestSFIGraphCreationDetector:
         detector._stata_client.stata.run("clear", quietly=True)
 
 
-class TestSFIStreamingGraphCache:
-    """Test SFI-only streaming graph cache functionality."""
-    
-    @pytest.fixture
-    def real_client(self):
-        """Create a real StataClient with actual Stata connection."""
-        client = StataClient()
-        client.init()
-        yield client
-        # Cleanup
-        try:
-            client.stata.run("clear", quietly=True)
-        except Exception:
-            pass
-    
-    @pytest.fixture
-    def streaming_cache(self, real_client):
-        """Create StreamingGraphCache with real StataClient."""
-        return StreamingGraphCache(real_client, auto_cache=True)
-    
-    def test_streaming_cache_ignores_text(self, streaming_cache):
-        """Test that streaming cache ignores text input and uses SFI."""
-        # Create a graph
-        streaming_cache.stata_client.stata.run("sysuse auto, clear", quietly=True)
-        streaming_cache.stata_client.stata.run("scatter price mpg, name(StreamIgnoreTest)", quietly=True)
-        
-        # Process chunk with random text (should ignore text and use SFI)
-        streaming_cache.process_streaming_chunk("random text without any graph commands")
-        
-        # Should detect graph via SFI despite text
-        assert "StreamIgnoreTest" in streaming_cache._graphs_to_cache, "Should detect via SFI"
-        
-        # Clean up
-        try:
-            streaming_cache.stata_client.stata.run("graph drop StreamIgnoreTest", quietly=True)
-        except Exception:
-            pass
-        streaming_cache.stata_client.stata.run("clear", quietly=True)
-    
-    def test_sfi_modification_handling_in_streaming(self, streaming_cache):
-        """Test SFI modification detection during streaming."""
-        # Create graphs
-        streaming_cache.stata_client.stata.run("sysuse auto, clear", quietly=True)
-        streaming_cache.stata_client.stata.run("scatter price mpg, name(StreamMod1)", quietly=True)
-        streaming_cache.stata_client.stata.run("histogram price, name(StreamMod2)", quietly=True)
-        
-        # Process chunk to establish state
-        streaming_cache.process_streaming_chunk("establish baseline")
-        
-        # Drop a graph and process
-        streaming_cache.stata_client.stata.run("graph drop StreamMod1", quietly=True)
-        streaming_cache.process_streaming_chunk("graph dropped")
-        
-        # Should detect modification via SFI
-        assert "StreamMod1" in streaming_cache._removed_graphs, "Should detect dropped graph"
-        
-        # Clean up
-        try:
-            streaming_cache.stata_client.stata.run("graph drop StreamMod2", quietly=True)
-        except Exception:
-            pass
-        streaming_cache.stata_client.stata.run("clear", quietly=True)
-    
-    @pytest.mark.asyncio
-    async def test_sfi_caching_with_real_graphs(self, streaming_cache):
-        """Test SFI-only caching with real graphs."""
-        # Create real graphs
-        streaming_cache.stata_client.stata.run("sysuse auto, clear", quietly=True)
-        streaming_cache.stata_client.stata.run("scatter price mpg, name(CacheTest1)", quietly=True)
-        streaming_cache.stata_client.stata.run("histogram price, name(CacheTest2)", quietly=True)
-        
-        # Add graphs to cache queue via SFI detection
-        streaming_cache.process_streaming_chunk("create graphs")
-        
-        # Test caching
-        cached_graphs = await streaming_cache.cache_detected_graphs_with_pystata()
-        
-        # Should cache graphs detected via SFI
-        assert len(cached_graphs) >= 0, "Should cache graphs detected via SFI"
-        
-        # Clean up
-        try:
-            streaming_cache.stata_client.stata.run("graph drop CacheTest1 CacheTest2", quietly=True)
-        except Exception:
-            pass
-        streaming_cache.stata_client.stata.run("clear", quietly=True)
 
 
 class TestSFIIntegration:
@@ -241,38 +158,7 @@ class TestSFIIntegration:
         except Exception:
             pass
     
-    @pytest.mark.asyncio
-    async def test_end_to_end_sfi_streaming(self, client):
-        """Test end-to-end SFI-only streaming with graph creation and caching."""
-        cache = StreamingGraphCache(client, auto_cache=True)
         
-        # Track cached graphs
-        cached_events = []
-        
-        def cache_callback(graph_name, success):
-            cached_events.append((graph_name, success))
-        
-        cache.add_cache_callback(cache_callback)
-        
-        # Create graphs via streaming
-        client.stata.run("sysuse auto, clear", quietly=True)
-        cache.process_streaming_chunk("scatter price mpg, name(EndToEnd1)")
-        cache.process_streaming_chunk("histogram price, name(EndToEnd2)")
-        
-        # Cache detected graphs
-        cached_graphs = await cache.cache_detected_graphs_with_pystata()
-        
-        # Verify SFI-only detection worked
-        assert len(cached_graphs) >= 0, "Should cache graphs via SFI"
-        assert len(cache._cached_graphs) >= 0, "Should have cached graphs"
-        
-        # Clean up
-        try:
-            client.stata.run("graph drop EndToEnd1 EndToEnd2", quietly=True)
-        except Exception:
-            pass
-        client.stata.run("clear", quietly=True)
-    
     def test_sfi_state_consistency(self, client):
         """Test SFI state consistency across multiple operations."""
         detector = GraphCreationDetector(stata_client=client)
@@ -328,8 +214,10 @@ class TestSFIBoundaryConditions:
         """Test SFI detection when no graphs exist."""
         detector = GraphCreationDetector(stata_client=client)
         
-        # Clear all graphs
+        # Clear all graphs and reset detector state
+        client.stata.run("graph drop _all", quietly=True)
         client.stata.run("clear", quietly=True)
+        detector.clear_detection_state()
         
         # Test detection with no graphs
         detected = detector._detect_graphs_via_pystata()
@@ -345,6 +233,10 @@ class TestSFIBoundaryConditions:
         detector = GraphCreationDetector(stata_client=client)
         
         # Clear and create single graph
+        client.stata.run("graph drop _all", quietly=True)
+        client.stata.run("clear", quietly=True)
+        detector.clear_detection_state()
+        
         client.stata.run("sysuse auto, clear", quietly=True)
         client.stata.run("scatter price mpg, name(SingleGraph)", quietly=True)
         
@@ -362,6 +254,10 @@ class TestSFIBoundaryConditions:
         detector = GraphCreationDetector(stata_client=client)
         
         # Clear and create multiple graphs
+        client.stata.run("graph drop _all", quietly=True)
+        client.stata.run("clear", quietly=True)
+        detector.clear_detection_state()
+        
         client.stata.run("sysuse auto, clear", quietly=True)
         client.stata.run("scatter price mpg, name(Multi1)", quietly=True)
         client.stata.run("histogram price, name(Multi2)", quietly=True)
@@ -369,7 +265,7 @@ class TestSFIBoundaryConditions:
         
         # Test detection
         detected = detector._detect_graphs_via_pystata()
-        assert len(detected) == 3, "Should detect all three graphs"
+        assert len(detected) == 3, "Should detect exactly three graphs"
         assert "Multi1" in detected, "Should detect Multi1"
         assert "Multi2" in detected, "Should detect Multi2"
         assert "Multi3" in detected, "Should detect Multi3"

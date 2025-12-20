@@ -29,6 +29,25 @@ class GraphCreationDetector:
         self._unnamed_graph_counter = 0  # Track unnamed graphs for identification
         self._stata_client = stata_client
         self._last_graph_state: Dict[str, Any] = {}  # Track graph state changes
+
+    def _describe_graph_signature(self, graph_name: str) -> str:
+        """Return a stable signature for a graph.
+
+        We intentionally avoid using timestamps as the signature, since that makes
+        every poll look like a modification.
+        """
+        if not self._stata_client or not hasattr(self._stata_client, "stata"):
+            return ""
+        try:
+            # Capture output so we can hash it deterministically.
+            resp = self._stata_client.run_command_structured(f"graph describe {graph_name}", echo=False)
+            if resp.success and resp.stdout:
+                return resp.stdout
+            if resp.error and resp.error.snippet:
+                return resp.error.snippet
+        except Exception:
+            return ""
+        return ""
     
     def _detect_graphs_via_pystata(self) -> List[str]:
         """Detect newly created graphs using direct pystata state access."""
@@ -52,8 +71,8 @@ class GraphCreationDetector:
             for graph_name, state in current_state.items():
                 if graph_name in self._last_graph_state:
                     last_state = self._last_graph_state[graph_name]
-                    if state != last_state:
-                        # Graph was modified, treat as new for caching purposes
+                    # Compare stable signature only.
+                    if state.get("signature") != last_state.get("signature"):
                         if graph_name not in self._removed_graphs:
                             new_graphs.append(graph_name)
             
@@ -104,29 +123,26 @@ class GraphCreationDetector:
             
             for graph_name in current_graphs:
                 try:
-                    # Get graph metadata using available sfi interface
-                    # Since there's no Graph class in sfi, we'll use basic state tracking
+                    signature = self._describe_graph_signature(graph_name)
                     state_info = {
-                        'name': graph_name,
-                        'timestamp': time.time(),
-                        'exists': True
+                        "name": graph_name,
+                        "exists": True,
+                        "valid": bool(signature),
+                        "signature": signature,
                     }
-                    
-                    # Try to get additional graph properties via stata commands if available
-                    if self._stata_client and hasattr(self._stata_client, 'stata'):
-                        try:
-                            # Use stata commands to get graph info
-                            self._stata_client.stata.run(f'graph describe {graph_name}', quietly=True)
-                            # If successful, the graph exists and is valid
-                            state_info['valid'] = True
-                        except Exception:
-                            state_info['valid'] = False
+
+                    # Only update timestamps when the signature changes.
+                    prev = self._last_graph_state.get(graph_name)
+                    if prev is None or prev.get("signature") != signature:
+                        state_info["timestamp"] = time.time()
+                    else:
+                        state_info["timestamp"] = prev.get("timestamp", time.time())
                     
                     graph_state[graph_name] = state_info
                     
                 except Exception as e:
                     logger.warning(f"Failed to get state for graph {graph_name}: {e}")
-                    graph_state[graph_name] = {'name': graph_name, 'timestamp': time.time(), 'exists': False}
+                    graph_state[graph_name] = {"name": graph_name, "timestamp": time.time(), "exists": False, "signature": ""}
             
         except Exception as e:
             logger.warning(f"Failed to get graph state from pystata: {e}")
@@ -158,9 +174,18 @@ class GraphCreationDetector:
                 if last_graphs and not current_graphs:
                     modifications["cleared"] = True
             
-            # Update last known state for next comparison
-            self._last_graph_state = {graph: {'name': graph, 'timestamp': time.time(), 'exists': True} 
-                                     for graph in current_graphs}
+            # Update last known state for next comparison (stable signatures)
+            new_state: Dict[str, Any] = {}
+            for graph in current_graphs:
+                sig = self._describe_graph_signature(graph)
+                new_state[graph] = {
+                    "name": graph,
+                    "exists": True,
+                    "valid": bool(sig),
+                    "signature": sig,
+                    "timestamp": time.time(),
+                }
+            self._last_graph_state = new_state
             
         except Exception as e:
             logger.debug(f"SFI modification detection failed: {e}")
@@ -233,6 +258,7 @@ class StreamingGraphCache:
         """Add callback for graph cache events."""
         with self._lock:
             self._cache_callbacks.append(callback)
+
     
     async def cache_detected_graphs_with_pystata(self) -> List[str]:
         """Enhanced caching method that uses pystata for real-time graph detection."""

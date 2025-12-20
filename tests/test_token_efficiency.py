@@ -178,8 +178,10 @@ class TestJSONCompactness:
 
     def _run_command_sync(self, command: str) -> str:
         """Helper to run command and get JSON response."""
+        import asyncio
         from mcp_stata.server import run_command
-        return json.dumps(run_command(command).model_dump())
+        result = asyncio.run(run_command(command))
+        return result  # run_command already returns a JSON string
 
     def test_run_command_returns_compact_json(self):
         """Server tools should return compact JSON without indentation."""
@@ -209,7 +211,7 @@ class TestJSONCompactness:
         self._run_command_sync("scatter price mpg, name(CompactTest, replace)")
 
         from mcp_stata.server import export_graphs_all
-        result_str = json.dumps(export_graphs_all().model_dump())
+        result_str = export_graphs_all()  # Already returns JSON string
         result = json.loads(result_str)
 
         # Should be valid JSON

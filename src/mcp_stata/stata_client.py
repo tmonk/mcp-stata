@@ -33,7 +33,6 @@ logger = logging.getLogger("mcp_stata")
 
 
 class StataClient:
-    _instance = None
     _initialized = False
     _exec_lock: threading.Lock
     _cache_init_lock = threading.Lock()  # Class-level lock for cache initialization
@@ -45,11 +44,10 @@ class StataClient:
     LIST_GRAPHS_TTL = 0.075  # TTL for list_graphs cache (75ms)
 
     def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(StataClient, cls).__new__(cls)
-            cls._instance._exec_lock = threading.Lock()
-            cls._instance._is_executing = False
-        return cls._instance
+        inst = super(StataClient, cls).__new__(cls)
+        inst._exec_lock = threading.Lock()
+        inst._is_executing = False
+        return inst
 
     @contextmanager
     def _redirect_io(self):
@@ -61,6 +59,16 @@ class StataClient:
             yield out_buf, err_buf
         finally:
             sys.stdout, sys.stderr = backup_stdout, backup_stderr
+
+    @staticmethod
+    def _stata_quote(value: str) -> str:
+        """Return a Stata double-quoted string literal for value."""
+        # Stata uses doubled quotes to represent a quote character inside a string.
+        v = (value or "")
+        v = v.replace('"', '""')
+        # Use compound double quotes to avoid tokenization issues with spaces and
+        # punctuation in contexts like graph names.
+        return f'`"{v}"\''
 
     @contextmanager
     def _redirect_io_streaming(self, out_stream, err_stream):
@@ -179,18 +187,80 @@ class StataClient:
             from pystata import stata  # type: ignore[import-not-found]
             self.stata = stata
             self._initialized = True
+
+            # Ensure a clean graph state for a fresh client. PyStata's backend is
+            # effectively global, so graph memory can otherwise leak across tests
+            # and separate StataClient instances.
+            try:
+                self.stata.run("capture graph drop _all", quietly=True)
+            except Exception:
+                pass
             
             # Initialize list_graphs TTL cache
             self._list_graphs_cache = None
             self._list_graphs_cache_time = 0
             self._list_graphs_cache_lock = threading.Lock()
 
+            # Map user-facing graph names (may include spaces/punctuation) to valid
+            # internal Stata graph names.
+            self._graph_name_aliases: Dict[str, str] = {}
+            self._graph_name_reverse: Dict[str, str] = {}
+
         except ImportError:
             # Fallback for when stata_setup isn't in PYTHONPATH yet?
             # Usually users must have it installed. We rely on discovery logic.
             raise RuntimeError("Could not import `stata_setup`. Ensure pystata is installed.")
-        except Exception as e:
-            raise RuntimeError(f"Failed to initialize Stata: {e}")
+
+    def _make_valid_stata_name(self, name: str) -> str:
+        """Create a valid Stata name (<=32 chars, [A-Za-z_][A-Za-z0-9_]*)."""
+        base = re.sub(r"[^A-Za-z0-9_]", "_", name or "")
+        if not base:
+            base = "Graph"
+        if not re.match(r"^[A-Za-z_]", base):
+            base = f"G_{base}"
+        base = base[:32]
+
+        # Avoid collisions.
+        candidate = base
+        i = 1
+        while candidate in getattr(self, "_graph_name_reverse", {}):
+            suffix = f"_{i}"
+            candidate = (base[: max(0, 32 - len(suffix))] + suffix)[:32]
+            i += 1
+        return candidate
+
+    def _resolve_graph_name_for_stata(self, name: str) -> str:
+        """Return internal Stata graph name for a user-facing name."""
+        if not name:
+            return name
+        aliases = getattr(self, "_graph_name_aliases", None)
+        if aliases and name in aliases:
+            return aliases[name]
+        return name
+
+    def _maybe_rewrite_graph_name_in_command(self, code: str) -> str:
+        """Rewrite name("...") to a valid Stata name and store alias mapping."""
+        if not code:
+            return code
+        if not hasattr(self, "_graph_name_aliases"):
+            self._graph_name_aliases = {}
+            self._graph_name_reverse = {}
+
+        # Handle common patterns: name("..." ...) or name(`"..."' ...)
+        pat = re.compile(r"name\(\s*(?:`\"(?P<cq>[^\"]*)\"'|\"(?P<dq>[^\"]*)\")\s*(?P<rest>[^)]*)\)")
+
+        def repl(m: re.Match) -> str:
+            original = m.group("cq") if m.group("cq") is not None else m.group("dq")
+            original = original or ""
+            internal = self._graph_name_aliases.get(original)
+            if not internal:
+                internal = self._make_valid_stata_name(original)
+                self._graph_name_aliases[original] = internal
+                self._graph_name_reverse[internal] = original
+            rest = m.group("rest") or ""
+            return f"name({internal}{rest})"
+
+        return pat.sub(repl, code)
 
     def _read_return_code(self) -> int:
         """Read the last Stata return code without mutating rc."""
@@ -267,6 +337,8 @@ class StataClient:
         if not self._initialized:
             self.init()
 
+        code = self._maybe_rewrite_graph_name_in_command(code)
+
         if cwd is not None and not os.path.isdir(cwd):
             return CommandResponse(
                 command=code,
@@ -283,6 +355,7 @@ class StataClient:
 
         start_time = time.time()
         exc: Optional[Exception] = None
+        ret_text: Optional[str] = None
         with self._exec_lock:
             # Set execution flag to prevent recursive Stata calls
             self._is_executing = True
@@ -292,7 +365,9 @@ class StataClient:
                         try:
                             if trace:
                                 self.stata.run("set trace on")
-                            self.stata.run(code, echo=echo)
+                            ret = self.stata.run(code, echo=echo)
+                            if isinstance(ret, str) and ret:
+                                ret_text = ret
                         except Exception as e:
                             exc = e
                         finally:
@@ -307,6 +382,9 @@ class StataClient:
                 self._is_executing = False
 
         stdout = out_buf.getvalue()
+        # Some PyStata builds return output as a string rather than printing.
+        if (not stdout or not stdout.strip()) and ret_text:
+            stdout = ret_text
         stderr = err_buf.getvalue()
         combined = "\n".join(filter(None, [stdout, stderr, str(exc) if exc else ""])).strip()
         rc_hint = self._parse_rc_from_text(combined) if combined else None
@@ -352,16 +430,24 @@ class StataClient:
             self.init()
 
         exc: Optional[Exception] = None
+        ret_text: Optional[str] = None
         with self._exec_lock:
             try:
                 if trace:
                     self.stata.run("set trace on")
-                self.stata.run(code, echo=echo)
+                ret = self.stata.run(code, echo=echo)
+                if isinstance(ret, str) and ret:
+                    ret_text = ret
             except Exception as e:
                 exc = e
             finally:
                 rc = self._read_return_code()
-                if exc is None and (rc is None or rc == -1):
+                # If Stata returned an r(#) in text, prefer it.
+                combined = "\n".join(filter(None, [ret_text or "", str(exc) if exc else ""])).strip()
+                rc_hint = self._parse_rc_from_text(combined) if combined else None
+                if exc is None and rc_hint is not None and rc_hint != 0:
+                    rc = rc_hint
+                if exc is None and (rc is None or rc == -1) and rc_hint is None:
                     # Normalize spurious rc reads only when missing/invalid
                     rc = 0
                 if trace:
@@ -375,7 +461,8 @@ class StataClient:
         success = rc == 0 and exc is None
         error = None
         if not success:
-            error = self._build_error_envelope(code, rc, stdout, stderr, exc, trace)
+            # Pass ret_text as stdout for snippet parsing.
+            error = self._build_error_envelope(code, rc, ret_text or "", stderr, exc, trace)
 
         return CommandResponse(
             command=code,
@@ -454,7 +541,13 @@ class StataClient:
                         try:
                             if trace:
                                 self.stata.run("set trace on")
-                            self.stata.run(code, echo=echo)
+                            ret = self.stata.run(code, echo=echo)
+                            # Some PyStata builds return output as a string rather than printing.
+                            if isinstance(ret, str) and ret:
+                                try:
+                                    tee.write(ret)
+                                except Exception:
+                                    pass
                         except Exception as e:
                             exc = e
                         finally:
@@ -690,7 +783,13 @@ class StataClient:
                             try:
                                 if trace:
                                     self.stata.run("set trace on")
-                                self.stata.run(command, echo=echo)
+                                ret = self.stata.run(command, echo=echo)
+                                # Some PyStata builds return output as a string rather than printing.
+                                if isinstance(ret, str) and ret:
+                                    try:
+                                        tee.write(ret)
+                                    except Exception:
+                                        pass
                             except Exception as e:
                                 exc = e
                             finally:
@@ -1219,7 +1318,7 @@ class StataClient:
             )
         return VariablesResponse(variables=vars_info)
 
-    def list_graphs(self) -> List[str]:
+    def list_graphs(self, *, force_refresh: bool = False) -> List[str]:
         """Returns list of graphs in memory with TTL caching."""
         if not self._initialized:
             self.init()
@@ -1239,7 +1338,7 @@ class StataClient:
         # Check if cache is valid
         current_time = time.time()
         with self._list_graphs_cache_lock:
-            if (self._list_graphs_cache is not None and
+            if (not force_refresh and self._list_graphs_cache is not None and
                 current_time - self._list_graphs_cache_time < self.LIST_GRAPHS_TTL):
                 return self._list_graphs_cache
 
@@ -1254,12 +1353,14 @@ class StataClient:
             from sfi import Macro  # type: ignore[import-not-found]
             self.stata.run("global mcp_graph_list `r(list)'")
             graph_list_str = Macro.getGlobal("mcp_graph_list")
-            
-            if not graph_list_str:
-                result = []
-            else:
-                result = graph_list_str.split()
-            
+            raw_list = graph_list_str.split() if graph_list_str else []
+
+            # Map internal Stata names back to user-facing names when we have an alias.
+            reverse = getattr(self, "_graph_name_reverse", {})
+            graph_list = [reverse.get(n, n) for n in raw_list]
+
+            result = graph_list
+
             # Update cache
             with self._list_graphs_cache_lock:
                 self._list_graphs_cache = result
@@ -1387,7 +1488,8 @@ class StataClient:
 
             cmd = "graph export"
             if graph_name:
-                cmd += f' "{filename_for_stata}", name("{graph_name}") replace as({fmt})'
+                resolved = self._resolve_graph_name_for_stata(graph_name)
+                cmd += f' "{filename_for_stata}", name("{resolved}") replace as({fmt})'
             else:
                 cmd += f' "{filename_for_stata}", replace as({fmt})'
 
@@ -1547,9 +1649,8 @@ class StataClient:
         import os
         import uuid
         
-        if not hasattr(self, '_cache_initialized'):
-            with StataClient._cache_init_lock:  # Use class-level lock
-                if not hasattr(self, '_cache_initialized'):
+        with StataClient._cache_init_lock:  # Use class-level lock
+            if not hasattr(self, '_cache_initialized'):
                     self._preemptive_cache = {}
                     self._cache_access_times = {}  # Track access times for LRU
                     self._cache_sizes = {}  # Track individual cache item sizes
@@ -1563,15 +1664,22 @@ class StataClient:
                     # Register cleanup function
                     import atexit
                     atexit.register(self._cleanup_cache)
+            else:
+                # Cache already initialized, but directory might have been removed.
+                if (not hasattr(self, '_preemptive_cache_dir') or
+                    not self._preemptive_cache_dir or
+                    not os.path.isdir(self._preemptive_cache_dir)):
+                    unique_id = f"preemptive_cache_{uuid.uuid4().hex[:8]}_{os.getpid()}"
+                    self._preemptive_cache_dir = tempfile.mkdtemp(prefix=unique_id)
     
     def _cleanup_cache(self) -> None:
         """Clean up cache directory and files."""
         import os
         import shutil
         
-        if hasattr(self, '_preemptive_cache_dir') and os.path.exists(self._preemptive_cache_dir):
+        if hasattr(self, '_preemptive_cache_dir') and self._preemptive_cache_dir:
             try:
-                shutil.rmtree(self._preemptive_cache_dir)
+                shutil.rmtree(self._preemptive_cache_dir, ignore_errors=True)
             except Exception:
                 pass  # Best effort cleanup
         
@@ -1640,7 +1748,7 @@ class StataClient:
     def _get_content_hash(self, data: bytes) -> str:
         """Generate content hash for cache validation."""
         import hashlib
-        return hashlib.sha256(data).hexdigest()
+        return hashlib.md5(data).hexdigest()
     
     def _sanitize_filename(self, name: str) -> str:
         """Sanitize graph name for safe file system usage."""
@@ -1648,7 +1756,6 @@ class StataClient:
         # Remove or replace problematic characters
         safe_name = re.sub(r'[<>:"/\\|?*]', '_', name)
         safe_name = re.sub(r'[^\w\-_.]', '_', safe_name)
-        safe_name = re.sub(r'_+', '_', safe_name)
         # Limit length
         return safe_name[:100] if len(safe_name) > 100 else safe_name
     
@@ -1656,12 +1763,13 @@ class StataClient:
         """Validate that graph still exists in Stata."""
         try:
             # First try to get graph list to verify existence
-            graph_list = self.list_graphs()
+            graph_list = self.list_graphs(force_refresh=True)
             if graph_name not in graph_list:
                 return False
             
             # Additional validation by attempting to display the graph
-            cmd = f'graph display {graph_name}'
+            resolved = self._resolve_graph_name_for_stata(graph_name)
+            cmd = f'graph display {resolved}'
             resp = self._exec_no_capture(cmd, echo=False)
             return resp.success
         except Exception:
@@ -1702,7 +1810,7 @@ class StataClient:
                        returns file paths to exported PNG files.
         """
         exports: List[GraphExport] = []
-        graph_names = self.list_graphs()
+        graph_names = self.list_graphs(force_refresh=True)
         
         if not graph_names:
             return GraphExportResponse(graphs=exports)
@@ -1769,11 +1877,13 @@ class StataClient:
                 try:
                     # Use proper temp directory handling
                     temp_dir = tempfile.gettempdir()
-                    unique_filename = f"{name}_{uuid.uuid4().hex[:8]}_{os.getpid()}_{int(time.time())}.svg"
+                    safe_temp_name = self._sanitize_filename(name)
+                    unique_filename = f"{safe_temp_name}_{uuid.uuid4().hex[:8]}_{os.getpid()}_{int(time.time())}.svg"
                     svg_path = os.path.join(temp_dir, unique_filename)
                     svg_path_for_stata = svg_path.replace("\\", "/")
                     
-                    display_cmd = f'graph display {name}'
+                    resolved = self._resolve_graph_name_for_stata(name)
+                    display_cmd = f'graph display {resolved}'
                     display_resp = self._exec_no_capture(display_cmd, echo=False)
                     
                     if display_resp.success:
@@ -1918,9 +2028,25 @@ class StataClient:
             safe_name = self._sanitize_filename(graph_name)
             cache_path = os.path.join(self._preemptive_cache_dir, f"{safe_name}.svg")
             cache_path_for_stata = cache_path.replace("\\", "/")
+
+            resolved_graph_name = self._resolve_graph_name_for_stata(graph_name)
+            graph_name_q = self._stata_quote(resolved_graph_name)
             
-            export_cmd = f'graph export "{cache_path_for_stata}", name("{graph_name}") replace as(svg)'
+            export_cmd = f'graph export "{cache_path_for_stata}", name({graph_name_q}) replace as(svg)'
             resp = self._exec_no_capture(export_cmd, echo=False)
+
+            # Fallback: some graph names (spaces, slashes, backslashes) can confuse
+            # Stata's parser in name() even when the graph exists. In that case,
+            # make the graph current, then export without name().
+            if not resp.success:
+                try:
+                    display_cmd = f'graph display {graph_name_q}'
+                    display_resp = self._exec_no_capture(display_cmd, echo=False)
+                    if display_resp.success:
+                        export_cmd2 = f'graph export "{cache_path_for_stata}", replace as(svg)'
+                        resp = self._exec_no_capture(export_cmd2, echo=False)
+                except Exception:
+                    pass
             
             if resp.success and os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
                 # Read the data to compute hash
@@ -2015,7 +2141,13 @@ class StataClient:
                     try:
                         if trace:
                             self.stata.run("set trace on")
-                        self.stata.run(command, echo=echo)
+                        ret = self.stata.run(command, echo=echo)
+                        # Some PyStata builds return output as a string rather than printing.
+                        if isinstance(ret, str) and ret:
+                            try:
+                                tee.write(ret)
+                            except Exception:
+                                pass
                     except Exception as e:
                         exc = e
                     finally:

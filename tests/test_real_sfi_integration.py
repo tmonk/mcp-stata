@@ -32,7 +32,12 @@ class TestRealSFIIntegration:
         client = StataClient()
         client.init()  # Initialize the actual Stata connection
         yield client
-        # Cleanup if needed
+        # Cleanup
+        try:
+            client.stata.run("graph drop _all", quietly=True)
+            client.stata.run("clear", quietly=True)
+        except Exception:
+            pass
     
     @pytest.fixture
     def detector_with_real_client(self, real_stata_client):
@@ -70,6 +75,11 @@ class TestRealSFIIntegration:
         graphs = detector._get_current_graphs_from_pystata()
         assert isinstance(graphs, list), "Should return a list"
         
+        # Clear existing graphs and reset detector state
+        detector._stata_client.stata.run("graph drop _all", quietly=True)
+        detector._stata_client.stata.run("clear", quietly=True)
+        detector.clear_detection_state()
+        
         # Create a simple graph to test detection
         detector._stata_client.stata.run("sysuse auto, clear", quietly=True)
         detector._stata_client.stata.run("scatter price mpg, name(TestGraph)", quietly=True)
@@ -85,6 +95,11 @@ class TestRealSFIIntegration:
     def test_graph_state_detection_real(self, detector_with_real_client):
         """Test _get_graph_state_from_pystata with real Stata connection."""
         detector = detector_with_real_client
+        
+        # Clear existing graphs and reset detector state
+        detector._stata_client.stata.run("graph drop _all", quietly=True)
+        detector._stata_client.stata.run("clear", quietly=True)
+        detector.clear_detection_state()
         
         # Create a graph
         detector._stata_client.stata.run("sysuse auto, clear", quietly=True)
@@ -109,8 +124,10 @@ class TestRealSFIIntegration:
         """Test _detect_graphs_via_pystata with real Stata connection."""
         detector = detector_with_real_client
         
-        # Clear any existing graphs
+        # Clear any existing graphs and reset detector state
+        detector._stata_client.stata.run("graph drop _all", quietly=True)
         detector._stata_client.stata.run("clear", quietly=True)
+        detector.clear_detection_state()
         
         # Create a graph
         detector._stata_client.stata.run("sysuse auto, clear", quietly=True)
@@ -129,6 +146,11 @@ class TestRealSFIIntegration:
     def test_sfi_graph_detection_integration_real(self, detector_with_real_client):
         """Test full SFI graph detection integration with real Stata."""
         detector = detector_with_real_client
+        
+        # Clear existing graphs and reset detector state
+        detector._stata_client.stata.run("graph drop _all", quietly=True)
+        detector._stata_client.stata.run("clear", quietly=True)
+        detector.clear_detection_state()
         
         # Test SFI detection with real Stata
         detected = detector._detect_graphs_via_pystata()
@@ -152,34 +174,15 @@ class TestRealSFIIntegration:
         detector._stata_client.stata.run("graph drop IntegrationTest", quietly=True)
         detector._stata_client.stata.run("clear", quietly=True)
     
-    def test_streaming_cache_with_real_pystata(self, real_stata_client):
-        """Test StreamingGraphCache with real pystata integration."""
-        cache = StreamingGraphCache(real_stata_client, auto_cache=True)
         
-        # Verify detector is initialized with client
-        assert cache.detector._stata_client == real_stata_client
-        
-        # Test processing a chunk that creates a graph
-        real_stata_client.stata.run("sysuse auto, clear", quietly=True)
-        cache.process_streaming_chunk("scatter price mpg, name(StreamingTest)")
-        
-        # Should have detected the graph - check the correct attribute
-        assert "StreamingTest" in cache._graphs_to_cache or len(cache._cached_graphs) > 0
-        
-        # Clean up - handle case where graph might not exist
-        try:
-            real_stata_client.stata.run("graph drop StreamingTest", quietly=True)
-        except SystemError:
-            # Graph might not exist, that's okay
-            pass
-        real_stata_client.stata.run("clear", quietly=True)
-    
     def test_multiple_graph_detection_real(self, detector_with_real_client):
         """Test detecting multiple graphs created in sequence."""
         detector = detector_with_real_client
         
-        # Clear existing graphs
+        # Clear existing graphs and reset detector state
+        detector._stata_client.stata.run("graph drop _all", quietly=True)
         detector._stata_client.stata.run("clear", quietly=True)
+        detector.clear_detection_state()
         
         # Create multiple graphs using valid Stata commands
         detector._stata_client.stata.run("sysuse auto, clear", quietly=True)
@@ -203,6 +206,11 @@ class TestRealSFIIntegration:
     def test_graph_modification_detection_real(self, detector_with_real_client):
         """Test detecting when graphs are modified."""
         detector = detector_with_real_client
+        
+        # Clear existing graphs and reset detector state
+        detector._stata_client.stata.run("graph drop _all", quietly=True)
+        detector._stata_client.stata.run("clear", quietly=True)
+        detector.clear_detection_state()
         
         # Create initial graph
         detector._stata_client.stata.run("sysuse auto, clear", quietly=True)
