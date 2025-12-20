@@ -3,8 +3,18 @@ import threading
 import tempfile
 import os
 import time
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+
+# Mock the Stata dependencies to avoid import errors
+sys.modules['sfi'] = MagicMock()
+sys.modules['pystata'] = MagicMock()
+sys.modules['stata_setup'] = MagicMock()
+
+# Add src to path for importing StataClient
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
+
 from mcp_stata.stata_client import StataClient
 
 # Mark all tests in this module as requiring Stata

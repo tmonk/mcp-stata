@@ -1,10 +1,11 @@
 import os
 import sys
+import platform
 from pathlib import Path
 
 # Import discovery module directly to avoid import chain issues
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
-from mcp_stata.discovery import discovery
+from mcp_stata.discovery import find_stata_path
 
 
 def _touch_file(path: Path) -> Path:
@@ -15,24 +16,24 @@ def _touch_file(path: Path) -> Path:
 
 def test_windows_stata_path_with_quotes(monkeypatch, tmp_path):
     monkeypatch.delenv("STATA_PATH", raising=False)
-    monkeypatch.setattr(discovery.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
 
     exe_path = _touch_file(tmp_path / "Program Files" / "Stata18" / "StataMP-64.exe")
     monkeypatch.setenv("STATA_PATH", f'"{exe_path}"')
 
-    path, edition = discovery.find_stata_path()
+    path, edition = find_stata_path()
     assert path == str(exe_path)
     assert edition == "mp"
 
 
 def test_windows_stata_path_directory_value(monkeypatch, tmp_path):
     monkeypatch.delenv("STATA_PATH", raising=False)
-    monkeypatch.setattr(discovery.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
 
     install_dir = tmp_path / "Program Files" / "Stata18"
     exe_path = _touch_file(install_dir / "StataSE-64.exe")
     monkeypatch.setenv("STATA_PATH", f'"{install_dir}"')
 
-    path, edition = discovery.find_stata_path()
+    path, edition = find_stata_path()
     assert path == str(exe_path)
     assert edition == "se"
