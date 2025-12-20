@@ -25,6 +25,10 @@ from mcp_stata.graph_detector import GraphCreationDetector, StreamingGraphCache
 from mcp_stata.stata_client import StataClient
 
 
+# Mark all tests in this module as requiring Stata
+pytestmark = pytest.mark.requires_stata
+
+
 class TestGraphCreationDetector:
     """Test graph creation detection functionality."""
     
