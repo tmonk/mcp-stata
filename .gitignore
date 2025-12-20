@@ -13,3 +13,4 @@ py.typed
 .gemini
 .claude
 .coverage
+test_external_do_file_full.py
