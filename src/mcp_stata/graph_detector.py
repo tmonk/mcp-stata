@@ -227,64 +227,12 @@ class StreamingGraphCache:
         self._graphs_to_cache: List[str] = []
         self._cached_graphs: Set[str] = set()
         self._removed_graphs = set()  # Track removed graphs directly
+        self._initial_graphs: Set[str] = set()  # Captured before execution starts
     
     def add_cache_callback(self, callback: Callable[[str, bool], None]) -> None:
         """Add callback for graph cache events."""
         with self._lock:
             self._cache_callbacks.append(callback)
-    
-    def process_streaming_chunk(self, chunk: str, current_graph_list: List[str] = None) -> None:
-        """Process a chunk of streaming output using SFI-only graph detection.
-        
-        Args:
-            chunk: Stata output text (ignored - SFI provides authoritative state)
-            current_graph_list: Current list of graphs from Stata (ignored - SFI provides this)
-        """
-        if not self.auto_cache:
-            return
-        
-        if not self.stata_client:
-            return
-        
-        detected_graphs = []
-        
-        # SFI-only detection - no text parsing fallbacks
-        try:
-            # Use pystata-integrated detection as the only method
-            sfi_detected = self.detector._detect_graphs_via_pystata()
-            detected_graphs.extend(sfi_detected)
-            
-        except Exception as e:
-            logger.debug(f"SFI detection failed during streaming: {e}")
-            return
-        
-        # Detect modifications using SFI
-        modifications = self.detector.detect_graph_modifications()
-        if modifications.get("dropped") or modifications.get("cleared"):
-            self.detector.process_modifications(modifications)
-            
-            # Handle cache invalidation for dropped graphs
-            for graph_name in modifications.get("dropped", []):
-                self._removed_graphs.add(graph_name)
-                try:
-                    self.stata_client.invalidate_graph_cache(graph_name)
-                except Exception:
-                    pass
-            
-            if modifications.get("cleared", False):
-                self._removed_graphs.clear()
-                try:
-                    self.stata_client.invalidate_graph_cache()
-                except Exception:
-                    pass
-        
-        # Add detected graphs to cache queue
-        for graph_name in detected_graphs:
-            if graph_name not in self._removed_graphs:
-                try:
-                    self._graphs_to_cache.append(graph_name)
-                except Exception:
-                    pass
     
     async def cache_detected_graphs_with_pystata(self) -> List[str]:
         """Enhanced caching method that uses pystata for real-time graph detection."""

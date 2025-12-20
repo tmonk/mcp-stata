@@ -5,19 +5,15 @@ Tests for streaming graph cache integration using real Stata.
 import pytest
 import asyncio
 import json
-import sys
 import os
-
-# Add the src directory to the Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 # Configure Stata before importing sfi-dependent modules
 import stata_setup
-from mcp_stata.discovery import find_stata_path
+from conftest import configure_stata_for_tests
 
 try:
-    stata_path, stata_flavor = find_stata_path()
-    stata_setup.config(stata_path, stata_flavor)
+    stata_dir, stata_flavor = configure_stata_for_tests()
+    stata_setup.config(stata_dir, stata_flavor)
 except (FileNotFoundError, PermissionError) as e:
     pytest.skip(f"Stata not found or not executable: {e}", allow_module_level=True)
 

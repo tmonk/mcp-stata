@@ -157,10 +157,9 @@ class TailBuffer:
 
 
 class FileTeeIO:
-    def __init__(self, file_obj, tail: TailBuffer, chunk_callback: Optional[Callable[[str], None]] = None):
+    def __init__(self, file_obj, tail: TailBuffer):
         self._file = file_obj
         self._tail = tail
-        self._chunk_callback = chunk_callback
         self._lock = threading.Lock()
         self._closed = False
 
@@ -175,14 +174,7 @@ class FileTeeIO:
 
             self._tail.append(text)
             self._file.write(text)
-            
-            # Call chunk callback if provided
-            if self._chunk_callback:
-                try:
-                    self._chunk_callback(text)
-                except Exception:
-                    pass  # Don't let callback errors break writing
-            
+
             if "\n" in text:
                 try:
                     self._file.flush()

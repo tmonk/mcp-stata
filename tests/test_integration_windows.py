@@ -1,5 +1,4 @@
 import os
-import sys
 import platform
 from pathlib import Path
 
@@ -10,13 +9,8 @@ pytestmark = [
     pytest.mark.requires_stata
 ]
 
-try:
-    from mcp_stata.stata_client import StataClient
-    from mcp_stata import discovery
-except ImportError:
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
-    from mcp_stata.stata_client import StataClient
-    from mcp_stata import discovery
+from mcp_stata.stata_client import StataClient
+from mcp_stata import discovery
 
 
 @pytest.mark.integration

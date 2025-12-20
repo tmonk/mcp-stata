@@ -6,10 +6,6 @@ from pathlib import Path
 
 import pytest
 
-# Import discovery module directly to avoid import chain issues
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 from mcp_stata.discovery import find_stata_path
 
 # Linux-only: these discovery cases rely on Linux filesystem layout/exec bits.

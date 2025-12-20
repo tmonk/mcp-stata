@@ -1,17 +1,10 @@
 import os
-import sys
 import pytest
 import shutil
 from pathlib import Path
 
-try:
-    from mcp_stata.stata_client import StataClient
-    from mcp_stata import discovery
-except ImportError:
-    # Fallback when running directly from a source checkout without installation
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
-    from mcp_stata.stata_client import StataClient
-    from mcp_stata import discovery
+from mcp_stata.stata_client import StataClient
+from mcp_stata import discovery
 
 # Mark all tests in this module as requiring Stata
 pytestmark = pytest.mark.requires_stata

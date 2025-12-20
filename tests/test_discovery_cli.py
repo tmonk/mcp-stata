@@ -1,16 +1,6 @@
-import os
-import sys
-
-
-
-
-# Import discovery module directly to avoid import chain issues
 import platform
-try:
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
-    from mcp_stata.discovery import main, find_stata_path
-except ImportError:
-    from mcp_stata.discovery import main, find_stata_path
+
+from mcp_stata import discovery
 
 
 def test_discovery_cli_main_success(monkeypatch, tmp_path, capsys):
@@ -21,7 +11,7 @@ def test_discovery_cli_main_success(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("STATA_PATH", str(fake_bin))
     monkeypatch.setattr(platform, "system", lambda: "Windows")
 
-    rc = main()
+    rc = discovery.main()
     captured = capsys.readouterr().out
     assert rc == 0
     assert "Stata executable" in captured

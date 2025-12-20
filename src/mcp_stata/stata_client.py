@@ -37,6 +37,7 @@ class StataClient:
     _initialized = False
     _exec_lock: threading.Lock
     _cache_init_lock = threading.Lock()  # Class-level lock for cache initialization
+    _is_executing = False  # Flag to prevent recursive Stata calls
     MAX_DATA_ROWS = 500
     MAX_GRAPH_BYTES = 50 * 1024 * 1024  # Maximum graph exports (~50MB)
     MAX_CACHE_SIZE = 100  # Maximum number of graphs to cache
@@ -47,6 +48,7 @@ class StataClient:
         if cls._instance is None:
             cls._instance = super(StataClient, cls).__new__(cls)
             cls._instance._exec_lock = threading.Lock()
+            cls._instance._is_executing = False
         return cls._instance
 
     @contextmanager
@@ -282,21 +284,27 @@ class StataClient:
         start_time = time.time()
         exc: Optional[Exception] = None
         with self._exec_lock:
-            with self._temp_cwd(cwd):
-                with self._redirect_io() as (out_buf, err_buf):
-                    try:
-                        if trace:
-                            self.stata.run("set trace on")
-                        self.stata.run(code, echo=echo)
-                    except Exception as e:
-                        exc = e
-                    finally:
-                        rc = self._read_return_code()
-                        if trace:
-                            try:
-                                self.stata.run("set trace off")
-                            except Exception:
-                                pass
+            # Set execution flag to prevent recursive Stata calls
+            self._is_executing = True
+            try:
+                with self._temp_cwd(cwd):
+                    with self._redirect_io() as (out_buf, err_buf):
+                        try:
+                            if trace:
+                                self.stata.run("set trace on")
+                            self.stata.run(code, echo=echo)
+                        except Exception as e:
+                            exc = e
+                        finally:
+                            rc = self._read_return_code()
+                            if trace:
+                                try:
+                                    self.stata.run("set trace off")
+                                except Exception:
+                                    pass
+            finally:
+                # Clear execution flag
+                self._is_executing = False
 
         stdout = out_buf.getvalue()
         stderr = err_buf.getvalue()
@@ -431,10 +439,7 @@ class StataClient:
         )
         log_path = log_file.name
         tail = TailBuffer(max_chars=8000)
-        
-        # Create tee with graph detection callback
-        chunk_callback = graph_cache.process_streaming_chunk if graph_cache else None
-        tee = FileTeeIO(log_file, tail, chunk_callback)
+        tee = FileTeeIO(log_file, tail)
 
         # Inform the MCP client immediately where to read/tail the output.
         await notify_log(json.dumps({"event": "log_path", "path": log_path}))
@@ -655,10 +660,7 @@ class StataClient:
         )
         log_path = log_file.name
         tail = TailBuffer(max_chars=8000)
-        
-        # Create tee with graph detection callback
-        chunk_callback = graph_cache.process_streaming_chunk if graph_cache else None
-        tee = FileTeeIO(log_file, tail, chunk_callback)
+        tee = FileTeeIO(log_file, tail)
 
         # Inform the MCP client immediately where to read/tail the output.
         await notify_log(json.dumps({"event": "log_path", "path": log_path}))
@@ -667,157 +669,42 @@ class StataClient:
         path_for_stata = effective_path.replace("\\", "/")
         command = f'do "{path_for_stata}"'
 
+        # Capture initial graph state BEFORE execution starts
+        # This allows post-execution detection to identify new graphs
+        if graph_cache:
+            try:
+                graph_cache._initial_graphs = set(self.list_graphs())
+                logger.debug(f"Initial graph state captured: {graph_cache._initial_graphs}")
+            except Exception as e:
+                logger.debug(f"Failed to capture initial graph state: {e}")
+                graph_cache._initial_graphs = set()
+
         def _run_blocking() -> None:
             nonlocal rc, exc
             with self._exec_lock:
-                with self._temp_cwd(cwd):
-                    with self._redirect_io_streaming(tee, tee):
-                        try:
-                            if trace:
-                                self.stata.run("set trace on")
-                            self.stata.run(command, echo=echo)
-                        except Exception as e:
-                            exc = e
-                        finally:
-                            rc = self._read_return_code()
-                            if trace:
-                                try:
-                                    self.stata.run("set trace off")
-                                except Exception:
-                                    pass
-
-        done = anyio.Event()
-
-        async def _monitor_graph_detection_sfi() -> None:
-            """Monitor graph detection using robust SFI state tracking during streaming."""
-            if not graph_cache:
-                return
-            
-            last_graph_state = set()
-            detection_count = 0
-            consecutive_empty_checks = 0
-            max_consecutive_empty_checks = 50  # Stop after 50 consecutive empty checks
-            
-            try:
-                # Get initial graph state
+                # Set execution flag to prevent recursive Stata calls
+                self._is_executing = True
                 try:
-                    initial_graphs = graph_cache.stata_client.list_graphs()
-                    last_graph_state = set(initial_graphs)
-                    logger.debug(f"SFI Monitor: Initial graph state: {last_graph_state}")
-                except Exception as e:
-                    logger.debug(f"SFI Monitor: Failed to get initial state: {e}")
-                    last_graph_state = set()
-                
-                while not done.is_set() and consecutive_empty_checks < max_consecutive_empty_checks:
-                    # Check current graph state via SFI with enhanced detection
-                    try:
-                        # Use lock to ensure atomic state check and cache operations
-                        with graph_cache._lock:
-                            current_graphs = graph_cache.stata_client.list_graphs()
-                            current_state = set(current_graphs)
-                            
-                            # Use the detector's enhanced pystata detection for more accuracy
-                            if hasattr(graph_cache.detector, '_detect_graphs_via_pystata'):
-                                pystata_detected = graph_cache.detector._detect_graphs_via_pystata()
-                                detected_set = set(pystata_detected)
-                            else:
-                                detected_set = current_state - last_graph_state
-                            
-                            # Detect new graphs
-                            new_graphs = detected_set - graph_cache._cached_graphs - graph_cache._removed_graphs
-                        
-                        if new_graphs:
-                            logger.debug(f"SFI Monitor: Detected new graphs: {new_graphs}")
-                            consecutive_empty_checks = 0  # Reset counter on new graphs
-                            for graph_name in new_graphs:
-                                # Cache the newly detected graph
-                                try:
-                                    # Extend lock scope to cover entire cache operation
-                                    with graph_cache._lock:
-                                        # Check if already cached to avoid duplicate operations
-                                        if graph_name not in graph_cache._cached_graphs:
-                                            cache_result = graph_cache.stata_client.cache_graph_on_creation(graph_name)
-                                            if cache_result:
-                                                graph_cache._cached_graphs.add(graph_name)
-                                    
-                                    # Trigger callbacks for cache result
-                                    for callback in graph_cache._cache_callbacks:
-                                        try:
-                                            callback(graph_name, cache_result)
-                                        except Exception as e:
-                                            logger.debug(f"SFI Monitor: Callback failed for {graph_name}: {e}")
-                                except Exception as e:
-                                    logger.debug(f"SFI Monitor: Cache failed for {graph_name}: {e}")
-                                    # Trigger callbacks for failed cache
-                                    for callback in graph_cache._cache_callbacks:
-                                        try:
-                                            callback(graph_name, False)
-                                        except Exception:
-                                            pass
-                        
-                        last_graph_state = current_state
-                        detection_count += 1
-                        
-                        # Increment consecutive empty checks if no new graphs detected
-                        if not new_graphs:
-                            consecutive_empty_checks += 1
-                        
-                    except Exception as e:
-                        logger.debug(f"SFI Monitor: State check failed: {e}")
-                    
-                    # Adaptive polling: check more frequently at start, less frequently later
-                    if detection_count < 10:
-                        await anyio.sleep(0.05)  # 50ms for first 10 iterations
-                    elif detection_count < 50:
-                        await anyio.sleep(0.1)   # 100ms for next 40 iterations
-                    else:
-                        await anyio.sleep(0.2)   # 200ms thereafter
-                
-                # Final comprehensive check after completion
-                try:
-                    final_graphs = graph_cache.stata_client.list_graphs()
-                    final_state = set(final_graphs)
-                    
-                    # Use enhanced detection for final check
-                    if hasattr(graph_cache.detector, '_detect_graphs_via_pystata'):
-                        final_detected = graph_cache.detector._detect_graphs_via_pystata()
-                        detected_set = set(final_detected)
-                    else:
-                        detected_set = final_state - last_graph_state
-                    
-                    new_graphs = detected_set - graph_cache._cached_graphs - graph_cache._removed_graphs
-                    if new_graphs:
-                        logger.debug(f"SFI Monitor: Final detection of graphs: {new_graphs}")
-                        for graph_name in new_graphs:
+                    with self._temp_cwd(cwd):
+                        with self._redirect_io_streaming(tee, tee):
                             try:
-                                # Extend lock scope to cover entire cache operation
-                                with graph_cache._lock:
-                                    # Check if already cached to avoid duplicate operations
-                                    if graph_name not in graph_cache._cached_graphs:
-                                        cache_result = graph_cache.stata_client.cache_graph_on_creation(graph_name)
-                                        if cache_result:
-                                            graph_cache._cached_graphs.add(graph_name)
-                                
-                                # Trigger callbacks for cache result
-                                for callback in graph_cache._cache_callbacks:
-                                    try:
-                                        callback(graph_name, cache_result)
-                                    except Exception as e:
-                                        logger.debug(f"SFI Monitor: Final callback failed for {graph_name}: {e}")
+                                if trace:
+                                    self.stata.run("set trace on")
+                                self.stata.run(command, echo=echo)
                             except Exception as e:
-                                logger.debug(f"SFI Monitor: Final cache failed for {graph_name}: {e}")
-                                # Trigger callbacks for failed cache
-                                for callback in graph_cache._cache_callbacks:
+                                exc = e
+                            finally:
+                                rc = self._read_return_code()
+                                if trace:
                                     try:
-                                        callback(graph_name, False)
+                                        self.stata.run("set trace off")
                                     except Exception:
                                         pass
-                except Exception as e:
-                    logger.debug(f"SFI Monitor: Final check failed: {e}")
-                    
-            except Exception as e:
-                logger.debug(f"SFI Monitor: Monitoring failed: {e}")
-                return
+                finally:
+                    # Clear execution flag
+                    self._is_executing = False
+
+        done = anyio.Event()
 
         async def _monitor_progress_from_log() -> None:
             if notify_progress is None or total_lines <= 0:
@@ -831,24 +718,17 @@ class StataClient:
                         if chunk:
                             last_pos = f.tell()
                             await on_chunk_for_progress(chunk)
-                            # Process chunk for graph detection if cache is available
-                            if chunk_callback and chunk:
-                                chunk_callback(chunk)
                         await anyio.sleep(0.05)
 
                     f.seek(last_pos)
                     chunk = f.read()
                     if chunk:
                         await on_chunk_for_progress(chunk)
-                        # Process chunk for graph detection if cache is available
-                        if chunk_callback and chunk:
-                            chunk_callback(chunk)
             except Exception:
                 return
 
         async with anyio.create_task_group() as tg:
             tg.start_soon(_monitor_progress_from_log)
-            tg.start_soon(_monitor_graph_detection_sfi)
 
             if notify_progress is not None:
                 if total_lines > 0:
@@ -862,23 +742,77 @@ class StataClient:
                 done.set()
                 tee.close()
 
-        # Cache detected graphs after do-file completes
-        if graph_cache:
+        # Robust post-execution graph detection and caching
+        # This is the ONLY place where graphs are detected and cached
+        # Runs after execution completes, when it's safe to call list_graphs()
+        if graph_cache and graph_cache.auto_cache:
+            cached_graphs = []
             try:
-                # Use the enhanced pystata-integrated caching method
-                if hasattr(graph_cache, 'cache_detected_graphs_with_pystata'):
-                    cached_graphs = await graph_cache.cache_detected_graphs_with_pystata()
-                else:
-                    cached_graphs = await graph_cache.cache_detected_graphs()
-                    
+                # Get initial state (before execution)
+                initial_graphs = getattr(graph_cache, '_initial_graphs', set())
+
+                # Get current state (after execution)
+                logger.debug("Post-execution: Querying graph state via list_graphs()")
+                current_graphs = set(self.list_graphs())
+
+                # Detect new graphs (created during execution)
+                new_graphs = current_graphs - initial_graphs - graph_cache._cached_graphs
+
+                if new_graphs:
+                    logger.info(f"Detected {len(new_graphs)} new graph(s): {sorted(new_graphs)}")
+
+                # Cache each detected graph
+                for graph_name in new_graphs:
+                    try:
+                        logger.debug(f"Caching graph: {graph_name}")
+                        cache_result = await anyio.to_thread.run_sync(
+                            self.cache_graph_on_creation,
+                            graph_name
+                        )
+
+                        if cache_result:
+                            cached_graphs.append(graph_name)
+                            graph_cache._cached_graphs.add(graph_name)
+                            logger.debug(f"Successfully cached graph: {graph_name}")
+                        else:
+                            logger.warning(f"Failed to cache graph: {graph_name}")
+
+                        # Trigger callbacks
+                        for callback in graph_cache._cache_callbacks:
+                            try:
+                                await anyio.to_thread.run_sync(callback, graph_name, cache_result)
+                            except Exception as e:
+                                logger.debug(f"Callback failed for {graph_name}: {e}")
+
+                    except Exception as e:
+                        logger.error(f"Error caching graph {graph_name}: {e}")
+                        # Trigger callbacks with failure
+                        for callback in graph_cache._cache_callbacks:
+                            try:
+                                await anyio.to_thread.run_sync(callback, graph_name, False)
+                            except Exception:
+                                pass
+
+                # Check for dropped graphs (for completeness)
+                dropped_graphs = initial_graphs - current_graphs
+                if dropped_graphs:
+                    logger.debug(f"Graphs dropped during execution: {sorted(dropped_graphs)}")
+                    for graph_name in dropped_graphs:
+                        try:
+                            self.invalidate_graph_cache(graph_name)
+                        except Exception:
+                            pass
+
+                # Notify progress if graphs were cached
                 if cached_graphs and notify_progress:
                     await notify_progress(
                         float(total_lines) if total_lines > 0 else 1,
                         float(total_lines) if total_lines > 0 else 1,
-                        f"Do-file completed. Cached {len(cached_graphs)} graphs: {', '.join(cached_graphs)}"
+                        f"Do-file completed. Cached {len(cached_graphs)} graph(s): {', '.join(cached_graphs)}"
                     )
+
             except Exception as e:
-                logger.warning(f"Failed to cache detected graphs: {e}")
+                logger.error(f"Post-execution graph detection failed: {e}")
 
         tail_text = tail.get_value()
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
@@ -1291,14 +1225,24 @@ class StataClient:
             self.init()
 
         import time
-        
+
+        # Prevent recursive Stata calls - if we're already executing, return cached or empty
+        if self._is_executing:
+            with self._list_graphs_cache_lock:
+                if self._list_graphs_cache is not None:
+                    logger.debug("Recursive list_graphs call prevented, returning cached value")
+                    return self._list_graphs_cache
+                else:
+                    logger.debug("Recursive list_graphs call prevented, returning empty list")
+                    return []
+
         # Check if cache is valid
         current_time = time.time()
         with self._list_graphs_cache_lock:
-            if (self._list_graphs_cache is not None and 
+            if (self._list_graphs_cache is not None and
                 current_time - self._list_graphs_cache_time < self.LIST_GRAPHS_TTL):
                 return self._list_graphs_cache
-        
+
         # Cache miss or expired, fetch fresh data
         try:
             # 'graph dir' returns list in r(list)

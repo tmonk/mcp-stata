@@ -3,19 +3,9 @@ Test TTL cache functionality for list_graphs() method.
 """
 
 import pytest
-
 import threading
-import sys
-import os
+import time
 from unittest.mock import Mock, patch
-
-# Mock the Stata dependencies to avoid import errors
-sys.modules['sfi'] = Mock()
-sys.modules['pystata'] = Mock()
-sys.modules['stata_setup'] = Mock()
-
-# Add src to path for importing StataClient
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 
 from mcp_stata.stata_client import StataClient
 

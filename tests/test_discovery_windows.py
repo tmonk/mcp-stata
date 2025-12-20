@@ -1,10 +1,6 @@
-import os
-import sys
 import platform
 from pathlib import Path
 
-# Import discovery module directly to avoid import chain issues
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 from mcp_stata.discovery import find_stata_path
 
 

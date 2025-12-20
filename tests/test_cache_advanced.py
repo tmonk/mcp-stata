@@ -1,19 +1,8 @@
 import pytest
-
-
-
 import time
-import sys
-
+import shutil
+from pathlib import Path
 from unittest.mock import patch, MagicMock
-
-# Mock the Stata dependencies to avoid import errors
-sys.modules['sfi'] = MagicMock()
-sys.modules['pystata'] = MagicMock()
-sys.modules['stata_setup'] = MagicMock()
-
-# Add src to path for importing StataClient
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 
 from mcp_stata.stata_client import StataClient
 
@@ -77,9 +66,8 @@ def test_cache_cleanup_with_missing_directory(client):
     # Initialize cache
     client._initialize_cache()
     cache_dir = client._preemptive_cache_dir
-    
+
     # Remove directory manually
-    import shutil
     shutil.rmtree(cache_dir)
     
     # Cleanup should not raise an error

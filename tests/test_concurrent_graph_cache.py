@@ -11,15 +11,6 @@ import os
 from unittest.mock import Mock, patch
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Mock the Stata dependencies to avoid import errors
-import sys
-sys.modules['sfi'] = Mock()
-sys.modules['pystata'] = Mock()
-sys.modules['stata_setup'] = Mock()
-
-# Add src to path for importing StataClient
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
-
 from mcp_stata.stata_client import StataClient
 from mcp_stata.graph_detector import StreamingGraphCache
 
@@ -483,6 +474,8 @@ class TestErrorRecoveryScenarios:
         large_items = 80  # Close to MAX_CACHE_SIZE of 100
         item_size = 5 * 1024  # 5KB each
 
+        for i in range(large_items):
+            graph_name = f"initial_graph_{i}"
             with mock_stata_client._cache_lock:
                 mock_stata_client._preemptive_cache[graph_name] = f"/tmp/{graph_name}.svg"
                 mock_stata_client._cache_access_times[graph_name] = time.time() - (i * 100)  # Staggered access times

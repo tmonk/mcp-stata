@@ -1,28 +1,20 @@
-import os
-import sys
-
-
 from pathlib import Path
+import os
 
 import pytest
 
 # Configure Stata before importing sfi-dependent modules
 import stata_setup
-from mcp_stata.discovery import find_stata_path
+from conftest import configure_stata_for_tests
 
 try:
-    stata_path, stata_flavor = find_stata_path()
-    stata_setup.config(stata_path, stata_flavor)
+    stata_dir, stata_flavor = configure_stata_for_tests()
+    stata_setup.config(stata_dir, stata_flavor)
 except (FileNotFoundError, PermissionError) as e:
     pytest.skip(f"Stata not found or not executable: {e}", allow_module_level=True)
 
-try:
-    from mcp_stata.stata_client import StataClient
-    from mcp_stata.graph_detector import StreamingGraphCache
-except ImportError:
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
-    from mcp_stata.stata_client import StataClient
-    from mcp_stata.graph_detector import StreamingGraphCache
+from mcp_stata.stata_client import StataClient
+from mcp_stata.graph_detector import StreamingGraphCache
 
 # Mark all tests in this module as requiring Stata
 pytestmark = pytest.mark.requires_stata
