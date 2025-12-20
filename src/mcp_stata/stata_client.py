@@ -1635,58 +1635,63 @@ class StataClient:
             self._preemptive_cache.clear()
     
     def _evict_cache_if_needed(self, new_item_size: int = 0) -> None:
-        """Evict least recently used cache items if cache size limits are exceeded."""
+        """
+        Evict least recently used cache items if cache size limits are exceeded.
+
+        NOTE: The caller is responsible for holding ``self._cache_lock`` while
+        invoking this method, so that eviction and subsequent cache insertion
+        (if any) occur within a single critical section.
+        """
         import time
         
-        with self._cache_lock:
-            # Check if we need to evict based on count or size
-            needs_eviction = (
-                len(self._preemptive_cache) > StataClient.MAX_CACHE_SIZE or
-                self._total_cache_size + new_item_size > StataClient.MAX_CACHE_BYTES
-            )
+        # Check if we need to evict based on count or size
+        needs_eviction = (
+            len(self._preemptive_cache) > StataClient.MAX_CACHE_SIZE or
+            self._total_cache_size + new_item_size > StataClient.MAX_CACHE_BYTES
+        )
+        
+        if not needs_eviction:
+            return
+        
+        # Sort by access time (oldest first)
+        items_by_access = sorted(
+            self._cache_access_times.items(),
+            key=lambda x: x[1]
+        )
+        
+        evicted_count = 0
+        for graph_name, access_time in items_by_access:
+            if (len(self._preemptive_cache) < StataClient.MAX_CACHE_SIZE and 
+                self._total_cache_size + new_item_size <= StataClient.MAX_CACHE_BYTES):
+                break
             
-            if not needs_eviction:
-                return
-            
-            # Sort by access time (oldest first)
-            items_by_access = sorted(
-                self._cache_access_times.items(),
-                key=lambda x: x[1]
-            )
-            
-            evicted_count = 0
-            for graph_name, access_time in items_by_access:
-                if (len(self._preemptive_cache) < StataClient.MAX_CACHE_SIZE and 
-                    self._total_cache_size + new_item_size <= StataClient.MAX_CACHE_BYTES):
-                    break
+            # Remove from cache
+            if graph_name in self._preemptive_cache:
+                cache_path = self._preemptive_cache[graph_name]
                 
-                # Remove from cache
-                if graph_name in self._preemptive_cache:
-                    cache_path = self._preemptive_cache[graph_name]
-                    
-                    # Remove file
-                    try:
-                        if os.path.exists(cache_path):
-                            os.remove(cache_path)
-                    except Exception:
-                        pass
-                    
-                    # Update tracking
-                    item_size = self._cache_sizes.get(graph_name, 0)
-                    del self._preemptive_cache[graph_name]
-                    del self._cache_access_times[graph_name]
-                    if graph_name in self._cache_sizes:
-                        del self._cache_sizes[graph_name]
-                    self._total_cache_size -= item_size
-                    evicted_count += 1
-                    
-                    # Remove hash entry if exists
-                    hash_key = f"{graph_name}_hash"
-                    if hash_key in self._preemptive_cache:
-                        del self._preemptive_cache[hash_key]
-            
-            if evicted_count > 0:
-                logger.debug(f"Evicted {evicted_count} items from graph cache due to size limits")
+                # Remove file
+                try:
+                    if os.path.exists(cache_path):
+                        os.remove(cache_path)
+                except Exception:
+                    pass
+                
+                # Update tracking
+                item_size = self._cache_sizes.get(graph_name, 0)
+                del self._preemptive_cache[graph_name]
+                del self._cache_access_times[graph_name]
+                if graph_name in self._cache_sizes:
+                    del self._cache_sizes[graph_name]
+                self._total_cache_size -= item_size
+                evicted_count += 1
+                
+                # Remove hash entry if exists
+                hash_key = f"{graph_name}_hash"
+                if hash_key in self._preemptive_cache:
+                    del self._preemptive_cache[hash_key]
+        
+        if evicted_count > 0:
+            logger.debug(f"Evicted {evicted_count} items from graph cache due to size limits")
     
     def _get_content_hash(self, data: bytes) -> str:
         """Generate content hash for cache validation."""
