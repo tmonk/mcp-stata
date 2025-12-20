@@ -14,6 +14,7 @@ This server enables LLMs to:
 - **Execute Stata code**: run any Stata command (e.g. `sysuse auto`, `regress price mpg`).
 - **Inspect data**: retrieve dataset summaries and variable codebooks.
 - **Export graphics**: generate and view Stata graphs (histograms, scatterplots).
+- **Streaming graph caching**: automatically cache graphs during command execution for instant exports.
 - **Verify results**: programmatically check stored results (`r()`, `e()`) for accurate validation.
 
 ## Prerequisites

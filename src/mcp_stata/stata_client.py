@@ -27,21 +27,27 @@ from .models import (
 )
 from .smcl.smcl2html import smcl_to_markdown
 from .streaming_io import FileTeeIO, TailBuffer
+from .graph_detector import StreamingGraphCache
 
 logger = logging.getLogger("mcp_stata")
 
+
 class StataClient:
-    _instance = None
     _initialized = False
     _exec_lock: threading.Lock
+    _cache_init_lock = threading.Lock()  # Class-level lock for cache initialization
+    _is_executing = False  # Flag to prevent recursive Stata calls
     MAX_DATA_ROWS = 500
-    MAX_GRAPH_BYTES = 50 * 1024 * 1024  # Allow large graph exports (~50MB)
+    MAX_GRAPH_BYTES = 50 * 1024 * 1024  # Maximum graph exports (~50MB)
+    MAX_CACHE_SIZE = 100  # Maximum number of graphs to cache
+    MAX_CACHE_BYTES = 500 * 1024 * 1024  # Maximum cache size in bytes (~500MB)
+    LIST_GRAPHS_TTL = 0.075  # TTL for list_graphs cache (75ms)
 
     def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(StataClient, cls).__new__(cls)
-            cls._instance._exec_lock = threading.Lock()
-        return cls._instance
+        inst = super(StataClient, cls).__new__(cls)
+        inst._exec_lock = threading.Lock()
+        inst._is_executing = False
+        return inst
 
     @contextmanager
     def _redirect_io(self):
@@ -54,6 +60,16 @@ class StataClient:
         finally:
             sys.stdout, sys.stderr = backup_stdout, backup_stderr
 
+    @staticmethod
+    def _stata_quote(value: str) -> str:
+        """Return a Stata double-quoted string literal for value."""
+        # Stata uses doubled quotes to represent a quote character inside a string.
+        v = (value or "")
+        v = v.replace('"', '""')
+        # Use compound double quotes to avoid tokenization issues with spaces and
+        # punctuation in contexts like graph names.
+        return f'`"{v}"\''
+
     @contextmanager
     def _redirect_io_streaming(self, out_stream, err_stream):
         backup_stdout, backup_stderr = sys.stdout, sys.stderr
@@ -62,6 +78,28 @@ class StataClient:
             yield
         finally:
             sys.stdout, sys.stderr = backup_stdout, backup_stderr
+
+    @staticmethod
+    def _create_graph_cache_callback(on_graph_cached, notify_log):
+        """Create a standardized graph cache callback with proper error handling."""
+        async def graph_cache_callback(graph_name: str, success: bool) -> None:
+            try:
+                if on_graph_cached:
+                    await on_graph_cached(graph_name, success)
+            except Exception as e:
+                logger.error(f"Graph cache callback failed: {e}")
+            
+            try:
+                # Also notify via log channel
+                await notify_log(json.dumps({
+                    "event": "graph_cached",
+                    "graph": graph_name,
+                    "success": success
+                }))
+            except Exception as e:
+                logger.error(f"Failed to notify about graph cache: {e}")
+        
+        return graph_cache_callback
 
     @contextmanager
     def _temp_cwd(self, cwd: Optional[str]):
@@ -150,12 +188,79 @@ class StataClient:
             self.stata = stata
             self._initialized = True
 
+            # Ensure a clean graph state for a fresh client. PyStata's backend is
+            # effectively global, so graph memory can otherwise leak across tests
+            # and separate StataClient instances.
+            try:
+                self.stata.run("capture graph drop _all", quietly=True)
+            except Exception:
+                pass
+            
+            # Initialize list_graphs TTL cache
+            self._list_graphs_cache = None
+            self._list_graphs_cache_time = 0
+            self._list_graphs_cache_lock = threading.Lock()
+
+            # Map user-facing graph names (may include spaces/punctuation) to valid
+            # internal Stata graph names.
+            self._graph_name_aliases: Dict[str, str] = {}
+            self._graph_name_reverse: Dict[str, str] = {}
+
         except ImportError:
             # Fallback for when stata_setup isn't in PYTHONPATH yet?
             # Usually users must have it installed. We rely on discovery logic.
             raise RuntimeError("Could not import `stata_setup`. Ensure pystata is installed.")
-        except Exception as e:
-            raise RuntimeError(f"Failed to initialize Stata: {e}")
+
+    def _make_valid_stata_name(self, name: str) -> str:
+        """Create a valid Stata name (<=32 chars, [A-Za-z_][A-Za-z0-9_]*)."""
+        base = re.sub(r"[^A-Za-z0-9_]", "_", name or "")
+        if not base:
+            base = "Graph"
+        if not re.match(r"^[A-Za-z_]", base):
+            base = f"G_{base}"
+        base = base[:32]
+
+        # Avoid collisions.
+        candidate = base
+        i = 1
+        while candidate in getattr(self, "_graph_name_reverse", {}):
+            suffix = f"_{i}"
+            candidate = (base[: max(0, 32 - len(suffix))] + suffix)[:32]
+            i += 1
+        return candidate
+
+    def _resolve_graph_name_for_stata(self, name: str) -> str:
+        """Return internal Stata graph name for a user-facing name."""
+        if not name:
+            return name
+        aliases = getattr(self, "_graph_name_aliases", None)
+        if aliases and name in aliases:
+            return aliases[name]
+        return name
+
+    def _maybe_rewrite_graph_name_in_command(self, code: str) -> str:
+        """Rewrite name("...") to a valid Stata name and store alias mapping."""
+        if not code:
+            return code
+        if not hasattr(self, "_graph_name_aliases"):
+            self._graph_name_aliases = {}
+            self._graph_name_reverse = {}
+
+        # Handle common patterns: name("..." ...) or name(`"..."' ...)
+        pat = re.compile(r"name\(\s*(?:`\"(?P<cq>[^\"]*)\"'|\"(?P<dq>[^\"]*)\")\s*(?P<rest>[^)]*)\)")
+
+        def repl(m: re.Match) -> str:
+            original = m.group("cq") if m.group("cq") is not None else m.group("dq")
+            original = original or ""
+            internal = self._graph_name_aliases.get(original)
+            if not internal:
+                internal = self._make_valid_stata_name(original)
+                self._graph_name_aliases[original] = internal
+                self._graph_name_reverse[internal] = original
+            rest = m.group("rest") or ""
+            return f"name({internal}{rest})"
+
+        return pat.sub(repl, code)
 
     def _read_return_code(self) -> int:
         """Read the last Stata return code without mutating rc."""
@@ -232,6 +337,8 @@ class StataClient:
         if not self._initialized:
             self.init()
 
+        code = self._maybe_rewrite_graph_name_in_command(code)
+
         if cwd is not None and not os.path.isdir(cwd):
             return CommandResponse(
                 command=code,
@@ -248,24 +355,36 @@ class StataClient:
 
         start_time = time.time()
         exc: Optional[Exception] = None
+        ret_text: Optional[str] = None
         with self._exec_lock:
-            with self._temp_cwd(cwd):
-                with self._redirect_io() as (out_buf, err_buf):
-                    try:
-                        if trace:
-                            self.stata.run("set trace on")
-                        self.stata.run(code, echo=echo)
-                    except Exception as e:
-                        exc = e
-                    finally:
-                        rc = self._read_return_code()
-                        if trace:
-                            try:
-                                self.stata.run("set trace off")
-                            except Exception:
-                                pass
+            # Set execution flag to prevent recursive Stata calls
+            self._is_executing = True
+            try:
+                with self._temp_cwd(cwd):
+                    with self._redirect_io() as (out_buf, err_buf):
+                        try:
+                            if trace:
+                                self.stata.run("set trace on")
+                            ret = self.stata.run(code, echo=echo)
+                            if isinstance(ret, str) and ret:
+                                ret_text = ret
+                        except Exception as e:
+                            exc = e
+                        finally:
+                            rc = self._read_return_code()
+                            if trace:
+                                try:
+                                    self.stata.run("set trace off")
+                                except Exception:
+                                    pass
+            finally:
+                # Clear execution flag
+                self._is_executing = False
 
         stdout = out_buf.getvalue()
+        # Some PyStata builds return output as a string rather than printing.
+        if (not stdout or not stdout.strip()) and ret_text:
+            stdout = ret_text
         stderr = err_buf.getvalue()
         combined = "\n".join(filter(None, [stdout, stderr, str(exc) if exc else ""])).strip()
         rc_hint = self._parse_rc_from_text(combined) if combined else None
@@ -311,16 +430,24 @@ class StataClient:
             self.init()
 
         exc: Optional[Exception] = None
+        ret_text: Optional[str] = None
         with self._exec_lock:
             try:
                 if trace:
                     self.stata.run("set trace on")
-                self.stata.run(code, echo=echo)
+                ret = self.stata.run(code, echo=echo)
+                if isinstance(ret, str) and ret:
+                    ret_text = ret
             except Exception as e:
                 exc = e
             finally:
                 rc = self._read_return_code()
-                if exc is None and (rc is None or rc == -1):
+                # If Stata returned an r(#) in text, prefer it.
+                combined = "\n".join(filter(None, [ret_text or "", str(exc) if exc else ""])).strip()
+                rc_hint = self._parse_rc_from_text(combined) if combined else None
+                if exc is None and rc_hint is not None and rc_hint != 0:
+                    rc = rc_hint
+                if exc is None and (rc is None or rc == -1) and rc_hint is None:
                     # Normalize spurious rc reads only when missing/invalid
                     rc = 0
                 if trace:
@@ -334,7 +461,8 @@ class StataClient:
         success = rc == 0 and exc is None
         error = None
         if not success:
-            error = self._build_error_envelope(code, rc, stdout, stderr, exc, trace)
+            # Pass ret_text as stdout for snippet parsing.
+            error = self._build_error_envelope(code, rc, ret_text or "", stderr, exc, trace)
 
         return CommandResponse(
             command=code,
@@ -355,6 +483,8 @@ class StataClient:
         trace: bool = False,
         max_output_lines: Optional[int] = None,
         cwd: Optional[str] = None,
+        auto_cache_graphs: bool = False,
+        on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]] = None,
     ) -> CommandResponse:
         if not self._initialized:
             self.init()
@@ -375,6 +505,15 @@ class StataClient:
 
         start_time = time.time()
         exc: Optional[Exception] = None
+
+        # Setup streaming graph cache if enabled
+        graph_cache = None
+        if auto_cache_graphs:
+            graph_cache = StreamingGraphCache(self, auto_cache=True)
+            
+            graph_cache_callback = self._create_graph_cache_callback(on_graph_cached, notify_log)
+            
+            graph_cache.add_cache_callback(graph_cache_callback)
 
         log_file = tempfile.NamedTemporaryFile(
             prefix="mcp_stata_",
@@ -402,7 +541,13 @@ class StataClient:
                         try:
                             if trace:
                                 self.stata.run("set trace on")
-                            self.stata.run(code, echo=echo)
+                            ret = self.stata.run(code, echo=echo)
+                            # Some PyStata builds return output as a string rather than printing.
+                            if isinstance(ret, str) and ret:
+                                try:
+                                    tee.write(ret)
+                                except Exception:
+                                    pass
                         except Exception as e:
                             exc = e
                         finally:
@@ -420,6 +565,20 @@ class StataClient:
             await anyio.to_thread.run_sync(_run_blocking)
         finally:
             tee.close()
+
+        # Cache detected graphs after command completes
+        if graph_cache:
+            try:
+                # Use the enhanced pystata-integrated caching method
+                if hasattr(graph_cache, 'cache_detected_graphs_with_pystata'):
+                    cached_graphs = await graph_cache.cache_detected_graphs_with_pystata()
+                else:
+                    cached_graphs = await graph_cache.cache_detected_graphs()
+                    
+                if cached_graphs and notify_progress:
+                    await notify_progress(1, 1, f"Command completed. Cached {len(cached_graphs)} graphs: {', '.join(cached_graphs)}")
+            except Exception as e:
+                logger.warning(f"Failed to cache detected graphs: {e}")
 
         tail_text = tail.get_value()
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
@@ -509,6 +668,8 @@ class StataClient:
         trace: bool = False,
         max_output_lines: Optional[int] = None,
         cwd: Optional[str] = None,
+        auto_cache_graphs: bool = False,
+        on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]] = None,
     ) -> CommandResponse:
         if cwd is not None and not os.path.isdir(cwd):
             return CommandResponse(
@@ -572,6 +733,15 @@ class StataClient:
         start_time = time.time()
         exc: Optional[Exception] = None
 
+        # Setup streaming graph cache if enabled
+        graph_cache = None
+        if auto_cache_graphs:
+            graph_cache = StreamingGraphCache(self, auto_cache=True)
+            
+            graph_cache_callback = self._create_graph_cache_callback(on_graph_cached, notify_log)
+            
+            graph_cache.add_cache_callback(graph_cache_callback)
+
         log_file = tempfile.NamedTemporaryFile(
             prefix="mcp_stata_",
             suffix=".log",
@@ -592,24 +762,46 @@ class StataClient:
         path_for_stata = effective_path.replace("\\", "/")
         command = f'do "{path_for_stata}"'
 
+        # Capture initial graph state BEFORE execution starts
+        # This allows post-execution detection to identify new graphs
+        if graph_cache:
+            try:
+                graph_cache._initial_graphs = set(self.list_graphs())
+                logger.debug(f"Initial graph state captured: {graph_cache._initial_graphs}")
+            except Exception as e:
+                logger.debug(f"Failed to capture initial graph state: {e}")
+                graph_cache._initial_graphs = set()
+
         def _run_blocking() -> None:
             nonlocal rc, exc
             with self._exec_lock:
-                with self._temp_cwd(cwd):
-                    with self._redirect_io_streaming(tee, tee):
-                        try:
-                            if trace:
-                                self.stata.run("set trace on")
-                            self.stata.run(command, echo=echo)
-                        except Exception as e:
-                            exc = e
-                        finally:
-                            rc = self._read_return_code()
-                            if trace:
-                                try:
-                                    self.stata.run("set trace off")
-                                except Exception:
-                                    pass
+                # Set execution flag to prevent recursive Stata calls
+                self._is_executing = True
+                try:
+                    with self._temp_cwd(cwd):
+                        with self._redirect_io_streaming(tee, tee):
+                            try:
+                                if trace:
+                                    self.stata.run("set trace on")
+                                ret = self.stata.run(command, echo=echo)
+                                # Some PyStata builds return output as a string rather than printing.
+                                if isinstance(ret, str) and ret:
+                                    try:
+                                        tee.write(ret)
+                                    except Exception:
+                                        pass
+                            except Exception as e:
+                                exc = e
+                            finally:
+                                rc = self._read_return_code()
+                                if trace:
+                                    try:
+                                        self.stata.run("set trace off")
+                                    except Exception:
+                                        pass
+                finally:
+                    # Clear execution flag
+                    self._is_executing = False
 
         done = anyio.Event()
 
@@ -648,6 +840,78 @@ class StataClient:
             finally:
                 done.set()
                 tee.close()
+
+        # Robust post-execution graph detection and caching
+        # This is the ONLY place where graphs are detected and cached
+        # Runs after execution completes, when it's safe to call list_graphs()
+        if graph_cache and graph_cache.auto_cache:
+            cached_graphs = []
+            try:
+                # Get initial state (before execution)
+                initial_graphs = getattr(graph_cache, '_initial_graphs', set())
+
+                # Get current state (after execution)
+                logger.debug("Post-execution: Querying graph state via list_graphs()")
+                current_graphs = set(self.list_graphs())
+
+                # Detect new graphs (created during execution)
+                new_graphs = current_graphs - initial_graphs - graph_cache._cached_graphs
+
+                if new_graphs:
+                    logger.info(f"Detected {len(new_graphs)} new graph(s): {sorted(new_graphs)}")
+
+                # Cache each detected graph
+                for graph_name in new_graphs:
+                    try:
+                        logger.debug(f"Caching graph: {graph_name}")
+                        cache_result = await anyio.to_thread.run_sync(
+                            self.cache_graph_on_creation,
+                            graph_name
+                        )
+
+                        if cache_result:
+                            cached_graphs.append(graph_name)
+                            graph_cache._cached_graphs.add(graph_name)
+                            logger.debug(f"Successfully cached graph: {graph_name}")
+                        else:
+                            logger.warning(f"Failed to cache graph: {graph_name}")
+
+                        # Trigger callbacks
+                        for callback in graph_cache._cache_callbacks:
+                            try:
+                                await anyio.to_thread.run_sync(callback, graph_name, cache_result)
+                            except Exception as e:
+                                logger.debug(f"Callback failed for {graph_name}: {e}")
+
+                    except Exception as e:
+                        logger.error(f"Error caching graph {graph_name}: {e}")
+                        # Trigger callbacks with failure
+                        for callback in graph_cache._cache_callbacks:
+                            try:
+                                await anyio.to_thread.run_sync(callback, graph_name, False)
+                            except Exception:
+                                pass
+
+                # Check for dropped graphs (for completeness)
+                dropped_graphs = initial_graphs - current_graphs
+                if dropped_graphs:
+                    logger.debug(f"Graphs dropped during execution: {sorted(dropped_graphs)}")
+                    for graph_name in dropped_graphs:
+                        try:
+                            self.invalidate_graph_cache(graph_name)
+                        except Exception:
+                            pass
+
+                # Notify progress if graphs were cached
+                if cached_graphs and notify_progress:
+                    await notify_progress(
+                        float(total_lines) if total_lines > 0 else 1,
+                        float(total_lines) if total_lines > 0 else 1,
+                        f"Do-file completed. Cached {len(cached_graphs)} graph(s): {', '.join(cached_graphs)}"
+                    )
+
+            except Exception as e:
+                logger.error(f"Post-execution graph detection failed: {e}")
 
         tail_text = tail.get_value()
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
@@ -1054,30 +1318,76 @@ class StataClient:
             )
         return VariablesResponse(variables=vars_info)
 
-    def list_graphs(self) -> List[str]:
-        """Returns list of graphs in memory."""
+    def list_graphs(self, *, force_refresh: bool = False) -> List[str]:
+        """Returns list of graphs in memory with TTL caching."""
         if not self._initialized:
             self.init()
 
-        # 'graph dir' returns list in r(list)
-        # We need to ensure we run it quietly so we don't spam.
-        self.stata.run("quietly graph dir, memory")
+        import time
 
-        # Accessing r-class results in Python can be tricky via pystata's run command.
-        # We stash the result in a global macro that python sfi can easily read.
-        from sfi import Macro  # type: ignore[import-not-found]
-        self.stata.run("global mcp_graph_list `r(list)'")
-        graph_list_str = Macro.getGlobal("mcp_graph_list")
-        if not graph_list_str:
+        # Prevent recursive Stata calls - if we're already executing, return cached or empty
+        if self._is_executing:
+            with self._list_graphs_cache_lock:
+                if self._list_graphs_cache is not None:
+                    logger.debug("Recursive list_graphs call prevented, returning cached value")
+                    return self._list_graphs_cache
+                else:
+                    logger.debug("Recursive list_graphs call prevented, returning empty list")
+                    return []
+
+        # Check if cache is valid
+        current_time = time.time()
+        with self._list_graphs_cache_lock:
+            if (not force_refresh and self._list_graphs_cache is not None and
+                current_time - self._list_graphs_cache_time < self.LIST_GRAPHS_TTL):
+                return self._list_graphs_cache
+
+        # Cache miss or expired, fetch fresh data
+        try:
+            # 'graph dir' returns list in r(list)
+            # We need to ensure we run it quietly so we don't spam.
+            self.stata.run("quietly graph dir, memory")
+
+            # Accessing r-class results in Python can be tricky via pystata's run command.
+            # We stash the result in a global macro that python sfi can easily read.
+            from sfi import Macro  # type: ignore[import-not-found]
+            self.stata.run("global mcp_graph_list `r(list)'")
+            graph_list_str = Macro.getGlobal("mcp_graph_list")
+            raw_list = graph_list_str.split() if graph_list_str else []
+
+            # Map internal Stata names back to user-facing names when we have an alias.
+            reverse = getattr(self, "_graph_name_reverse", {})
+            graph_list = [reverse.get(n, n) for n in raw_list]
+
+            result = graph_list
+
+            # Update cache
+            with self._list_graphs_cache_lock:
+                self._list_graphs_cache = result
+                self._list_graphs_cache_time = current_time
+            
+            return result
+            
+        except Exception as e:
+            # On error, return cached result if available, otherwise empty list
+            with self._list_graphs_cache_lock:
+                if self._list_graphs_cache is not None:
+                    logger.warning(f"list_graphs failed, returning cached result: {e}")
+                    return self._list_graphs_cache
+            logger.warning(f"list_graphs failed, no cache available: {e}")
             return []
-
-        return graph_list_str.split()
 
     def list_graphs_structured(self) -> GraphListResponse:
         names = self.list_graphs()
         active_name = names[-1] if names else None
         graphs = [GraphInfo(name=n, active=(n == active_name)) for n in names]
         return GraphListResponse(graphs=graphs)
+
+    def invalidate_list_graphs_cache(self) -> None:
+        """Invalidate the list_graphs cache to force fresh data on next call."""
+        with self._list_graphs_cache_lock:
+            self._list_graphs_cache = None
+            self._list_graphs_cache_time = 0
 
     def export_graph(self, graph_name: str = None, filename: str = None, format: str = "pdf") -> str:
         """Exports graph to a temp file (pdf or png) and returns the path.
@@ -1178,7 +1488,8 @@ class StataClient:
 
             cmd = "graph export"
             if graph_name:
-                cmd += f' "{filename_for_stata}", name("{graph_name}") replace as({fmt})'
+                resolved = self._resolve_graph_name_for_stata(graph_name)
+                cmd += f' "{filename_for_stata}", name("{resolved}") replace as({fmt})'
             else:
                 cmd += f' "{filename_for_stata}", replace as({fmt})'
 
@@ -1310,6 +1621,187 @@ class StataClient:
 
         return results
 
+    def invalidate_graph_cache(self, graph_name: str = None) -> None:
+        """Invalidate cache for specific graph or all graphs.
+        
+        Args:
+            graph_name: Specific graph name to invalidate. If None, clears all cache.
+        """
+        self._initialize_cache()
+        
+        with self._cache_lock:
+            if graph_name is None:
+                # Clear all cache
+                self._preemptive_cache.clear()
+            else:
+                # Clear specific graph cache
+                if graph_name in self._preemptive_cache:
+                    del self._preemptive_cache[graph_name]
+                # Also clear hash if present
+                hash_key = f"{graph_name}_hash"
+                if hash_key in self._preemptive_cache:
+                    del self._preemptive_cache[hash_key]
+
+    def _initialize_cache(self) -> None:
+        """Initialize cache in a thread-safe manner."""
+        import tempfile
+        import threading
+        import os
+        import uuid
+        
+        with StataClient._cache_init_lock:  # Use class-level lock
+            if not hasattr(self, '_cache_initialized'):
+                    self._preemptive_cache = {}
+                    self._cache_access_times = {}  # Track access times for LRU
+                    self._cache_sizes = {}  # Track individual cache item sizes
+                    self._total_cache_size = 0  # Track total cache size in bytes
+                    # Use unique identifier to avoid conflicts
+                    unique_id = f"preemptive_cache_{uuid.uuid4().hex[:8]}_{os.getpid()}"
+                    self._preemptive_cache_dir = tempfile.mkdtemp(prefix=unique_id)
+                    self._cache_lock = threading.Lock()
+                    self._cache_initialized = True
+                    
+                    # Register cleanup function
+                    import atexit
+                    atexit.register(self._cleanup_cache)
+            else:
+                # Cache already initialized, but directory might have been removed.
+                if (not hasattr(self, '_preemptive_cache_dir') or
+                    not self._preemptive_cache_dir or
+                    not os.path.isdir(self._preemptive_cache_dir)):
+                    unique_id = f"preemptive_cache_{uuid.uuid4().hex[:8]}_{os.getpid()}"
+                    self._preemptive_cache_dir = tempfile.mkdtemp(prefix=unique_id)
+    
+    def _cleanup_cache(self) -> None:
+        """Clean up cache directory and files."""
+        import os
+        import shutil
+        
+        if hasattr(self, '_preemptive_cache_dir') and self._preemptive_cache_dir:
+            try:
+                shutil.rmtree(self._preemptive_cache_dir, ignore_errors=True)
+            except Exception:
+                pass  # Best effort cleanup
+        
+        if hasattr(self, '_preemptive_cache'):
+            self._preemptive_cache.clear()
+    
+    def _evict_cache_if_needed(self, new_item_size: int = 0) -> None:
+        """
+        Evict least recently used cache items if cache size limits are exceeded.
+
+        NOTE: The caller is responsible for holding ``self._cache_lock`` while
+        invoking this method, so that eviction and subsequent cache insertion
+        (if any) occur within a single critical section.
+        """
+        import time
+        
+        # Check if we need to evict based on count or size
+        needs_eviction = (
+            len(self._preemptive_cache) > StataClient.MAX_CACHE_SIZE or
+            self._total_cache_size + new_item_size > StataClient.MAX_CACHE_BYTES
+        )
+        
+        if not needs_eviction:
+            return
+        
+        # Sort by access time (oldest first)
+        items_by_access = sorted(
+            self._cache_access_times.items(),
+            key=lambda x: x[1]
+        )
+        
+        evicted_count = 0
+        for graph_name, access_time in items_by_access:
+            if (len(self._preemptive_cache) < StataClient.MAX_CACHE_SIZE and 
+                self._total_cache_size + new_item_size <= StataClient.MAX_CACHE_BYTES):
+                break
+            
+            # Remove from cache
+            if graph_name in self._preemptive_cache:
+                cache_path = self._preemptive_cache[graph_name]
+                
+                # Remove file
+                try:
+                    if os.path.exists(cache_path):
+                        os.remove(cache_path)
+                except Exception:
+                    pass
+                
+                # Update tracking
+                item_size = self._cache_sizes.get(graph_name, 0)
+                del self._preemptive_cache[graph_name]
+                del self._cache_access_times[graph_name]
+                if graph_name in self._cache_sizes:
+                    del self._cache_sizes[graph_name]
+                self._total_cache_size -= item_size
+                evicted_count += 1
+                
+                # Remove hash entry if exists
+                hash_key = f"{graph_name}_hash"
+                if hash_key in self._preemptive_cache:
+                    del self._preemptive_cache[hash_key]
+        
+        if evicted_count > 0:
+            logger.debug(f"Evicted {evicted_count} items from graph cache due to size limits")
+    
+    def _get_content_hash(self, data: bytes) -> str:
+        """Generate content hash for cache validation."""
+        import hashlib
+        return hashlib.md5(data).hexdigest()
+    
+    def _sanitize_filename(self, name: str) -> str:
+        """Sanitize graph name for safe file system usage."""
+        import re
+        # Remove or replace problematic characters
+        safe_name = re.sub(r'[<>:"/\\|?*]', '_', name)
+        safe_name = re.sub(r'[^\w\-_.]', '_', safe_name)
+        # Limit length
+        return safe_name[:100] if len(safe_name) > 100 else safe_name
+    
+    def _validate_graph_exists(self, graph_name: str) -> bool:
+        """Validate that graph still exists in Stata."""
+        try:
+            # First try to get graph list to verify existence
+            graph_list = self.list_graphs(force_refresh=True)
+            if graph_name not in graph_list:
+                return False
+            
+            # Additional validation by attempting to display the graph
+            resolved = self._resolve_graph_name_for_stata(graph_name)
+            cmd = f'graph display {resolved}'
+            resp = self._exec_no_capture(cmd, echo=False)
+            return resp.success
+        except Exception:
+            return False
+    
+    def _is_cache_valid(self, graph_name: str, cache_path: str) -> bool:
+        """Check if cached content is still valid."""
+        try:
+            # Get current graph content hash
+            import tempfile
+            import os
+            
+            temp_dir = tempfile.gettempdir()
+            temp_file = os.path.join(temp_dir, f"temp_{graph_name}_{os.getpid()}.svg")
+            
+            export_cmd = f'graph export "{temp_file.replace("\\\\", "/")}", name("{graph_name}")'
+            resp = self._exec_no_capture(export_cmd, echo=False)
+            
+            if resp.success and os.path.exists(temp_file):
+                with open(temp_file, 'rb') as f:
+                    current_data = f.read()
+                os.remove(temp_file)
+                
+                current_hash = self._get_content_hash(current_data)
+                cached_hash = self._preemptive_cache.get(f"{graph_name}_hash")
+                
+                return cached_hash == current_hash
+        except Exception:
+            pass
+        
+        return False  # Assume invalid if we can't verify
+
     def export_graphs_all(self, use_base64: bool = False) -> GraphExportResponse:
         """Exports all graphs to file paths (default) or base64-encoded strings.
 
@@ -1318,19 +1810,274 @@ class StataClient:
                        returns file paths to exported PNG files.
         """
         exports: List[GraphExport] = []
-        for name in self.list_graphs():
-            try:
-                path = self.export_graph(name, format="png")
-                if use_base64:
-                    with open(path, "rb") as f:
-                        b64 = base64.b64encode(f.read()).decode("ascii")
-                    exports.append(GraphExport(name=name, image_base64=b64))
+        graph_names = self.list_graphs(force_refresh=True)
+        
+        if not graph_names:
+            return GraphExportResponse(graphs=exports)
+        
+        import tempfile
+        import os
+        import threading
+        import base64
+        import uuid
+        import time
+        import logging
+        
+        # Initialize cache in thread-safe manner
+        self._initialize_cache()
+        
+        cached_graphs = {}
+        uncached_graphs = []
+        cache_errors = []
+        
+        with self._cache_lock:
+            for name in graph_names:
+                # Validate graph still exists in Stata
+                if not self._validate_graph_exists(name):
+                    continue
+                    
+                if name in self._preemptive_cache:
+                    cached_path = self._preemptive_cache[name]
+                    if os.path.exists(cached_path) and os.path.getsize(cached_path) > 0:
+                        # Additional validation: check if graph content has changed
+                        if self._is_cache_valid(name, cached_path):
+                            cached_graphs[name] = cached_path
+                        else:
+                            uncached_graphs.append(name)
+                            # Remove stale cache entry
+                            del self._preemptive_cache[name]
+                    else:
+                        uncached_graphs.append(name)
+                        # Remove invalid cache entry
+                        if name in self._preemptive_cache:
+                            del self._preemptive_cache[name]
                 else:
-                    exports.append(GraphExport(name=name, file_path=path))
+                    uncached_graphs.append(name)
+        
+        for name, cached_path in cached_graphs.items():
+            try:
+                if use_base64:
+                    with open(cached_path, "rb") as f:
+                        svg_b64 = base64.b64encode(f.read()).decode("ascii")
+                    exports.append(GraphExport(name=name, image_base64=svg_b64))
+                else:
+                    exports.append(GraphExport(name=name, file_path=cached_path))
             except Exception as e:
-                logger.warning("Failed to export graph '%s': %s", name, e)
-                continue
+                cache_errors.append(f"Failed to read cached graph {name}: {e}")
+                # Fall back to uncached processing
+                uncached_graphs.append(name)
+        
+        if uncached_graphs:
+            successful_graphs = []
+            failed_graphs = []
+            memory_results = {}
+            
+            for name in uncached_graphs:
+                svg_path = None  # Initialize to None for proper cleanup
+                try:
+                    # Use proper temp directory handling
+                    temp_dir = tempfile.gettempdir()
+                    safe_temp_name = self._sanitize_filename(name)
+                    unique_filename = f"{safe_temp_name}_{uuid.uuid4().hex[:8]}_{os.getpid()}_{int(time.time())}.svg"
+                    svg_path = os.path.join(temp_dir, unique_filename)
+                    svg_path_for_stata = svg_path.replace("\\", "/")
+                    
+                    resolved = self._resolve_graph_name_for_stata(name)
+                    display_cmd = f'graph display {resolved}'
+                    display_resp = self._exec_no_capture(display_cmd, echo=False)
+                    
+                    if display_resp.success:
+                        export_cmd = f'graph export "{svg_path_for_stata}"'
+                        export_resp = self._exec_no_capture(export_cmd, echo=False)
+                    else:
+                        export_resp = display_resp
+                        cache_errors.append(f"Failed to display graph {name}: {display_resp.error}")
+                    
+                    if export_resp.success and svg_path and os.path.exists(svg_path) and os.path.getsize(svg_path) > 0:
+                        try:
+                            with open(svg_path, 'rb') as f:
+                                svg_data = f.read()
+                            
+                            memory_results[name] = svg_data
+                            successful_graphs.append(name)
+                        finally:
+                            # Always cleanup temporary file
+                            if svg_path and os.path.exists(svg_path):
+                                try:
+                                    os.remove(svg_path)
+                                except OSError as e:
+                                    logger.warning(f"Failed to cleanup temp file {svg_path}: {e}")
+                    else:
+                        failed_graphs.append(name)
+                        error_msg = getattr(export_resp, 'error', 'Unknown error')
+                        cache_errors.append(f"Failed to export graph {name}: {error_msg}")
+                        # Cleanup on failure too
+                        if svg_path and os.path.exists(svg_path):
+                            try:
+                                os.remove(svg_path)
+                            except OSError as e:
+                                logger.warning(f"Failed to cleanup temp file {svg_path}: {e}")
+                        
+                except Exception as e:
+                    failed_graphs.append(name)
+                    cache_errors.append(f"Failed to cache graph {name}: {e}")
+                    # Cleanup on exception too
+                    if svg_path and os.path.exists(svg_path):
+                        try:
+                            os.remove(svg_path)
+                        except OSError as cleanup_error:
+                            logger.warning(f"Failed to cleanup temp file {svg_path} on exception: {cleanup_error}")
+            
+            for name in successful_graphs:
+                result = memory_results[name]
+                
+                # Sanitize graph name for file system
+                safe_name = self._sanitize_filename(name)
+                cache_path = os.path.join(self._preemptive_cache_dir, f"{safe_name}.svg")
+                
+                try:
+                    with open(cache_path, 'wb') as f:
+                        f.write(result)
+                    
+                    # Update cache with size tracking and eviction
+                    import time
+                    item_size = len(result)
+                    self._evict_cache_if_needed(item_size)
+                    
+                    with self._cache_lock:
+                        self._preemptive_cache[name] = cache_path
+                        # Store content hash for validation
+                        self._preemptive_cache[f"{name}_hash"] = self._get_content_hash(result)
+                        # Update tracking
+                        self._cache_access_times[name] = time.time()
+                        self._cache_sizes[name] = item_size
+                        self._total_cache_size += item_size
+                    
+                    if use_base64:
+                        svg_b64 = base64.b64encode(result).decode("ascii")
+                        exports.append(GraphExport(name=name, image_base64=svg_b64))
+                    else:
+                        exports.append(GraphExport(name=name, file_path=cache_path))
+                except Exception as e:
+                    cache_errors.append(f"Failed to cache graph {name}: {e}")
+                    # Still return the result even if caching fails
+                    if use_base64:
+                        svg_b64 = base64.b64encode(result).decode("ascii")
+                        exports.append(GraphExport(name=name, image_base64=svg_b64))
+                    else:
+                        # Create temp file for immediate use
+                        temp_path = os.path.join(tempfile.gettempdir(), f"{safe_name}_{uuid.uuid4().hex[:8]}.svg")
+                        with open(temp_path, 'wb') as f:
+                            f.write(result)
+                        exports.append(GraphExport(name=name, file_path=temp_path))
+        
+        # Log errors if any occurred
+        if cache_errors:
+            logger = logging.getLogger(__name__)
+            for error in cache_errors:
+                logger.warning(error)
+        
         return GraphExportResponse(graphs=exports)
+
+    def cache_graph_on_creation(self, graph_name: str) -> bool:
+        """Revolutionary method to cache a graph immediately after creation.
+        
+        Call this method right after creating a graph to pre-emptively cache it.
+        This eliminates all export wait time for future access.
+        
+        Args:
+            graph_name: Name of the graph to cache
+            
+        Returns:
+            True if caching succeeded, False otherwise
+        """
+        import os
+        import logging
+        
+        # Initialize cache in thread-safe manner
+        self._initialize_cache()
+        
+        # Invalidate list_graphs cache since a new graph was created
+        self.invalidate_list_graphs_cache()
+        
+        # Check if already cached and valid
+        with self._cache_lock:
+            if graph_name in self._preemptive_cache:
+                cache_path = self._preemptive_cache[graph_name]
+                if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
+                    if self._is_cache_valid(graph_name, cache_path):
+                        # Update access time for LRU
+                        import time
+                        self._cache_access_times[graph_name] = time.time()
+                        return True
+                    else:
+                        # Remove stale cache entry
+                        del self._preemptive_cache[graph_name]
+                        if graph_name in self._cache_access_times:
+                            del self._cache_access_times[graph_name]
+                        if graph_name in self._cache_sizes:
+                            self._total_cache_size -= self._cache_sizes[graph_name]
+                            del self._cache_sizes[graph_name]
+                        # Remove hash entry if exists
+                        hash_key = f"{graph_name}_hash"
+                        if hash_key in self._preemptive_cache:
+                            del self._preemptive_cache[hash_key]
+        
+        try:
+            # Sanitize graph name for file system
+            safe_name = self._sanitize_filename(graph_name)
+            cache_path = os.path.join(self._preemptive_cache_dir, f"{safe_name}.svg")
+            cache_path_for_stata = cache_path.replace("\\", "/")
+
+            resolved_graph_name = self._resolve_graph_name_for_stata(graph_name)
+            graph_name_q = self._stata_quote(resolved_graph_name)
+            
+            export_cmd = f'graph export "{cache_path_for_stata}", name({graph_name_q}) replace as(svg)'
+            resp = self._exec_no_capture(export_cmd, echo=False)
+
+            # Fallback: some graph names (spaces, slashes, backslashes) can confuse
+            # Stata's parser in name() even when the graph exists. In that case,
+            # make the graph current, then export without name().
+            if not resp.success:
+                try:
+                    display_cmd = f'graph display {graph_name_q}'
+                    display_resp = self._exec_no_capture(display_cmd, echo=False)
+                    if display_resp.success:
+                        export_cmd2 = f'graph export "{cache_path_for_stata}", replace as(svg)'
+                        resp = self._exec_no_capture(export_cmd2, echo=False)
+                except Exception:
+                    pass
+            
+            if resp.success and os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
+                # Read the data to compute hash
+                with open(cache_path, 'rb') as f:
+                    data = f.read()
+                
+                # Update cache with size tracking and eviction
+                import time
+                item_size = len(data)
+                self._evict_cache_if_needed(item_size)
+                
+                with self._cache_lock:
+                    self._preemptive_cache[graph_name] = cache_path
+                    # Store content hash for validation
+                    self._preemptive_cache[f"{graph_name}_hash"] = self._get_content_hash(data)
+                    # Update tracking
+                    self._cache_access_times[graph_name] = time.time()
+                    self._cache_sizes[graph_name] = item_size
+                    self._total_cache_size += item_size
+                
+                return True
+            else:
+                error_msg = getattr(resp, 'error', 'Unknown error')
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Failed to cache graph {graph_name}: {error_msg}")
+                
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Exception caching graph {graph_name}: {e}")
+        
+        return False
 
     def run_do_file(self, path: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None, cwd: Optional[str] = None) -> CommandResponse:
         if cwd is not None and not os.path.isdir(cwd):
@@ -1394,7 +2141,13 @@ class StataClient:
                     try:
                         if trace:
                             self.stata.run("set trace on")
-                        self.stata.run(command, echo=echo)
+                        ret = self.stata.run(command, echo=echo)
+                        # Some PyStata builds return output as a string rather than printing.
+                        if isinstance(ret, str) and ret:
+                            try:
+                                tee.write(ret)
+                            except Exception:
+                                pass
                     except Exception as e:
                         exc = e
                     finally:

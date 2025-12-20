@@ -1,15 +1,6 @@
-import os
-import sys
+import platform
 
-
-
-
-# Import discovery with source fallback
-try:
-    from mcp_stata import discovery
-except ImportError:
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
-    from mcp_stata import discovery
+from mcp_stata import discovery
 
 
 def test_discovery_cli_main_success(monkeypatch, tmp_path, capsys):
@@ -18,7 +9,7 @@ def test_discovery_cli_main_success(monkeypatch, tmp_path, capsys):
     fake_bin.parent.mkdir(parents=True, exist_ok=True)
     fake_bin.write_text("stub")
     monkeypatch.setenv("STATA_PATH", str(fake_bin))
-    monkeypatch.setattr(discovery.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
 
     rc = discovery.main()
     captured = capsys.readouterr().out

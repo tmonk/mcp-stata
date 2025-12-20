@@ -196,3 +196,66 @@ def test_server_tools_with_cwd(tmp_path, init_server):
     assert cmd_resp.get("log_path")
     text2 = Path(cmd_resp["log_path"]).read_text(encoding="utf-8", errors="replace")
     assert "child-ok" in text2
+
+
+def test_export_graphs_all_multiple(init_server):
+    """Test that multiple produced graphs appear in export_graphs_all output."""
+    # Clear any existing graphs first
+    _run_command_sync("clear all")
+    _run_command_sync("graph drop _all")
+    
+    # Load data and create multiple graphs
+    _run_command_sync("sysuse auto, clear")
+    
+    # Create first graph
+    _run_command_sync("scatter price mpg, name(Graph1, replace)")
+    
+    # Create second graph  
+    _run_command_sync("histogram price, name(Graph2, replace)")
+    
+    # Create third graph
+    _run_command_sync("graph box price, over(mpg) name(Graph3, replace)")
+    
+    # Debug: check what graphs are available before export
+    list_graphs_cmd = 'global mcp_graph_list ""'
+    _run_command_sync(list_graphs_cmd)
+    _run_command_sync("quietly graph dir, memory")
+    _run_command_sync("global mcp_graph_list `r(list)'")
+    from sfi import Macro
+    graph_list_str = Macro.getGlobal("mcp_graph_list")
+    print(f"Graph list from memory: {graph_list_str}")
+    
+    # Export all graphs and verify all three are present
+    all_graphs = json.loads(export_graphs_all())
+    
+    # Debug: print available graphs
+    graphs_result = _run_command_sync("graph dir")
+    print(f"Available graphs in Stata: {graphs_result}")
+    print(f"Exported graphs: {[g['name'] for g in all_graphs['graphs']]}")
+    
+    # Should have exactly 3 graphs
+    assert len(all_graphs["graphs"]) == 3
+    
+    # Check that all graph names are present
+    graph_names = [g["name"] for g in all_graphs["graphs"]]
+    assert "Graph1" in graph_names
+    assert "Graph2" in graph_names  
+    assert "Graph3" in graph_names
+    
+    # Verify each graph has a valid file path
+    for graph in all_graphs["graphs"]:
+        assert graph["file_path"]
+        # SVG files are now used (smaller, faster, vector format)
+        assert graph["file_path"].endswith(".svg")
+        assert Path(graph["file_path"]).exists()
+        assert Path(graph["file_path"]).stat().st_size > 0
+    
+    # Also test with base64 encoding
+    all_graphs_b64 = json.loads(export_graphs_all(use_base64=True))
+    assert len(all_graphs_b64["graphs"]) == 3
+    
+    # Verify each graph has base64 data
+    for graph in all_graphs_b64["graphs"]:
+        assert graph["image_base64"]
+        # Base64 should be non-empty and valid base64 string
+        assert len(graph["image_base64"]) > 0

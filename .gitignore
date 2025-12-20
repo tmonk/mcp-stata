@@ -12,3 +12,5 @@ py.typed
 .vscode
 .gemini
 .claude
+.coverage
+test_external_do_file_full.py

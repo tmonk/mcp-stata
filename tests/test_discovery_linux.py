@@ -1,10 +1,12 @@
 import stat
 import platform
+import shutil
+import glob
 from pathlib import Path
 
 import pytest
 
-from mcp_stata import discovery
+from mcp_stata.discovery import find_stata_path
 
 # Linux-only: these discovery cases rely on Linux filesystem layout/exec bits.
 pytestmark = pytest.mark.skipif(platform.system() != "Linux", reason="Linux-only discovery tests")
@@ -20,16 +22,16 @@ def _make_executable(path: Path) -> Path:
 
 def test_linux_prefers_path_binary(monkeypatch, tmp_path):
     monkeypatch.delenv("STATA_PATH", raising=False)
-    monkeypatch.setattr(discovery.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
 
     binary_path = _make_executable(tmp_path / "bin" / "stata-mp")
 
     def fake_which(name: str):
         return str(binary_path) if name == "stata-mp" else None
 
-    monkeypatch.setattr(discovery.shutil, "which", fake_which)
+    monkeypatch.setattr(shutil, "which", fake_which)
 
-    path, edition = discovery.find_stata_path()
+    path, edition = find_stata_path()
     assert path == str(binary_path)
     assert edition == "mp"
 
@@ -37,8 +39,8 @@ def test_linux_prefers_path_binary(monkeypatch, tmp_path):
 def test_linux_discovers_install_prefix(monkeypatch, tmp_path):
     monkeypatch.delenv("STATA_PATH", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(discovery.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(discovery.shutil, "which", lambda name: None)
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
 
     base_dir = tmp_path / "stata18"
     binary_path = _make_executable(base_dir / "stata-se")
@@ -56,8 +58,8 @@ def test_linux_discovers_install_prefix(monkeypatch, tmp_path):
             return [str(base_dir)]
         return []
 
-    monkeypatch.setattr(discovery.glob, "glob", fake_glob)
+    monkeypatch.setattr(glob, "glob", fake_glob)
 
-    path, edition = discovery.find_stata_path()
+    path, edition = find_stata_path()
     assert path == str(binary_path)
     assert edition == "se"

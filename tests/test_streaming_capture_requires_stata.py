@@ -153,3 +153,6 @@ def test_run_do_file_streaming_with_cwd_and_relative_paths(tmp_path):
         assert "parent-ok" in text
 
     anyio.run(main)
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
