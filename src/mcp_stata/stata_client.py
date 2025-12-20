@@ -1704,6 +1704,7 @@ class StataClient:
         # Remove or replace problematic characters
         safe_name = re.sub(r'[<>:"/\\|?*]', '_', name)
         safe_name = re.sub(r'[^\w\-_.]', '_', safe_name)
+        safe_name = re.sub(r'_+', '_', safe_name)
         # Limit length
         return safe_name[:100] if len(safe_name) > 100 else safe_name
     
