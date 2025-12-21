@@ -11,7 +11,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from io import StringIO
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import anyio
 from anyio import get_cancelled_exc_class
@@ -32,6 +32,74 @@ from .streaming_io import FileTeeIO, TailBuffer
 from .graph_detector import StreamingGraphCache
 
 logger = logging.getLogger("mcp_stata")
+
+
+# ============================================================================
+# MODULE-LEVEL DISCOVERY CACHE
+# ============================================================================
+# This cache ensures Stata discovery runs exactly once per process lifetime
+_discovery_lock = threading.Lock()
+_discovery_result: Optional[Tuple[str, str]] = None  # (path, edition)
+_discovery_attempted = False
+_discovery_error: Optional[Exception] = None
+
+
+def _get_discovered_stata() -> Tuple[str, str]:
+    """
+    Get the discovered Stata path and edition, running discovery only once.
+    
+    Returns:
+        Tuple of (stata_executable_path, edition)
+    
+    Raises:
+        RuntimeError: If Stata discovery fails
+    """
+    global _discovery_result, _discovery_attempted, _discovery_error
+    
+    with _discovery_lock:
+        # If we've already successfully discovered Stata, return cached result
+        if _discovery_result is not None:
+            return _discovery_result
+        
+        # If we've already attempted and failed, re-raise the cached error
+        if _discovery_attempted and _discovery_error is not None:
+            raise RuntimeError(f"Stata binary not found: {_discovery_error}") from _discovery_error
+        
+        # This is the first attempt - run discovery
+        _discovery_attempted = True
+        
+        try:
+            # Log environment state once at first discovery
+            env_path = os.getenv("STATA_PATH")
+            if env_path:
+                logger.info("STATA_PATH env provided (raw): %s", env_path)
+            else:
+                logger.info("STATA_PATH env not set; attempting auto-discovery")
+            
+            try:
+                pkg_version = version("mcp-stata")
+            except PackageNotFoundError:
+                pkg_version = "unknown"
+            logger.info("mcp-stata version: %s", pkg_version)
+            
+            # Run discovery
+            stata_exec_path, edition = find_stata_path()
+            
+            # Cache the successful result
+            _discovery_result = (stata_exec_path, edition)
+            logger.info("Discovery found Stata at: %s (%s)", stata_exec_path, edition)
+            
+            return _discovery_result
+            
+        except FileNotFoundError as e:
+            _discovery_error = e
+            raise RuntimeError(f"Stata binary not found: {e}") from e
+        except PermissionError as e:
+            _discovery_error = e
+            raise RuntimeError(
+                f"Stata binary is not executable: {e}. "
+                "Point STATA_PATH directly to the Stata binary (e.g., .../Contents/MacOS/stata-mp)."
+            ) from e
 
 
 class StataClient:
@@ -172,37 +240,15 @@ class StataClient:
             os.chdir(prev)
 
     def init(self):
-        """Initializes usage of pystata."""
+        """Initializes usage of pystata using cached discovery results."""
         if self._initialized:
             return
 
         try:
             import stata_setup
-
-            env_path = os.getenv("STATA_PATH")
-            if env_path:
-                logger.info("STATA_PATH env provided (raw): %s", env_path)
-            else:
-                logger.info("STATA_PATH env not set; attempting discovery")
-
-            try:
-                pkg_version = version("mcp-stata")
-            except PackageNotFoundError:
-                pkg_version = "unknown"
-            logger.info("mcp-stata version: %s", pkg_version)
-
-
-            try:
-                stata_exec_path, edition = find_stata_path()
-            except FileNotFoundError as e:
-                raise RuntimeError(f"Stata binary not found: {e}") from e
-            except PermissionError as e:
-                raise RuntimeError(
-                    f"Stata binary is not executable: {e}. "
-                    "Point STATA_PATH directly to the Stata binary (e.g., .../Contents/MacOS/stata-mp)."
-                ) from e
             
-            logger.info(f"Discovery found Stata at: {stata_exec_path} ({edition})")
+            # Get discovered Stata path (cached from first call)
+            stata_exec_path, edition = _get_discovered_stata()
 
             candidates = []
 
@@ -242,6 +288,7 @@ class StataClient:
                 try:
                     stata_setup.config(path, edition)
                     success = True
+                    logger.debug("stata_setup.config succeeded with path: %s", path)
                     break
                 except Exception:
                     continue
@@ -258,14 +305,6 @@ class StataClient:
             from pystata import stata  # type: ignore[import-not-found]
             self.stata = stata
             self._initialized = True
-
-            # Ensure a clean graph state for a fresh client. PyStata's backend is
-            # effectively global, so graph memory can otherwise leak across tests
-            # and separate StataClient instances.
-            try:
-                self.stata.run("capture graph drop _all", quietly=True)
-            except Exception:
-                pass
             
             # Initialize list_graphs TTL cache
             self._list_graphs_cache = None
@@ -276,11 +315,14 @@ class StataClient:
             # internal Stata graph names.
             self._graph_name_aliases: Dict[str, str] = {}
             self._graph_name_reverse: Dict[str, str] = {}
+            
+            logger.info("StataClient initialized successfully with %s (%s)", stata_exec_path, edition)
 
-        except ImportError:
-            # Fallback for when stata_setup isn't in PYTHONPATH yet?
-            # Usually users must have it installed. We rely on discovery logic.
-            raise RuntimeError("Could not import `stata_setup`. Ensure pystata is installed.")
+        except ImportError as e:
+            raise RuntimeError(
+                f"Failed to import stata_setup or pystata: {e}. "
+                "Ensure they are installed (pip install pystata stata-setup)."
+            ) from e
 
     def _make_valid_stata_name(self, name: str) -> str:
         """Create a valid Stata name (<=32 chars, [A-Za-z_][A-Za-z0-9_]*)."""

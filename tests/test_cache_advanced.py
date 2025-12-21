@@ -220,6 +220,8 @@ def test_large_number_of_graphs_performance(client):
 
 def test_cache_persistence_across_multiple_exports(client):
     """Test that cache persists across multiple export calls."""
+    # Ensure no prior graphs linger from other tests
+    client.run_command_structured("graph drop _all")
     # Create and cache a graph
     client.run_command_structured("sysuse auto, clear")
     client.run_command_structured("scatter price mpg, name(PersistenceTest, replace)")
@@ -245,6 +247,8 @@ def test_cache_persistence_across_multiple_exports(client):
 
 def test_mixed_base64_and_file_exports(client):
     """Test mixing base64 and file path exports."""
+    # Ensure no prior graphs linger from other tests
+    client.run_command_structured("graph drop _all")
     # Create and cache graphs
     client.run_command_structured("sysuse auto, clear")
     client.run_command_structured("scatter price mpg, name(MixedTest1, replace)")
