@@ -223,6 +223,14 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 * `get_stored_results()`: Get `r()` and `e()` scalars/macros as JSON.
 * `get_variable_list()`: JSON list of variables and labels.
 
+### Cancellation
+
+- Clients may cancel an in-flight request by sending the MCP notification `notifications/cancelled` with `params.requestId` set to the original tool call ID.
+- Client guidance:
+  1. Pass a `_meta.progressToken` when invoking the tool if you want progress updates (optional).
+  2. If you need to cancel, send `notifications/cancelled` with the same requestId. You may also stop tailing the log file path once you receive cancellation confirmation (the tool call will return an error indicating cancellation).
+  3. Be prepared for partial output in the log file; cancellation is best-effort and depends on Stata surfacing `BreakError`.
+
 Resources exposed for MCP clients:
 
 * `stata://data/summary` → `summarize`

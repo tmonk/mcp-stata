@@ -13,6 +13,7 @@ from io import StringIO
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import anyio
+from anyio import get_cancelled_exc_class
 
 from .discovery import find_stata_path
 from .models import (
@@ -100,6 +101,63 @@ class StataClient:
                 logger.error(f"Failed to notify about graph cache: {e}")
         
         return graph_cache_callback
+
+    def _request_break_in(self) -> None:
+        """
+        Attempt to interrupt a running Stata command when cancellation is requested.
+
+        Uses the Stata sfi.breakIn hook when available; errors are swallowed because
+        cancellation should never crash the host process.
+        """
+        try:
+            import sfi  # type: ignore[import-not-found]
+
+            break_fn = getattr(sfi, "breakIn", None) or getattr(sfi, "break_in", None)
+            if callable(break_fn):
+                try:
+                    break_fn()
+                    logger.info("Sent breakIn() to Stata for cancellation")
+                except Exception as e:  # pragma: no cover - best-effort
+                    logger.warning(f"Failed to send breakIn() to Stata: {e}")
+            else:  # pragma: no cover - environment without Stata runtime
+                logger.debug("sfi.breakIn not available; cannot interrupt Stata")
+        except Exception as e:  # pragma: no cover - import failure or other
+            logger.debug(f"Unable to import sfi for cancellation: {e}")
+
+    async def _wait_for_stata_stop(self, timeout: float = 2.0) -> bool:
+        """
+        After requesting a break, poll the Stata interface so it can surface BreakError
+        and return control. This is best-effort and time-bounded.
+        """
+        deadline = time.monotonic() + timeout
+        try:
+            import sfi  # type: ignore[import-not-found]
+
+            toolkit = getattr(sfi, "SFIToolkit", None)
+            poll = getattr(toolkit, "pollnow", None) or getattr(toolkit, "pollstd", None)
+            BreakError = getattr(sfi, "BreakError", None)
+        except Exception:  # pragma: no cover
+            return False
+
+        if not callable(poll):
+            return False
+
+        last_exc: Optional[Exception] = None
+        while time.monotonic() < deadline:
+            try:
+                poll()
+            except Exception as e:  # pragma: no cover - depends on Stata runtime
+                last_exc = e
+                if BreakError is not None and isinstance(e, BreakError):
+                    logger.info("Stata BreakError detected; cancellation acknowledged by Stata")
+                    return True
+                # If Stata already stopped, break on any other exception.
+                break
+            await anyio.sleep(0.05)
+
+        if last_exc:
+            logger.debug(f"Cancellation poll exited with {last_exc}")
+        return False
 
     @contextmanager
     def _temp_cwd(self, cwd: Optional[str]):
@@ -538,33 +596,42 @@ class StataClient:
         def _run_blocking() -> None:
             nonlocal rc, exc
             with self._exec_lock:
-                with self._temp_cwd(cwd):
-                    with self._redirect_io_streaming(tee, tee):
-                        try:
-                            if trace:
-                                self.stata.run("set trace on")
-                            ret = self.stata.run(code, echo=echo)
-                            # Some PyStata builds return output as a string rather than printing.
-                            if isinstance(ret, str) and ret:
-                                try:
-                                    tee.write(ret)
-                                except Exception:
-                                    pass
-                        except Exception as e:
-                            exc = e
-                        finally:
-                            rc = self._read_return_code()
-                            if trace:
-                                try:
-                                    self.stata.run("set trace off")
-                                except Exception:
-                                    pass
+                self._is_executing = True
+                try:
+                    with self._temp_cwd(cwd):
+                        with self._redirect_io_streaming(tee, tee):
+                            try:
+                                if trace:
+                                    self.stata.run("set trace on")
+                                ret = self.stata.run(code, echo=echo)
+                                # Some PyStata builds return output as a string rather than printing.
+                                if isinstance(ret, str) and ret:
+                                    try:
+                                        tee.write(ret)
+                                    except Exception:
+                                        pass
+                            except Exception as e:
+                                exc = e
+                            finally:
+                                rc = self._read_return_code()
+                                if trace:
+                                    try:
+                                        self.stata.run("set trace off")
+                                    except Exception:
+                                        pass
+                finally:
+                    self._is_executing = False
 
         try:
             if notify_progress is not None:
                 await notify_progress(0, None, "Running Stata command")
 
-            await anyio.to_thread.run_sync(_run_blocking)
+            await anyio.to_thread.run_sync(_run_blocking, abandon_on_cancel=True)
+        except get_cancelled_exc_class():
+            # Best-effort cancellation: signal Stata to break, wait briefly, then propagate.
+            self._request_break_in()
+            await self._wait_for_stata_stop()
+            raise
         finally:
             tee.close()
 
@@ -838,7 +905,11 @@ class StataClient:
                     await notify_progress(0, None, "Running do-file")
 
             try:
-                await anyio.to_thread.run_sync(_run_blocking)
+                await anyio.to_thread.run_sync(_run_blocking, abandon_on_cancel=True)
+            except get_cancelled_exc_class():
+                self._request_break_in()
+                await self._wait_for_stata_stop()
+                raise
             finally:
                 done.set()
                 tee.close()
