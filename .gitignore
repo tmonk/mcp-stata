@@ -14,3 +14,5 @@ py.typed
 .claude
 .coverage
 test_external_do_file_full.py
+mcp.json
+scripts/test.do
