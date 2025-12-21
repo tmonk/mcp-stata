@@ -33,3 +33,44 @@ def test_windows_stata_path_directory_value(monkeypatch, tmp_path):
     path, edition = find_stata_path()
     assert path == str(exe_path)
     assert edition == "se"
+
+
+def test_windows_stata_path_with_backslashes(monkeypatch, tmp_path):
+    monkeypatch.delenv("STATA_PATH", raising=False)
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+
+    exe_path = _touch_file(tmp_path / "Program Files" / "Stata19Now" / "StataMP-64.exe")
+    # Simulate a Windows-style env var with backslashes (e.g., C:\Program Files\Stata19Now\StataMP-64.exe)
+    windows_style = str(exe_path).replace("/", "\\")
+    monkeypatch.setenv("STATA_PATH", windows_style)
+
+    path, edition = find_stata_path()
+    assert path == str(exe_path)
+    assert edition == "mp"
+
+
+def test_windows_stata_path_directory_backslashes(monkeypatch, tmp_path):
+    monkeypatch.delenv("STATA_PATH", raising=False)
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+
+    install_dir = tmp_path / "Program Files" / "Stata19Now"
+    exe_path = _touch_file(install_dir / "Stata-64.exe")
+    windows_dir = str(install_dir).replace("/", "\\")
+    monkeypatch.setenv("STATA_PATH", windows_dir)
+
+    path, edition = find_stata_path()
+    assert path == str(exe_path)
+    assert edition == "be"
+
+
+def test_windows_stata_path_with_backslashes_and_quotes(monkeypatch, tmp_path):
+    monkeypatch.delenv("STATA_PATH", raising=False)
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+
+    exe_path = _touch_file(tmp_path / "Program Files" / "Stata19Now" / "StataMP-64.exe")
+    windows_style = str(exe_path).replace("/", "\\")
+    monkeypatch.setenv("STATA_PATH", f'"{windows_style}"')
+
+    path, edition = find_stata_path()
+    assert path == str(exe_path)
+    assert edition == "mp"

@@ -3,20 +3,29 @@ import platform
 import glob
 import logging
 import shutil
+import ntpath
 
 from typing import Tuple, List
 
 logger = logging.getLogger("mcp_stata.discovery")
 
 
-def _normalize_env_path(raw: str) -> str:
-    """Strip quotes/whitespace and expand variables for STATA_PATH."""
+def _normalize_env_path(raw: str, system: str) -> str:
+    """Strip quotes/whitespace, expand variables, and normalize slashes for STATA_PATH."""
     cleaned = raw.strip()
     if (cleaned.startswith("\"") and cleaned.endswith("\"")) or (
         cleaned.startswith("'") and cleaned.endswith("'")
     ):
         cleaned = cleaned[1:-1].strip()
-    return os.path.expandvars(os.path.expanduser(cleaned))
+
+    expanded = os.path.expandvars(os.path.expanduser(cleaned))
+
+    # Always normalize path separators for the intended platform. This is especially
+    # important when running Windows discovery tests on non-Windows hosts where
+    # os.path (PosixPath) would otherwise leave backslashes untouched.
+    if system == "Windows":
+        return ntpath.normpath(expanded)
+    return os.path.normpath(expanded)
 
 
 def _is_executable(path: str, system: str) -> bool:
@@ -37,6 +46,24 @@ def _dedupe_preserve(items: List[tuple]) -> List[tuple]:
         seen.add(path)
         unique.append((path, edition))
     return unique
+
+
+def _resolve_windows_host_path(path: str, system: str) -> str:
+    """
+    On non-Windows hosts running Windows-discovery code, a Windows-style path
+    (with backslashes) won't match the real filesystem layout. If the normalized
+    path does not exist and we're emulating Windows, try swapping backslashes for
+    the host separator so tests can interact with the temp filesystem.
+    """
+    if system != "Windows":
+        return path
+    if os.path.exists(path):
+        return path
+    if os.sep != "\\" and "\\" in path:
+        alt_path = path.replace("\\", os.sep)
+        if os.path.exists(alt_path):
+            return alt_path
+    return path
 
 
 def find_stata_path() -> Tuple[str, str]:
@@ -69,7 +96,8 @@ def find_stata_path() -> Tuple[str, str]:
     # 1. Check Environment Variable (supports quoted values and directory targets)
     if os.environ.get("STATA_PATH"):
         raw_path = os.environ["STATA_PATH"]
-        path = _normalize_env_path(raw_path)
+        path = _normalize_env_path(raw_path, system)
+        path = _resolve_windows_host_path(path, system)
         logger.info("Using STATA_PATH override (normalized): %s", path)
 
         # If a directory is provided, try standard binaries for the platform
