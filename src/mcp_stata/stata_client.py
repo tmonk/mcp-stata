@@ -206,6 +206,9 @@ class StataClient:
             self._graph_name_aliases: Dict[str, str] = {}
             self._graph_name_reverse: Dict[str, str] = {}
 
+            # Auto-generated graph names for commands that do not provide name().
+            self._auto_graph_counter = 0
+
         except ImportError:
             # Fallback for when stata_setup isn't in PYTHONPATH yet?
             # Usually users must have it installed. We rely on discovery logic.
@@ -261,6 +264,44 @@ class StataClient:
             return f"name({internal}{rest})"
 
         return pat.sub(repl, code)
+
+    def _maybe_autoname_graph_command(self, code: str) -> str:
+        """Ensure graph commands create distinct named graphs when name() is omitted."""
+        raw = (code or "").strip()
+        if not raw:
+            return code
+
+        # Do not interfere with multi-line code blocks.
+        if "\n" in raw:
+            return code
+
+        # If the user already provided a name(), respect it.
+        if re.search(r"\bname\s*\(", raw, flags=re.IGNORECASE):
+            return code
+
+        # Heuristic: common graph-producing commands.
+        first = raw.split(None, 1)[0].lower()
+        graph_starters = {
+            "graph",  # graph bar, graph box, graph twoway, etc.
+            "scatter",
+            "twoway",
+            "histogram",
+        }
+        if first not in graph_starters:
+            return code
+
+        # Generate a unique, valid Stata name.
+        if not hasattr(self, "_auto_graph_counter"):
+            self._auto_graph_counter = 0
+        self._auto_graph_counter += 1
+        auto_name = f"MCPGraph_{self._auto_graph_counter}"
+        auto_internal = self._make_valid_stata_name(auto_name)
+
+        # Append name(<internal>, replace) as an option.
+        # If there is already an option comma, append to the option list.
+        if "," in code:
+            return f"{code} name({auto_internal}, replace)"
+        return f"{code}, name({auto_internal}, replace)"
 
     def _read_return_code(self) -> int:
         """Read the last Stata return code without mutating rc."""
@@ -337,6 +378,7 @@ class StataClient:
         if not self._initialized:
             self.init()
 
+        code = self._maybe_autoname_graph_command(code)
         code = self._maybe_rewrite_graph_name_in_command(code)
 
         if cwd is not None and not os.path.isdir(cwd):
@@ -488,6 +530,9 @@ class StataClient:
     ) -> CommandResponse:
         if not self._initialized:
             self.init()
+
+        code = self._maybe_autoname_graph_command(code)
+        code = self._maybe_rewrite_graph_name_in_command(code)
 
         if cwd is not None and not os.path.isdir(cwd):
             return CommandResponse(
@@ -1784,8 +1829,9 @@ class StataClient:
             
             temp_dir = tempfile.gettempdir()
             temp_file = os.path.join(temp_dir, f"temp_{graph_name}_{os.getpid()}.svg")
-            
-            export_cmd = f'graph export "{temp_file.replace("\\\\", "/")}", name("{graph_name}")'
+
+            resolved = self._resolve_graph_name_for_stata(graph_name)
+            export_cmd = f'graph export "{temp_file.replace("\\\\", "/")}", name({resolved}) replace as(svg)'
             resp = self._exec_no_capture(export_cmd, echo=False)
             
             if resp.success and os.path.exists(temp_file):
@@ -1807,7 +1853,7 @@ class StataClient:
 
         Args:
             use_base64: If True, returns base64-encoded images. If False (default),
-                       returns file paths to exported PNG files.
+                       returns file paths to exported SVG files.
         """
         exports: List[GraphExport] = []
         graph_names = self.list_graphs(force_refresh=True)
@@ -1825,6 +1871,46 @@ class StataClient:
         
         # Initialize cache in thread-safe manner
         self._initialize_cache()
+
+        def _cache_keyed_svg_path(name: str) -> str:
+            import hashlib
+            safe_name = self._sanitize_filename(name)
+            suffix = hashlib.md5((name or "").encode("utf-8")).hexdigest()[:8]
+            return os.path.join(self._preemptive_cache_dir, f"{safe_name}_{suffix}.svg")
+
+        def _export_svg_bytes(name: str) -> bytes:
+            resolved = self._resolve_graph_name_for_stata(name)
+
+            temp_dir = tempfile.gettempdir()
+            safe_temp_name = self._sanitize_filename(name)
+            unique_filename = f"{safe_temp_name}_{uuid.uuid4().hex[:8]}_{os.getpid()}_{int(time.time())}.svg"
+            svg_path = os.path.join(temp_dir, unique_filename)
+            svg_path_for_stata = svg_path.replace("\\", "/")
+
+            try:
+                export_cmd = f'graph export "{svg_path_for_stata}", name({resolved}) replace as(svg)'
+                export_resp = self._exec_no_capture(export_cmd, echo=False)
+
+                if not export_resp.success:
+                    display_cmd = f'graph display {resolved}'
+                    display_resp = self._exec_no_capture(display_cmd, echo=False)
+                    if display_resp.success:
+                        export_cmd2 = f'graph export "{svg_path_for_stata}", replace as(svg)'
+                        export_resp = self._exec_no_capture(export_cmd2, echo=False)
+                    else:
+                        export_resp = display_resp
+
+                if export_resp.success and os.path.exists(svg_path) and os.path.getsize(svg_path) > 0:
+                    with open(svg_path, "rb") as f:
+                        return f.read()
+                error_msg = getattr(export_resp, 'error', 'Unknown error')
+                raise RuntimeError(f"Failed to export graph {name}: {error_msg}")
+            finally:
+                if os.path.exists(svg_path):
+                    try:
+                        os.remove(svg_path)
+                    except OSError as e:
+                        logger.warning(f"Failed to cleanup temp file {svg_path}: {e}")
         
         cached_graphs = {}
         uncached_graphs = []
@@ -1832,10 +1918,6 @@ class StataClient:
         
         with self._cache_lock:
             for name in graph_names:
-                # Validate graph still exists in Stata
-                if not self._validate_graph_exists(name):
-                    continue
-                    
                 if name in self._preemptive_cache:
                     cached_path = self._preemptive_cache[name]
                     if os.path.exists(cached_path) and os.path.getsize(cached_path) > 0:
@@ -1873,67 +1955,18 @@ class StataClient:
             memory_results = {}
             
             for name in uncached_graphs:
-                svg_path = None  # Initialize to None for proper cleanup
                 try:
-                    # Use proper temp directory handling
-                    temp_dir = tempfile.gettempdir()
-                    safe_temp_name = self._sanitize_filename(name)
-                    unique_filename = f"{safe_temp_name}_{uuid.uuid4().hex[:8]}_{os.getpid()}_{int(time.time())}.svg"
-                    svg_path = os.path.join(temp_dir, unique_filename)
-                    svg_path_for_stata = svg_path.replace("\\", "/")
-                    
-                    resolved = self._resolve_graph_name_for_stata(name)
-                    display_cmd = f'graph display {resolved}'
-                    display_resp = self._exec_no_capture(display_cmd, echo=False)
-                    
-                    if display_resp.success:
-                        export_cmd = f'graph export "{svg_path_for_stata}"'
-                        export_resp = self._exec_no_capture(export_cmd, echo=False)
-                    else:
-                        export_resp = display_resp
-                        cache_errors.append(f"Failed to display graph {name}: {display_resp.error}")
-                    
-                    if export_resp.success and svg_path and os.path.exists(svg_path) and os.path.getsize(svg_path) > 0:
-                        try:
-                            with open(svg_path, 'rb') as f:
-                                svg_data = f.read()
-                            
-                            memory_results[name] = svg_data
-                            successful_graphs.append(name)
-                        finally:
-                            # Always cleanup temporary file
-                            if svg_path and os.path.exists(svg_path):
-                                try:
-                                    os.remove(svg_path)
-                                except OSError as e:
-                                    logger.warning(f"Failed to cleanup temp file {svg_path}: {e}")
-                    else:
-                        failed_graphs.append(name)
-                        error_msg = getattr(export_resp, 'error', 'Unknown error')
-                        cache_errors.append(f"Failed to export graph {name}: {error_msg}")
-                        # Cleanup on failure too
-                        if svg_path and os.path.exists(svg_path):
-                            try:
-                                os.remove(svg_path)
-                            except OSError as e:
-                                logger.warning(f"Failed to cleanup temp file {svg_path}: {e}")
-                        
+                    svg_data = _export_svg_bytes(name)
+                    memory_results[name] = svg_data
+                    successful_graphs.append(name)
                 except Exception as e:
                     failed_graphs.append(name)
                     cache_errors.append(f"Failed to cache graph {name}: {e}")
-                    # Cleanup on exception too
-                    if svg_path and os.path.exists(svg_path):
-                        try:
-                            os.remove(svg_path)
-                        except OSError as cleanup_error:
-                            logger.warning(f"Failed to cleanup temp file {svg_path} on exception: {cleanup_error}")
             
             for name in successful_graphs:
                 result = memory_results[name]
                 
-                # Sanitize graph name for file system
-                safe_name = self._sanitize_filename(name)
-                cache_path = os.path.join(self._preemptive_cache_dir, f"{safe_name}.svg")
+                cache_path = _cache_keyed_svg_path(name)
                 
                 try:
                     with open(cache_path, 'wb') as f:
@@ -1966,6 +1999,7 @@ class StataClient:
                         exports.append(GraphExport(name=name, image_base64=svg_b64))
                     else:
                         # Create temp file for immediate use
+                        safe_name = self._sanitize_filename(name)
                         temp_path = os.path.join(tempfile.gettempdir(), f"{safe_name}_{uuid.uuid4().hex[:8]}.svg")
                         with open(temp_path, 'wb') as f:
                             f.write(result)
