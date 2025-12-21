@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import threading
+from importlib.metadata import PackageNotFoundError, version
 import tempfile
 import time
 from contextlib import contextmanager
@@ -101,7 +102,6 @@ class StataClient:
                 logger.error(f"Failed to notify about graph cache: {e}")
         
         return graph_cache_callback
-
     def _request_break_in(self) -> None:
         """
         Attempt to interrupt a running Stata command when cancellation is requested.
@@ -178,6 +178,19 @@ class StataClient:
 
         try:
             import stata_setup
+
+            env_path = os.getenv("STATA_PATH")
+            if env_path:
+                logger.info("STATA_PATH env provided (raw): %s", env_path)
+            else:
+                logger.info("STATA_PATH env not set; attempting discovery")
+
+            try:
+                pkg_version = version("mcp-stata")
+            except PackageNotFoundError:
+                pkg_version = "unknown"
+            logger.info("mcp-stata version: %s", pkg_version)
+
 
             try:
                 stata_exec_path, edition = find_stata_path()

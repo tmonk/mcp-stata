@@ -1,4 +1,5 @@
 import anyio
+from importlib.metadata import PackageNotFoundError, version
 from mcp.server.fastmcp import Context, FastMCP
 import mcp.types as types
 from .stata_client import StataClient
@@ -17,6 +18,12 @@ from .ui_http import UIChannelManager
 
 LOG_LEVEL = os.getenv("MCP_STATA_LOGLEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
+try:
+    _mcp_stata_version = version("mcp-stata")
+except PackageNotFoundError:
+    _mcp_stata_version = "unknown"
+logging.info("mcp-stata version: %s", _mcp_stata_version)
+logging.info("STATA_PATH env at startup: %s", os.getenv("STATA_PATH", "<not set>"))
 
 # Initialize FastMCP
 mcp = FastMCP("mcp_stata")
