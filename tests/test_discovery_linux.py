@@ -63,3 +63,28 @@ def test_linux_discovers_install_prefix(monkeypatch, tmp_path):
     path, edition = find_stata_path()
     assert path == str(binary_path)
     assert edition == "se"
+
+
+def test_linux_stata_path_env_binary(monkeypatch, tmp_path):
+    monkeypatch.delenv("STATA_PATH", raising=False)
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+
+    binary_path = _make_executable(tmp_path / "opt" / "stata19" / "stata-mp")
+    monkeypatch.setenv("STATA_PATH", f'"{binary_path}"')
+
+    path, edition = find_stata_path()
+    assert path == str(binary_path)
+    assert edition == "mp"
+
+
+def test_linux_stata_path_env_directory(monkeypatch, tmp_path):
+    monkeypatch.delenv("STATA_PATH", raising=False)
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+
+    install_dir = tmp_path / "usr" / "local" / "stata19"
+    binary_path = _make_executable(install_dir / "stata-ic")
+    monkeypatch.setenv("STATA_PATH", str(install_dir))
+
+    path, edition = find_stata_path()
+    assert path == str(binary_path)
+    assert edition == "be"
