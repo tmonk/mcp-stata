@@ -390,18 +390,18 @@ def get_stored_results_resource() -> str:
 @mcp.tool()
 def export_graphs_all(use_base64: bool = False) -> str:
     """
-    Exports all graphs in memory to file paths (default) or base64-encoded PNGs.
+    Exports all graphs in memory to file paths (default) or base64-encoded SVGs.
 
     Args:
         use_base64: If True, returns base64-encoded images (token-intensive).
-                   If False (default), returns file paths to PNG files (token-efficient).
+                   If False (default), returns file paths to SVG files (token-efficient).
                    Use file paths unless you need to embed images directly.
 
     Returns a JSON envelope listing graph names and either file paths or base64 images.
-    The agent can open PNG files directly to verify visuals (titles/labels/colors/legends).
+    The agent can open SVG files directly to verify visuals (titles/labels/colors/legends).
     """
     exports = client.export_graphs_all(use_base64=use_base64)
-    return exports.model_dump_json()
+    return exports.model_dump_json(exclude_none=False)
 
 def main():
     # On Windows, Stata automation relies on COM, which is sensitive to threading models.

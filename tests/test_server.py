@@ -207,14 +207,12 @@ def test_export_graphs_all_multiple(init_server):
     # Load data and create multiple graphs
     _run_command_sync("sysuse auto, clear")
     
-    # Create first graph
-    _run_command_sync("scatter price mpg, name(Graph1, replace)")
-    
-    # Create second graph  
-    _run_command_sync("histogram price, name(Graph2, replace)")
-    
-    # Create third graph
-    _run_command_sync("graph box price, over(mpg) name(Graph3, replace)")
+    # Create graphs with names that can trigger edge cases:
+    # - spaces/special characters
+    # - cache filename collisions after sanitization (e.g., ":" vs "?")
+    _run_command_sync('scatter price mpg, name("Graph A", replace)')
+    _run_command_sync('histogram price, name("Graph:1", replace)')
+    _run_command_sync('graph box price, over(mpg) name("Graph?1", replace)')
     
     # Debug: check what graphs are available before export
     list_graphs_cmd = 'global mcp_graph_list ""'
@@ -238,17 +236,22 @@ def test_export_graphs_all_multiple(init_server):
     
     # Check that all graph names are present
     graph_names = [g["name"] for g in all_graphs["graphs"]]
-    assert "Graph1" in graph_names
-    assert "Graph2" in graph_names  
-    assert "Graph3" in graph_names
+    assert "Graph A" in graph_names
+    assert "Graph:1" in graph_names
+    assert "Graph?1" in graph_names
     
     # Verify each graph has a valid file path
+    paths = []
     for graph in all_graphs["graphs"]:
         assert graph["file_path"]
         # SVG files are now used (smaller, faster, vector format)
         assert graph["file_path"].endswith(".svg")
         assert Path(graph["file_path"]).exists()
         assert Path(graph["file_path"]).stat().st_size > 0
+        paths.append(graph["file_path"])
+
+    # Ensure we did not overwrite graphs due to cache filename collisions
+    assert len(set(paths)) == 3
     
     # Also test with base64 encoding
     all_graphs_b64 = json.loads(export_graphs_all(use_base64=True))
@@ -259,3 +262,27 @@ def test_export_graphs_all_multiple(init_server):
         assert graph["image_base64"]
         # Base64 should be non-empty and valid base64 string
         assert len(graph["image_base64"]) > 0
+
+
+def test_export_graphs_all_unnamed_graphs(init_server):
+    """Unnamed graph commands should still result in multiple exportable graphs."""
+    _run_command_sync("clear all")
+    _run_command_sync("graph drop _all")
+    _run_command_sync("sysuse auto, clear")
+
+    # No name() options here; without auto-naming Stata overwrites the default Graph.
+    _run_command_sync("scatter mpg weight")
+    _run_command_sync("graph bar mpg")
+
+    # Export all graphs and verify we have at least two distinct graphs.
+    all_graphs = json.loads(export_graphs_all())
+    assert len(all_graphs.get("graphs", [])) >= 2
+
+    # Ensure each has an SVG file path.
+    paths = []
+    for g in all_graphs["graphs"]:
+        assert g["file_path"]
+        assert g["file_path"].endswith(".svg")
+        assert Path(g["file_path"]).exists()
+        paths.append(g["file_path"])
+    assert len(set(paths)) == len(paths)
