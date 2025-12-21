@@ -206,9 +206,6 @@ class StataClient:
             self._graph_name_aliases: Dict[str, str] = {}
             self._graph_name_reverse: Dict[str, str] = {}
 
-            # Auto-generated graph names for commands that do not provide name().
-            self._auto_graph_counter = 0
-
         except ImportError:
             # Fallback for when stata_setup isn't in PYTHONPATH yet?
             # Usually users must have it installed. We rely on discovery logic.
@@ -264,44 +261,6 @@ class StataClient:
             return f"name({internal}{rest})"
 
         return pat.sub(repl, code)
-
-    def _maybe_autoname_graph_command(self, code: str) -> str:
-        """Ensure graph commands create distinct named graphs when name() is omitted."""
-        raw = (code or "").strip()
-        if not raw:
-            return code
-
-        # Do not interfere with multi-line code blocks.
-        if "\n" in raw:
-            return code
-
-        # If the user already provided a name(), respect it.
-        if re.search(r"\bname\s*\(", raw, flags=re.IGNORECASE):
-            return code
-
-        # Heuristic: common graph-producing commands.
-        first = raw.split(None, 1)[0].lower()
-        graph_starters = {
-            "graph",  # graph bar, graph box, graph twoway, etc.
-            "scatter",
-            "twoway",
-            "histogram",
-        }
-        if first not in graph_starters:
-            return code
-
-        # Generate a unique, valid Stata name.
-        if not hasattr(self, "_auto_graph_counter"):
-            self._auto_graph_counter = 0
-        self._auto_graph_counter += 1
-        auto_name = f"MCPGraph_{self._auto_graph_counter}"
-        auto_internal = self._make_valid_stata_name(auto_name)
-
-        # Append name(<internal>, replace) as an option.
-        # If there is already an option comma, append to the option list.
-        if "," in code:
-            return f"{code} name({auto_internal}, replace)"
-        return f"{code}, name({auto_internal}, replace)"
 
     def _read_return_code(self) -> int:
         """Read the last Stata return code without mutating rc."""
@@ -378,7 +337,6 @@ class StataClient:
         if not self._initialized:
             self.init()
 
-        code = self._maybe_autoname_graph_command(code)
         code = self._maybe_rewrite_graph_name_in_command(code)
 
         if cwd is not None and not os.path.isdir(cwd):
@@ -531,7 +489,6 @@ class StataClient:
         if not self._initialized:
             self.init()
 
-        code = self._maybe_autoname_graph_command(code)
         code = self._maybe_rewrite_graph_name_in_command(code)
 
         if cwd is not None and not os.path.isdir(cwd):
