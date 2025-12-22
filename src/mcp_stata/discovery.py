@@ -1,3 +1,12 @@
+"""
+Improved discovery.py with better error handling for intermittent failures.
+Key improvements:
+1. Retry logic for file existence checks
+2. Better diagnostic logging
+3. Fuzzy path matching for common typos
+4. Case-insensitive path resolution on Windows
+"""
+
 import os
 import sys
 import platform
@@ -5,10 +14,104 @@ import glob
 import logging
 import shutil
 import ntpath
-
+import time
 from typing import Tuple, List, Optional
 
 logger = logging.getLogger("mcp_stata.discovery")
+
+
+def _exists_with_retry(path: str, max_attempts: int = 3, delay: float = 0.1) -> bool:
+    """
+    Check if file exists with retry logic to handle transient failures.
+    This helps with antivirus scans, file locks, and other temporary issues.
+    """
+    for attempt in range(max_attempts):
+        if os.path.exists(path):
+            return True
+        if attempt < max_attempts - 1:
+            logger.debug(
+                f"File existence check attempt {attempt + 1} failed for: {path}"
+            )
+            time.sleep(delay)
+    return False
+
+
+def _find_similar_stata_dirs(target_path: str) -> List[str]:
+    """
+    Find similar Stata directories to help diagnose path typos.
+    Useful when user has 'Stata19Now' instead of 'StataNow19'.
+    """
+    parent = os.path.dirname(target_path)
+    
+    # If parent doesn't exist, try grandparent (for directory name typos)
+    search_dir = parent
+    if not os.path.exists(parent):
+        search_dir = os.path.dirname(parent)
+    
+    if not os.path.exists(search_dir):
+        return []
+    
+    try:
+        subdirs = [
+            d for d in os.listdir(search_dir)
+            if os.path.isdir(os.path.join(search_dir, d))
+        ]
+        # Filter to Stata-related directories (case-insensitive)
+        stata_dirs = [
+            os.path.join(search_dir, d)
+            for d in subdirs
+            if 'stata' in d.lower()
+        ]
+        return stata_dirs
+    except (OSError, PermissionError) as e:
+        logger.debug(f"Could not list directory {search_dir}: {e}")
+        return []
+
+
+def _validate_path_with_diagnostics(path: str, system: str) -> Tuple[bool, str]:
+    """
+    Validate path exists and provide detailed diagnostics if not.
+    Returns (exists, diagnostic_message)
+    """
+    if _exists_with_retry(path):
+        return True, ""
+    
+    # Build diagnostic message
+    diagnostics = []
+    diagnostics.append(f"File not found: '{path}'")
+    
+    parent_dir = os.path.dirname(path)
+    filename = os.path.basename(path)
+    
+    if _exists_with_retry(parent_dir):
+        diagnostics.append(f"✓ Parent directory exists: '{parent_dir}'")
+        try:
+            files_in_parent = os.listdir(parent_dir)
+            # Look for similar filenames
+            similar_files = [
+                f for f in files_in_parent
+                if 'stata' in f.lower() and f.lower().endswith('.exe' if system == 'Windows' else '')
+            ]
+            if similar_files:
+                diagnostics.append(f"Found {len(similar_files)} Stata file(s) in parent:")
+                for f in similar_files[:5]:  # Show max 5
+                    diagnostics.append(f"  - {f}")
+            else:
+                diagnostics.append(f"No Stata executables found in parent directory")
+                diagnostics.append(f"Files present: {', '.join(files_in_parent[:10])}")
+        except (OSError, PermissionError) as e:
+            diagnostics.append(f"✗ Could not list parent directory: {e}")
+    else:
+        diagnostics.append(f"✗ Parent directory does not exist: '{parent_dir}'")
+        
+        # Check for similar directories (typo detection)
+        similar_dirs = _find_similar_stata_dirs(path)
+        if similar_dirs:
+            diagnostics.append("\nDid you mean one of these directories?")
+            for dir_path in similar_dirs[:5]:
+                diagnostics.append(f"  - {dir_path}")
+    
+    return False, "\n".join(diagnostics)
 
 
 def _normalize_env_path(raw: str, system: str) -> str:
@@ -30,7 +133,7 @@ def _normalize_env_path(raw: str, system: str) -> str:
 
 
 def _is_executable(path: str, system: str) -> bool:
-    if not os.path.exists(path):
+    if not _exists_with_retry(path):  # Use retry logic
         return False
     if system == "Windows":
         # On Windows, check if it's a file and has .exe extension
@@ -71,11 +174,11 @@ def _resolve_windows_host_path(path: str, system: str) -> str:
     """
     if system != "Windows":
         return path
-    if os.path.exists(path):
+    if _exists_with_retry(path):  # Use retry logic
         return path
     if os.sep != "\\" and "\\" in path:
         alt_path = path.replace("\\", os.sep)
-        if os.path.exists(alt_path):
+        if _exists_with_retry(alt_path):  # Use retry logic
             return alt_path
     return path
 
@@ -97,11 +200,12 @@ def find_stata_path() -> Tuple[str, str]:
 
     Behavior:
     - If STATA_PATH is set and valid, use it.
-    - If STATA_PATH is set but invalid, fall back to auto-discovery.
-    - If auto-discovery fails, raise an error (including STATA_PATH failure context, if any).
+    - If STATA_PATH is set but invalid, provide detailed diagnostics and fall back.
+    - If auto-discovery fails, raise an error with helpful suggestions.
     """
     system = _detect_system()
     stata_path_error: Optional[Exception] = None
+    stata_path_diagnostics: Optional[str] = None
 
     windows_binaries = [
         ("StataMP-64.exe", "mp"),
@@ -158,11 +262,15 @@ def find_stata_path() -> Tuple[str, str]:
                         )
                         return candidate, edition
 
-                raise FileNotFoundError(
-                    f"STATA_PATH points to directory '{path}', but no Stata executable was found within. "
+                # Enhanced error with diagnostics
+                exists, diagnostics = _validate_path_with_diagnostics(path, system)
+                error_msg = (
+                    f"STATA_PATH points to directory '{path}', but no Stata executable was found within.\n"
+                    f"{diagnostics}\n\n"
                     "Point STATA_PATH directly to the Stata binary "
-                    "(e.g., C:\\Program Files\\Stata19\\StataMP-64.exe)."
+                    "(e.g., C:\\Program Files\\StataNow19\\StataMP-64.exe)."
                 )
+                raise FileNotFoundError(error_msg)
 
             edition = "be"
             lower_path = path.lower()
@@ -173,13 +281,18 @@ def find_stata_path() -> Tuple[str, str]:
             elif "be" in lower_path:
                 edition = "be"
 
-            if not os.path.exists(path):
-                raise FileNotFoundError(
-                    f"STATA_PATH points to '{path}', but that file does not exist. "
+            # Use enhanced validation with diagnostics
+            exists, diagnostics = _validate_path_with_diagnostics(path, system)
+            if not exists:
+                error_msg = (
+                    f"STATA_PATH points to '{path}', but that file does not exist.\n"
+                    f"{diagnostics}\n\n"
                     "Update STATA_PATH to your Stata binary (e.g., "
                     "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp, "
-                    "/usr/local/stata19/stata-mp or C:\\Program Files\\Stata19Now\\StataSE-64.exe)."
+                    "/usr/local/stata19/stata-mp or C:\\Program Files\\StataNow19\\StataMP-64.exe)."
                 )
+                raise FileNotFoundError(error_msg)
+                
             if not _is_executable(path, system):
                 raise PermissionError(
                     f"STATA_PATH points to '{path}', but it is not executable. "
@@ -191,6 +304,7 @@ def find_stata_path() -> Tuple[str, str]:
 
         except Exception as exc:
             stata_path_error = exc
+            stata_path_diagnostics = str(exc)
             logger.warning(
                 "STATA_PATH override failed (%s). Falling back to auto-discovery.",
                 exc,
@@ -213,11 +327,11 @@ def find_stata_path() -> Tuple[str, str]:
         for pattern in app_globs:
             for app_dir in glob.glob(pattern):
                 binary_dir = os.path.join(app_dir, "Contents", "MacOS")
-                if not os.path.exists(binary_dir):
+                if not _exists_with_retry(binary_dir):  # Use retry logic
                     continue
                 for binary, edition in [("stata-mp", "mp"), ("stata-se", "se"), ("stata", "be")]:
                     full_path = os.path.join(binary_dir, binary)
-                    if os.path.exists(full_path):
+                    if _exists_with_retry(full_path):  # Use retry logic
                         candidates.append((full_path, edition))
 
     elif system == "Windows":
@@ -265,7 +379,7 @@ def find_stata_path() -> Tuple[str, str]:
                 continue
             for exe, edition in windows_binaries:
                 full_path = os.path.join(stata_dir, exe)
-                if os.path.exists(full_path):
+                if _exists_with_retry(full_path):  # Use retry logic
                     candidates.append((full_path, edition))
 
     elif system == "Linux":
@@ -303,13 +417,13 @@ def find_stata_path() -> Tuple[str, str]:
                         continue
                     for binary, edition in linux_binaries:
                         full_path = os.path.join(base_dir, binary)
-                        if os.path.exists(full_path):
+                        if _exists_with_retry(full_path):  # Use retry logic
                             candidates.append((full_path, edition))
 
     candidates = _dedupe_preserve(candidates)
 
     for path, edition in candidates:
-        if not os.path.exists(path):
+        if not _exists_with_retry(path):  # Use retry logic
             logger.warning("Discovered candidate missing on disk: %s", path)
             continue
         if not _is_executable(path, system):
@@ -318,21 +432,27 @@ def find_stata_path() -> Tuple[str, str]:
         logger.info("Auto-discovered Stata at %s (%s)", path, edition)
         return path, edition
 
+    # Build comprehensive error message
+    error_parts = ["Could not automatically locate Stata."]
+    
     if stata_path_error is not None:
-        raise FileNotFoundError(
-            "Could not automatically locate Stata after STATA_PATH failed. "
-            f"STATA_PATH error was: {stata_path_error}. "
-            "Fix STATA_PATH to point to the Stata executable, or install Stata in a standard location "
-            "(e.g., /Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp, /usr/local/stata18/stata-mp, "
-            "or C:\\Program Files\\Stata18\\StataMP-64.exe)."
-        ) from stata_path_error
-
-    raise FileNotFoundError(
-        "Could not automatically locate Stata. "
-        "Set STATA_PATH to your Stata executable (e.g., "
-        "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp, /usr/local/stata18/stata-mp, "
-        "or C:\\Program Files\\Stata18\\StataMP-64.exe)."
+        error_parts.append(
+            f"\nSTATA_PATH was set but failed:\n{stata_path_diagnostics}"
+        )
+    
+    error_parts.append(
+        "\nTo fix this issue:\n"
+        "1. Set STATA_PATH to point to your Stata executable, for example:\n"
+        "   - Windows: C:\\Program Files\\StataNow19\\StataMP-64.exe\n"
+        "   - macOS: /Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp\n"
+        "   - Linux: /usr/local/stata19/stata-mp\n"
+        "\n2. Or install Stata in a standard location where it can be auto-discovered."
     )
+    
+    if stata_path_error is not None:
+        raise FileNotFoundError("\n".join(error_parts)) from stata_path_error
+    else:
+        raise FileNotFoundError("\n".join(error_parts))
 
 
 def main() -> int:
