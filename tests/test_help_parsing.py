@@ -1,3 +1,4 @@
+import pytest
 pytestmark = pytest.mark.requires_stata
 
 def test_smcl_to_text_strips_markup(client):
