@@ -102,3 +102,169 @@ def test_ui_http_paging_and_views_filtering():
     # Cleanup
     d = httpx.delete(urljoin(base, f"/v1/views/{view_id}"), headers=headers)
     assert d.status_code == 200
+
+
+def test_ui_http_page_limit_validation():
+    """Test that limit parameter is properly validated"""
+    _run_command_sync("sysuse auto, clear")
+
+    info = json.loads(get_ui_channel())
+    base = info["baseUrl"]
+    token = info["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    ds = httpx.get(urljoin(base, "/v1/dataset"), headers=headers).json()["dataset"]
+
+    # Test missing limit - should fail
+    page_req_no_limit = {
+        "datasetId": ds["id"],
+        "frame": ds.get("frame", "default"),
+        "offset": 0,
+        "vars": ["price"],
+    }
+    r = httpx.post(urljoin(base, "/v1/page"), headers=headers, json=page_req_no_limit)
+    assert r.status_code == 400
+    assert "limit is required" in r.json()["error"]["message"]
+
+    # Test limit = 0 - should fail
+    page_req_zero = {
+        "datasetId": ds["id"],
+        "frame": ds.get("frame", "default"),
+        "offset": 0,
+        "limit": 0,
+        "vars": ["price"],
+    }
+    r = httpx.post(urljoin(base, "/v1/page"), headers=headers, json=page_req_zero)
+    assert r.status_code == 400
+    assert "limit must be > 0" in r.json()["error"]["message"]
+
+    # Test limit = -1 - should fail
+    page_req_negative = {
+        "datasetId": ds["id"],
+        "frame": ds.get("frame", "default"),
+        "offset": 0,
+        "limit": -1,
+        "vars": ["price"],
+    }
+    r = httpx.post(urljoin(base, "/v1/page"), headers=headers, json=page_req_negative)
+    assert r.status_code == 400
+    assert "limit must be > 0" in r.json()["error"]["message"]
+
+    # Test limit = null - should fail with "limit is required"
+    page_req_null = {
+        "datasetId": ds["id"],
+        "frame": ds.get("frame", "default"),
+        "offset": 0,
+        "limit": None,
+        "vars": ["price"],
+    }
+    r = httpx.post(urljoin(base, "/v1/page"), headers=headers, json=page_req_null)
+    assert r.status_code == 400
+    assert "limit is required" in r.json()["error"]["message"]
+
+    # Test limit as string - should fail with type error
+    page_req_string = {
+        "datasetId": ds["id"],
+        "frame": ds.get("frame", "default"),
+        "offset": 0,
+        "limit": "not a number",
+        "vars": ["price"],
+    }
+    r = httpx.post(urljoin(base, "/v1/page"), headers=headers, json=page_req_string)
+    assert r.status_code == 400
+    assert "must be a valid integer" in r.json()["error"]["message"]
+
+    # Test limit = 1 - should succeed
+    page_req_valid = {
+        "datasetId": ds["id"],
+        "frame": ds.get("frame", "default"),
+        "offset": 0,
+        "limit": 1,
+        "vars": ["price"],
+    }
+    r = httpx.post(urljoin(base, "/v1/page"), headers=headers, json=page_req_valid)
+    assert r.status_code == 200
+    assert r.json()["view"]["returned"] == 1
+
+    # Test limit = 100 - should succeed
+    page_req_100 = {
+        "datasetId": ds["id"],
+        "frame": ds.get("frame", "default"),
+        "offset": 0,
+        "limit": 100,
+        "vars": ["price"],
+    }
+    r = httpx.post(urljoin(base, "/v1/page"), headers=headers, json=page_req_100)
+    assert r.status_code == 200
+    # auto dataset has 74 observations, so should return all of them
+    assert r.json()["view"]["returned"] <= 100
+
+    # Test limit exceeds max_limit (default 500) - should fail
+    page_req_too_large = {
+        "datasetId": ds["id"],
+        "frame": ds.get("frame", "default"),
+        "offset": 0,
+        "limit": 1000,
+        "vars": ["price"],
+    }
+    r = httpx.post(urljoin(base, "/v1/page"), headers=headers, json=page_req_too_large)
+    assert r.status_code == 400
+    assert "limit must be <=" in r.json()["error"]["message"]
+
+
+def test_ui_http_page_offset_validation():
+    """Test that offset parameter is properly validated"""
+    _run_command_sync("sysuse auto, clear")
+
+    info = json.loads(get_ui_channel())
+    base = info["baseUrl"]
+    token = info["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    ds = httpx.get(urljoin(base, "/v1/dataset"), headers=headers).json()["dataset"]
+
+    # Test offset = -1 - should fail
+    page_req_negative_offset = {
+        "datasetId": ds["id"],
+        "frame": ds.get("frame", "default"),
+        "offset": -1,
+        "limit": 10,
+        "vars": ["price"],
+    }
+    r = httpx.post(urljoin(base, "/v1/page"), headers=headers, json=page_req_negative_offset)
+    assert r.status_code == 400
+    assert "offset must be >=" in r.json()["error"]["message"]
+
+    # Test offset = 0 - should succeed (default)
+    page_req_zero_offset = {
+        "datasetId": ds["id"],
+        "frame": ds.get("frame", "default"),
+        "offset": 0,
+        "limit": 10,
+        "vars": ["price"],
+    }
+    r = httpx.post(urljoin(base, "/v1/page"), headers=headers, json=page_req_zero_offset)
+    assert r.status_code == 200
+
+    # Test offset missing - should default to 0 and succeed
+    page_req_no_offset = {
+        "datasetId": ds["id"],
+        "frame": ds.get("frame", "default"),
+        "limit": 10,
+        "vars": ["price"],
+    }
+    r = httpx.post(urljoin(base, "/v1/page"), headers=headers, json=page_req_no_offset)
+    assert r.status_code == 200
+    assert r.json()["view"]["offset"] == 0
+
+    # Test offset as invalid string - should fail
+    page_req_invalid_offset = {
+        "datasetId": ds["id"],
+        "frame": ds.get("frame", "default"),
+        "offset": "not a number",
+        "limit": 10,
+        "vars": ["price"],
+    }
+    r = httpx.post(urljoin(base, "/v1/page"), headers=headers, json=page_req_invalid_offset)
+    assert r.status_code == 400
+    assert "offset must be a valid integer" in r.json()["error"]["message"]

@@ -455,16 +455,35 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
         dataset_id = view.dataset_id
         frame = view.frame
 
-    offset = int(body.get("offset", 0) or 0)
-    limit = int(body.get("limit", 0) or 0)
+    # Parse offset (default 0 is valid since offset >= 0)
+    try:
+        offset = int(body.get("offset") or 0)
+    except (ValueError, TypeError) as e:
+        raise HTTPError(400, "invalid_request", f"offset must be a valid integer, got: {body.get('offset')!r}")
+
+    # Parse limit (no default - must be explicitly provided)
+    limit_raw = body.get("limit")
+    if limit_raw is None:
+        raise HTTPError(400, "invalid_request", "limit is required")
+    try:
+        limit = int(limit_raw)
+    except (ValueError, TypeError) as e:
+        raise HTTPError(400, "invalid_request", f"limit must be a valid integer, got: {limit_raw!r}")
+
     vars_req = body.get("vars", [])
     include_obs_no = bool(body.get("includeObsNo", False))
-    max_chars_req = int(body.get("maxChars", max_chars) or max_chars)
+
+    # Parse maxChars
+    max_chars_raw = body.get("maxChars", max_chars)
+    try:
+        max_chars_req = int(max_chars_raw or max_chars)
+    except (ValueError, TypeError) as e:
+        raise HTTPError(400, "invalid_request", f"maxChars must be a valid integer, got: {max_chars_raw!r}")
 
     if offset < 0:
-        raise HTTPError(400, "invalid_request", "offset must be >= 0")
+        raise HTTPError(400, "invalid_request", f"offset must be >= 0, got: {offset}")
     if limit <= 0:
-        raise HTTPError(400, "invalid_request", "limit must be > 0")
+        raise HTTPError(400, "invalid_request", f"limit must be > 0, got: {limit}")
     if limit > max_limit:
         raise HTTPError(400, "request_too_large", f"limit must be <= {max_limit}")
     if max_chars_req <= 0:
