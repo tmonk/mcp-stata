@@ -3,45 +3,20 @@ import pytest
 import shutil
 from pathlib import Path
 
-from mcp_stata.stata_client import StataClient
-from mcp_stata import discovery
-
 # Mark all tests in this module as requiring Stata
 pytestmark = pytest.mark.requires_stata
-
-# Fixture for the Stata client (session scope to init once)
-@pytest.fixture(scope="session")
-def client():
-    print("\n--- Initializing Stata Client ---")
-    stata_path = os.environ.get("STATA_PATH")
-    if not stata_path or not os.path.exists(stata_path):
-        try:
-            stata_path, _edition = discovery.find_stata_path()
-            os.environ["STATA_PATH"] = stata_path
-            print(f"[integration] autodiscovered STATA_PATH -> {stata_path}")
-        except Exception as e:
-            pytest.skip(f"Stata not found via autodiscovery: {e}")
-
-    try:
-        c = StataClient()
-        c.init()
-        return c
-    except Exception as e:
-        pytest.skip(f"Stata initialization failed: {e}")
 
 def test_connection_and_math(client):
     result = client.run_command_structured("display 2+2")
     assert result.success is True
     assert "4" in result.stdout
 
-def test_list_graphs_without_prior_init():
-    from mcp_stata.stata_client import StataClient
-    c = StataClient()
+def test_list_graphs_without_prior_init(client):
     # Force reset to simulate fresh use before any command
-    c._initialized = False
-    if hasattr(c, "stata"):
-        delattr(c, "stata")
-    graphs = c.list_graphs()
+    client._initialized = False
+    if hasattr(client, "stata"):
+        delattr(client, "stata")
+    graphs = client.list_graphs()
     assert isinstance(graphs, list)
 
 

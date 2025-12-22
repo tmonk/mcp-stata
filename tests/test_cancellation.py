@@ -6,10 +6,8 @@ import pytest
 
 from anyio import get_cancelled_exc_class
 
-from mcp_stata.stata_client import StataClient
 
-
-def test_request_break_in_invokes_breakin(monkeypatch):
+def test_request_break_in_invokes_breakin(monkeypatch, client):
     called = {"break": 0}
 
     class FakeSFI:
@@ -18,14 +16,13 @@ def test_request_break_in_invokes_breakin(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "sfi", FakeSFI())
 
-    client = StataClient()
     client._request_break_in()
 
     assert called["break"] == 1
 
 
 @pytest.mark.anyio
-async def test_wait_for_stata_stop_uses_poll_and_detects_breakerror(monkeypatch):
+async def test_wait_for_stata_stop_uses_poll_and_detects_breakerror(monkeypatch, client):
     class BreakError(Exception):
         pass
 
@@ -41,7 +38,6 @@ async def test_wait_for_stata_stop_uses_poll_and_detects_breakerror(monkeypatch)
     sfi_mod = types.SimpleNamespace(SFIToolkit=toolkit, BreakError=BreakError)
     monkeypatch.setitem(sys.modules, "sfi", sfi_mod)
 
-    client = StataClient()
     stopped = await client._wait_for_stata_stop(timeout=0.2)
 
     assert stopped is True
@@ -49,7 +45,7 @@ async def test_wait_for_stata_stop_uses_poll_and_detects_breakerror(monkeypatch)
 
 
 @pytest.mark.anyio
-async def test_run_command_streaming_cancellation_triggers_break(monkeypatch):
+async def test_run_command_streaming_cancellation_triggers_break(monkeypatch, client):
     cancelled_exc = get_cancelled_exc_class()
 
     async def fake_notify_log(_text: str) -> None:
@@ -62,8 +58,6 @@ async def test_run_command_streaming_cancellation_triggers_break(monkeypatch):
     # Track that we signaled Stata and waited for stop
     called = {"break": 0, "wait": 0}
 
-    client = StataClient()
-    client._initialized = True
     monkeypatch.setitem(sys.modules, "sfi", types.SimpleNamespace())
     monkeypatch.setattr(client, "_maybe_rewrite_graph_name_in_command", lambda c: c)
     monkeypatch.setattr(client, "_request_break_in", lambda: called.__setitem__("break", called["break"] + 1))

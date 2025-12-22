@@ -23,8 +23,6 @@ except (FileNotFoundError, PermissionError) as e:
     pytest.skip(f"Stata not found or not executable: {e}", allow_module_level=True)
 
 from mcp_stata.graph_detector import GraphCreationDetector, StreamingGraphCache, SFI_AVAILABLE
-from mcp_stata.stata_client import StataClient
-
 
 # Mark all tests in this module as requiring Stata
 pytestmark = pytest.mark.requires_stata
@@ -59,22 +57,9 @@ class TestSFIGraphCreationDetector:
     """Test SFI-only graph creation detection."""
     
     @pytest.fixture
-    def real_stata_client(self):
-        """Create a real StataClient with actual Stata connection."""
-        client = StataClient()
-        client.init()
-        yield client
-        # Cleanup
-        try:
-            client.stata.run("graph drop _all", quietly=True)
-            client.stata.run("clear", quietly=True)
-        except Exception:
-            pass
-    
-    @pytest.fixture
-    def detector_with_real_client(self, real_stata_client):
+    def detector_with_real_client(self, client):
         """Create detector with real StataClient."""
-        return GraphCreationDetector(stata_client=real_stata_client)
+        return GraphCreationDetector(stata_client=client)
     
     def test_detector_initialization(self, detector_with_real_client):
         """Test GraphCreationDetector initialization with real StataClient."""
@@ -146,19 +131,6 @@ class TestSFIGraphCreationDetector:
 class TestSFIIntegration:
     """Test comprehensive SFI integration scenarios."""
     
-    @pytest.fixture
-    def client(self):
-        """Create a real StataClient."""
-        client = StataClient()
-        client.init()
-        yield client
-        # Cleanup
-        try:
-            client.stata.run("clear", quietly=True)
-        except Exception:
-            pass
-    
-        
     def test_sfi_state_consistency(self, client):
         """Test SFI state consistency across multiple operations."""
         detector = GraphCreationDetector(stata_client=client)
@@ -197,18 +169,6 @@ class TestSFIIntegration:
 
 class TestSFIBoundaryConditions:
     """Test SFI boundary conditions and error handling."""
-    
-    @pytest.fixture
-    def client(self):
-        """Create a real StataClient."""
-        client = StataClient()
-        client.init()
-        yield client
-        # Cleanup
-        try:
-            client.stata.run("clear", quietly=True)
-        except Exception:
-            pass
     
     def test_sfi_with_no_graphs(self, client):
         """Test SFI detection when no graphs exist."""

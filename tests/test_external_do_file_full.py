@@ -13,7 +13,6 @@ try:
 except (FileNotFoundError, PermissionError) as e:
     pytest.skip(f"Stata not found or not executable: {e}", allow_module_level=True)
 
-from mcp_stata.stata_client import StataClient
 from mcp_stata.graph_detector import StreamingGraphCache
 
 # Mark all tests in this module as requiring Stata
@@ -25,7 +24,7 @@ DO_FILE = Path("/Users/tom/Library/CloudStorage/Dropbox/projects/indirect_exp/co
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_external_figure3_do_file():
+async def test_external_figure3_do_file(client):
     """Test external do-file with enhanced graph detection and caching at creation."""
     if not DO_FILE.exists():
         pytest.skip("External figure3 do-file not present")
@@ -33,9 +32,6 @@ async def test_external_figure3_do_file():
     prev_cwd = os.getcwd()
     os.chdir(DO_FILE.parent)
     try:
-        client = StataClient()
-        client.init()
-
         # Initialize streaming cache with auto-caching enabled
         cache = StreamingGraphCache(client, auto_cache=True)
         
@@ -133,7 +129,7 @@ async def test_external_figure3_do_file():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_external_figure3_do_file_with_streaming():
+async def test_external_figure3_do_file_with_streaming(client):
     """Test external do-file with explicit streaming cache verification."""
     if not DO_FILE.exists():
         pytest.skip("External figure3 do-file not present")
@@ -141,9 +137,6 @@ async def test_external_figure3_do_file_with_streaming():
     prev_cwd = os.getcwd()
     os.chdir(DO_FILE.parent)
     try:
-        client = StataClient()
-        client.init()
-
         # Initialize streaming cache
         cache = StreamingGraphCache(client, auto_cache=True)
         
@@ -207,7 +200,7 @@ async def test_external_figure3_do_file_with_streaming():
 
 
 @pytest.mark.integration
-def test_external_figure3_do_file_sync():
+def test_external_figure3_do_file_sync(client):
     """Test external do-file with synchronous execution and cache verification."""
     if not DO_FILE.exists():
         pytest.skip("External figure3 do-file not present")
@@ -215,9 +208,6 @@ def test_external_figure3_do_file_sync():
     prev_cwd = os.getcwd()
     os.chdir(DO_FILE.parent)
     try:
-        client = StataClient()
-        client.init()
-
         # Initialize streaming cache
         cache = StreamingGraphCache(client, auto_cache=True)
         

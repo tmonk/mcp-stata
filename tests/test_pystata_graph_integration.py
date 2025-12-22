@@ -16,7 +16,6 @@ except (FileNotFoundError, PermissionError) as e:
     pytest.skip(f"Stata not found or not executable: {e}", allow_module_level=True)
 
 from mcp_stata.graph_detector import GraphCreationDetector, StreamingGraphCache
-from mcp_stata.stata_client import StataClient
 
 
 # Mark all tests in this module as requiring Stata
@@ -27,17 +26,9 @@ class TestPystataGraphIntegration:
     """Test pystata integration for graph detection using real Stata."""
     
     @pytest.fixture
-    def real_stata_client(self):
-        """Create a real StataClient with actual Stata connection."""
-        client = StataClient()
-        client.init()  # Initialize the actual Stata connection
-        yield client
-        # Cleanup if needed
-    
-    @pytest.fixture
-    def detector_with_real_client(self, real_stata_client):
-        """Create detector with real StataClient."""
-        return GraphCreationDetector(stata_client=real_stata_client)
+    def detector_with_real_client(self, client):
+        """Create detector with shared StataClient."""
+        return GraphCreationDetector(stata_client=client)
     
     def test_detector_init_with_client(self, detector_with_real_client):
         """Test GraphCreationDetector initialization with real StataClient."""
@@ -162,14 +153,14 @@ class TestPystataGraphIntegration:
     
         
     @pytest.mark.asyncio
-    async def test_cache_detected_graphs_with_pystata(self, real_stata_client):
+    async def test_cache_detected_graphs_with_pystata(self, client):
         """Test enhanced caching with pystata integration."""
-        cache = StreamingGraphCache(real_stata_client, auto_cache=True)
+        cache = StreamingGraphCache(client, auto_cache=True)
         
         # Create real graphs first
-        real_stata_client.stata.run("sysuse auto, clear", quietly=True)
-        real_stata_client.stata.run("scatter price mpg, name(Graph1)", quietly=True)
-        real_stata_client.stata.run("histogram price, name(Graph2)", quietly=True)
+        client.stata.run("sysuse auto, clear", quietly=True)
+        client.stata.run("scatter price mpg, name(Graph1)", quietly=True)
+        client.stata.run("histogram price, name(Graph2)", quietly=True)
         
         # Add graphs to cache queue
         cache._graphs_to_cache = ['Graph1', 'Graph2']
@@ -182,19 +173,19 @@ class TestPystataGraphIntegration:
         
         # Clean up
         try:
-            real_stata_client.stata.run("graph drop Graph1 Graph2", quietly=True)
+            client.stata.run("graph drop Graph1 Graph2", quietly=True)
         except SystemError:
             pass
-        real_stata_client.stata.run("clear", quietly=True)
+        client.stata.run("clear", quietly=True)
     
     @pytest.mark.asyncio
-    async def test_cache_detected_graphs_fallback(self, real_stata_client):
+    async def test_cache_detected_graphs_fallback(self, client):
         """Test fallback to original method when pystata method not available."""
-        cache = StreamingGraphCache(real_stata_client, auto_cache=True)
+        cache = StreamingGraphCache(client, auto_cache=True)
         
         # Create a real graph first
-        real_stata_client.stata.run("sysuse auto, clear", quietly=True)
-        real_stata_client.stata.run("scatter price mpg, name(Graph1)", quietly=True)
+        client.stata.run("sysuse auto, clear", quietly=True)
+        client.stata.run("scatter price mpg, name(Graph1)", quietly=True)
         
         # Add graph to cache queue
         cache._graphs_to_cache = ['Graph1']
@@ -206,14 +197,14 @@ class TestPystataGraphIntegration:
         
         # Clean up
         try:
-            real_stata_client.stata.run("graph drop Graph1", quietly=True)
+            client.stata.run("graph drop Graph1", quietly=True)
         except SystemError:
             pass
-        real_stata_client.stata.run("clear", quietly=True)
+        client.stata.run("clear", quietly=True)
 
-    def test_svg_export_integration(self, real_stata_client):
+    def test_svg_export_integration(self, client):
         """Test SVG export integration with real Stata."""
-        stata = real_stata_client.stata
+        stata = client.stata
         
         # Create a graph
         stata.run("sysuse auto, clear", quietly=True)

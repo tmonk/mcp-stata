@@ -20,8 +20,6 @@ try:
 except (FileNotFoundError, PermissionError) as e:
     pytest.skip(f"Stata not found or not executable: {e}", allow_module_level=True)
 
-from mcp_stata.stata_client import StataClient
-
 
 # Mark all tests in this module as requiring Stata
 pytestmark = pytest.mark.requires_stata
@@ -29,18 +27,6 @@ pytestmark = pytest.mark.requires_stata
 
 class TestGraphExportTokenEfficiency:
     """Test graph export with file paths (default) vs base64 (optional)."""
-
-    @pytest.fixture
-    def client(self):
-        """Create a real StataClient."""
-        client = StataClient()
-        client.init()
-        yield client
-        # Cleanup
-        try:
-            client.stata.run("clear", quietly=True)
-        except Exception:
-            pass
 
     def test_export_graphs_default_returns_file_paths(self, client):
         """Default export_graphs_all() returns file paths, not base64."""
@@ -99,18 +85,6 @@ class TestGraphExportTokenEfficiency:
 class TestOutputTruncation:
     """Test max_output_lines parameter for truncating verbose output."""
 
-    @pytest.fixture
-    def client(self):
-        """Create a real StataClient."""
-        client = StataClient()
-        client.init()
-        yield client
-        # Cleanup
-        try:
-            client.stata.run("clear", quietly=True)
-        except Exception:
-            pass
-
     def test_truncation_with_max_output_lines(self, client):
         """Test that max_output_lines truncates output correctly."""
         s = client.run_command_structured("sysuse auto, clear")
@@ -163,18 +137,6 @@ class TestOutputTruncation:
 class TestJSONCompactness:
     """Test that JSON responses are compact (no indentation)."""
 
-    @pytest.fixture
-    def client(self):
-        """Create a real StataClient."""
-        client = StataClient()
-        client.init()
-        yield client
-        # Cleanup
-        try:
-            client.stata.run("clear", quietly=True)
-        except Exception:
-            pass
-
     def _run_command_sync(self, command: str) -> str:
         """Helper to run command and get JSON response."""
         import asyncio
@@ -223,18 +185,6 @@ class TestJSONCompactness:
 
 class TestTokenSavingsIntegration:
     """Integration tests showing combined token savings."""
-
-    @pytest.fixture
-    def client(self):
-        """Create a real StataClient."""
-        client = StataClient()
-        client.init()
-        yield client
-        # Cleanup
-        try:
-            client.stata.run("clear", quietly=True)
-        except Exception:
-            pass
 
     def test_error_response_size_vs_old_approach(self, client):
         """Compare error response size vs hypothetical duplicate."""

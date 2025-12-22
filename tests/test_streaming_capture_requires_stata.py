@@ -3,16 +3,11 @@ import pytest
 import json
 from pathlib import Path
 
-from mcp_stata.stata_client import StataClient
-
 
 pytestmark = pytest.mark.requires_stata
 
 
-def test_run_command_streaming_emits_log_and_progress():
-    client = StataClient()
-    # Ensure initialized (may no-op if already)
-    client.init()
+def test_run_command_streaming_emits_log_and_progress(client):
 
     logs: list[str] = []
     progress: list[tuple[float, float | None, str | None]] = []
@@ -42,10 +37,7 @@ def test_run_command_streaming_emits_log_and_progress():
     anyio.run(main)
 
 
-def test_run_command_streaming_with_cwd_can_do_relative_file(tmp_path):
-    client = StataClient()
-    client.init()
-
+def test_run_command_streaming_with_cwd_can_do_relative_file(tmp_path, client):
     project = tmp_path / "proj_cmd"
     project.mkdir()
     dofile = project / "rel.do"
@@ -79,10 +71,7 @@ def test_run_command_streaming_with_cwd_can_do_relative_file(tmp_path):
     assert Path(payload.get("path", "")).exists()
 
 
-def test_run_do_file_streaming_progress_inference(tmp_path):
-    client = StataClient()
-    client.init()
-
+def test_run_do_file_streaming_progress_inference(tmp_path, client):
     dofile = tmp_path / "stream_test.do"
     dofile.write_text('display "a"\ndisplay "b"\n')
 
@@ -121,10 +110,7 @@ def test_run_do_file_streaming_progress_inference(tmp_path):
     assert len(progress) >= 1
 
 
-def test_run_do_file_streaming_with_cwd_and_relative_paths(tmp_path):
-    client = StataClient()
-    client.init()
-
+def test_run_do_file_streaming_with_cwd_and_relative_paths(tmp_path, client):
     project = tmp_path / "proj"
     project.mkdir()
     child = project / "child.do"

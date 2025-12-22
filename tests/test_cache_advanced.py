@@ -4,16 +4,8 @@ import shutil
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-from mcp_stata.stata_client import StataClient
-
 # Mark all tests in this module as requiring Stata
 pytestmark = pytest.mark.requires_stata
-
-
-@pytest.fixture
-def client():
-    """Create a fresh StataClient for each test."""
-    return StataClient()
 
 
 def test_cache_initialization_basic(client):

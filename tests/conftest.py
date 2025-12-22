@@ -76,6 +76,16 @@ def configure_stata_for_tests():
     return stata_dir, stata_flavor
 
 
+@pytest.fixture
+def client(stata_client):
+    """
+    Function-scoped alias to the shared Stata client.
+
+    Tests that need additional isolation should clean state explicitly.
+    """
+    return stata_client
+
+
 # Work around Windows PermissionError when pytest tries to unlink the
 # pytest-current symlink during temp directory cleanup. Pytest's cleanup
 # lives in _pytest.pathlib.cleanup_dead_symlinks; wrap it to ignore

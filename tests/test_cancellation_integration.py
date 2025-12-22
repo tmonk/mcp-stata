@@ -7,7 +7,6 @@ import stata_setup
 from anyio import get_cancelled_exc_class
 
 from conftest import configure_stata_for_tests
-from mcp_stata.stata_client import StataClient
 
 # Configure real Stata; skip if not available
 try:
@@ -20,7 +19,7 @@ pytestmark = pytest.mark.requires_stata
 
 
 @pytest.mark.anyio
-async def test_run_do_file_streaming_cancellation_long(monkeypatch, tmp_path: Path):
+async def test_run_do_file_streaming_cancellation_long(monkeypatch, tmp_path: Path, client):
     """
     Integration test: run a long do-file, cancel it, and ensure the Stata break-in path is exercised.
     """
@@ -38,7 +37,6 @@ async def test_run_do_file_streaming_cancellation_long(monkeypatch, tmp_path: Pa
         encoding="utf-8",
     )
 
-    client = StataClient()
     calls = {"break": 0, "wait": 0}
 
     async def notify_log(_text: str) -> None:

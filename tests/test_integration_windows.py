@@ -9,12 +9,11 @@ pytestmark = [
     pytest.mark.requires_stata
 ]
 
-from mcp_stata.stata_client import StataClient
 from mcp_stata import discovery
 
 
 @pytest.mark.integration
-def test_windows_end_to_end(monkeypatch, tmp_path):
+def test_windows_end_to_end(monkeypatch, tmp_path, client):
     # Prefer explicit STATA_PATH but fall back to autodiscovery so CI/users without env still run.
     stata_path = os.environ.get("STATA_PATH")
     if not stata_path:
@@ -31,13 +30,6 @@ def test_windows_end_to_end(monkeypatch, tmp_path):
     # Ensure downstream logic uses the resolved binary
     monkeypatch.setenv("STATA_PATH", stata_path)
     monkeypatch.setenv("MCP_STATA_LOGLEVEL", "DEBUG")
-
-    client = StataClient()
-    try:
-        print("[win-e2e] initializing client")
-        client.init()
-    except Exception as e:
-        pytest.skip(f"Stata init failed: {e}")
 
     print("[win-e2e] run display")
     res = client.run_command_structured("display 2+2")

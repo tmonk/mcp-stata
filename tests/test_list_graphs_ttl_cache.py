@@ -15,16 +15,13 @@ try:
 except (FileNotFoundError, PermissionError) as e:
     pytest.skip(f"Stata not found or not executable: {e}", allow_module_level=True)
 
-from mcp_stata.stata_client import StataClient
-
 
 class TestListGraphsTTLCache:
     """Test TTL cache for list_graphs() method."""
 
-    def test_ttl_cache_basic_functionality(self):
+    def test_ttl_cache_basic_functionality(self, client, monkeypatch):
         """Test basic TTL cache functionality."""
-        client = StataClient()
-        client.LIST_GRAPHS_TTL = 0.1  # 100ms TTL
+        monkeypatch.setattr(client, "LIST_GRAPHS_TTL", 0.1, raising=False)
         
         # First call should fetch from Stata
         result1 = client.list_graphs()
@@ -45,10 +42,9 @@ class TestListGraphsTTLCache:
         result3 = client.list_graphs()
         assert result3 == result1  # Same data, but fetched fresh
     
-    def test_ttl_cache_invalidation(self):
+    def test_ttl_cache_invalidation(self, client, monkeypatch):
         """Test cache invalidation functionality."""
-        client = StataClient()
-        client.LIST_GRAPHS_TTL = 1.0  # Long TTL
+        monkeypatch.setattr(client, "LIST_GRAPHS_TTL", 1.0, raising=False)
         
         # First call
         result1 = client.list_graphs()
@@ -60,10 +56,9 @@ class TestListGraphsTTLCache:
         result2 = client.list_graphs()
         assert result2 == result1
     
-    def test_ttl_cache_error_handling(self):
+    def test_ttl_cache_error_handling(self, client, monkeypatch):
         """Test TTL cache behavior when Stata calls fail."""
-        client = StataClient()
-        client.LIST_GRAPHS_TTL = 1.0  # Long TTL
+        monkeypatch.setattr(client, "LIST_GRAPHS_TTL", 1.0, raising=False)
         
         # First call succeeds
         result1 = client.list_graphs()
@@ -72,10 +67,9 @@ class TestListGraphsTTLCache:
         result2 = client.list_graphs()
         assert result2 == result1
     
-    def test_ttl_cache_concurrent_access(self):
+    def test_ttl_cache_concurrent_access(self, client, monkeypatch):
         """Test TTL cache under concurrent access."""
-        client = StataClient()
-        client.LIST_GRAPHS_TTL = 1.0  # Long TTL
+        monkeypatch.setattr(client, "LIST_GRAPHS_TTL", 1.0, raising=False)
         
         # Initialize the client fully before starting threads
         # This ensures Stata is ready and prevents race conditions
@@ -111,10 +105,9 @@ class TestListGraphsTTLCache:
         for thread_id, result in results:
             assert result == expected_result
     
-    def test_ttl_cache_expiration(self):
+    def test_ttl_cache_expiration(self, client, monkeypatch):
         """Test that cache properly expires after TTL."""
-        client = StataClient()
-        client.LIST_GRAPHS_TTL = 0.1  # 100ms TTL
+        monkeypatch.setattr(client, "LIST_GRAPHS_TTL", 0.1, raising=False)
         
         # First call
         result1 = client.list_graphs()
@@ -137,10 +130,9 @@ class TestListGraphsTTLCache:
         assert duration2 > duration1
         assert result3 == result1
     
-    def test_cache_invalidation_on_graph_creation(self):
+    def test_cache_invalidation_on_graph_creation(self, client, monkeypatch):
         """Test that cache is invalidated when graphs are created."""
-        client = StataClient()
-        client.LIST_GRAPHS_TTL = 1.0  # Long TTL
+        monkeypatch.setattr(client, "LIST_GRAPHS_TTL", 1.0, raising=False)
         
         # Get initial list
         result1 = client.list_graphs()
