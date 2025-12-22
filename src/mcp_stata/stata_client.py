@@ -408,6 +408,26 @@ class StataClient:
                 return None
         return None
 
+    def _select_stata_error_message(self, text: str, fallback: str) -> str:
+        if not text:
+            return fallback
+        ignore_patterns = (
+            r"^r\(\d+\);?$",
+            r"^end of do-file$",
+            r"^execution terminated$",
+            r"^[-=*]{3,}.*$",
+        )
+        for raw in reversed(text.splitlines()):
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith((".", ">")):
+                continue
+            if any(re.match(pat, line, re.IGNORECASE) for pat in ignore_patterns):
+                continue
+            return line
+        return fallback
+
     def _smcl_to_text(self, smcl: str) -> str:
         """Convert simple SMCL markup into plain text for LLM-friendly help."""
         # First, keep inline directive content if present (e.g., {bf:word} -> word)
@@ -433,7 +453,8 @@ class StataClient:
         rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
         line_no = self._parse_line_from_text(combined) if combined else None
         snippet = combined[-800:] if combined else None
-        message = (stderr or (str(exc) if exc else "") or stdout or "Stata error").strip()
+        fallback = (stderr or (str(exc) if exc else "") or stdout or "Stata error").strip()
+        message = self._select_stata_error_message(combined, fallback)
         return ErrorEnvelope(
             message=message,
             rc=rc_final,
@@ -718,14 +739,8 @@ class StataClient:
             rc_hint = self._parse_rc_from_text(combined) if combined else None
             rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
             line_no = self._parse_line_from_text(combined) if combined else None
-            message = "Stata error"
-            if tail_text and tail_text.strip():
-                for line in reversed(tail_text.splitlines()):
-                    if line.strip():
-                        message = line.strip()
-                        break
-            elif exc is not None:
-                message = str(exc).strip() or message
+            fallback = (str(exc).strip() if exc is not None else "") or "Stata error"
+            message = self._select_stata_error_message(combined, fallback)
 
             error = ErrorEnvelope(
                 message=message,
@@ -1055,14 +1070,8 @@ class StataClient:
             rc_hint = self._parse_rc_from_text(combined) if combined else None
             rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
             line_no = self._parse_line_from_text(combined) if combined else None
-            message = "Stata error"
-            if tail_text and tail_text.strip():
-                for line in reversed(tail_text.splitlines()):
-                    if line.strip():
-                        message = line.strip()
-                        break
-            elif exc is not None:
-                message = str(exc).strip() or message
+            fallback = (str(exc).strip() if exc is not None else "") or "Stata error"
+            message = self._select_stata_error_message(combined, fallback)
 
             error = ErrorEnvelope(
                 message=message,
@@ -2443,4 +2452,3 @@ class StataClient:
                 )
 
         return result
-
