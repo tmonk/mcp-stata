@@ -3,6 +3,8 @@ import platform
 from pathlib import Path
 
 from mcp_stata.discovery import find_stata_path
+import pytest
+pytestmark = pytest.mark.skipif(platform.system() != "Darwin", reason="Darwin-only discovery tests")
 
 
 def _make_executable(path: Path) -> Path:

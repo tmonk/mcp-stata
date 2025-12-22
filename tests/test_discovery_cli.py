@@ -20,10 +20,12 @@ def test_discovery_cli_main_success(monkeypatch, tmp_path, capsys):
 
 
 def test_discovery_cli_main_failure(monkeypatch, capsys):
-    # Force failure by clearing env and making discovery search empty candidates
+    # Force failure by making discovery search empty candidates
     monkeypatch.delenv("STATA_PATH", raising=False)
-    monkeypatch.setattr(discovery.platform, "system", lambda: "NowhereOS")
-
+    
+    # Mock _detect_system directly to bypass os.name check
+    monkeypatch.setattr(discovery, "_detect_system", lambda: "NowhereOS")
+    
     rc = discovery.main()
     captured = capsys.readouterr().out
     assert rc == 1

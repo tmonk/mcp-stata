@@ -193,7 +193,7 @@ def test_nested_do_and_program_errors(client, tmp_path):
     parent = tmp_path / "parent_bad.do"
     parent.write_text(f'do "{child}"\n')
 
-    resp = client.run_do_file(str(parent), trace=True)
+    resp = client.run_do_file(str(parent), trace=False)
     assert resp.success is False
     assert resp.error is not None
     assert resp.error.rc is not None
@@ -210,7 +210,7 @@ def test_nested_do_and_program_errors(client, tmp_path):
         "badprog price\n"
     )
 
-    resp2 = client.run_do_file(str(program_do), trace=True)
+    resp2 = client.run_do_file(str(program_do), trace=False)
     assert resp2.success is False
     assert resp2.error is not None
     assert resp2.error.rc is not None
@@ -279,3 +279,6 @@ def test_success_paths(client, tmp_path):
     assert Path(do_ok.log_path).exists()
     log_text = Path(do_ok.log_path).read_text(encoding="utf-8", errors="replace")
     assert "hello ok" in log_text
+
+if __name__ == "__main__":
+    pytest.main([__file__])

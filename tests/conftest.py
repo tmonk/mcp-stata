@@ -24,6 +24,22 @@ def _setup_stata_mocks_if_needed():
         if 'stata_setup' not in sys.modules:
             sys.modules['stata_setup'] = MagicMock()
 
+# In conftest.py
+@pytest.fixture(scope="session")
+def stata_client():
+    """Single StataClient shared across all test files."""
+    from mcp_stata.stata_client import StataClient
+    from mcp_stata import discovery
+    
+    stata_path = os.environ.get("STATA_PATH")
+    if not stata_path or not os.path.exists(stata_path):
+        stata_path, _ = discovery.find_stata_path()
+        os.environ["STATA_PATH"] = stata_path
+    
+    c = StataClient()
+    c.init()
+    return c
+
 # Call this immediately to ensure mocks are available if needed
 _setup_stata_mocks_if_needed()
 
