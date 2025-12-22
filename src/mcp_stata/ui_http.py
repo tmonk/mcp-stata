@@ -290,11 +290,16 @@ class UIChannelManager:
                         body = self._read_json()
                         if body is None:
                             return
+                        # Debug logging to diagnose limit parameter issues
+                        import sys
+                        print(f"[DEBUG] /v1/page request body: {body}", file=sys.stderr, flush=True)
+                        print(f"[DEBUG] limit value: {body.get('limit')!r} (type: {type(body.get('limit')).__name__})", file=sys.stderr, flush=True)
                         try:
                             resp = handle_page_request(manager, body, view_id=None)
                             self._send_json(200, resp)
                             return
                         except HTTPError as e:
+                            print(f"[DEBUG] HTTPError: {e.code} - {e.message}", file=sys.stderr, flush=True)
                             self._error(e.status, e.code, e.message, stata_rc=e.stata_rc)
                             return
                         except Exception as e:
@@ -347,11 +352,16 @@ class UIChannelManager:
                         body = self._read_json()
                         if body is None:
                             return
+                        # Debug logging to diagnose limit parameter issues
+                        import sys
+                        print(f"[DEBUG] /v1/views/{view_id}/page request body: {body}", file=sys.stderr, flush=True)
+                        print(f"[DEBUG] limit value: {body.get('limit')!r} (type: {type(body.get('limit')).__name__})", file=sys.stderr, flush=True)
                         try:
                             resp = handle_page_request(manager, body, view_id=view_id)
                             self._send_json(200, resp)
                             return
                         except HTTPError as e:
+                            print(f"[DEBUG] HTTPError: {e.code} - {e.message}", file=sys.stderr, flush=True)
                             self._error(e.status, e.code, e.message, stata_rc=e.stata_rc)
                             return
                         except Exception as e:
