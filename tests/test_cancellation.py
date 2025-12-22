@@ -6,6 +6,8 @@ import pytest
 
 from anyio import get_cancelled_exc_class
 
+pytestmark = pytest.mark.requires_stata
+
 
 def test_request_break_in_invokes_breakin(monkeypatch, client):
     called = {"break": 0}
