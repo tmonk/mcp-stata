@@ -264,7 +264,8 @@ Call the MCP tool `get_ui_channel()` and parse the JSON:
   "expiresAt": 1730000000,
   "capabilities": {
     "dataBrowser": true,
-    "filtering": true
+    "filtering": true,
+    "sorting": true
   }
 }
 ```
@@ -305,10 +306,67 @@ curl -sS \
   "$BASE_URL/v1/page"
 ```
 
+#### Sorting
+
+The `/v1/page` and `/v1/views/:viewId/page` endpoints support sorting via the optional `sortBy` parameter:
+
+```bash
+# Sort by price ascending
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"datasetId":"...","offset":0,"limit":50,"vars":["price","mpg"],"sortBy":["price"]}' \
+  "$BASE_URL/v1/page"
+
+# Sort by price descending
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"datasetId":"...","offset":0,"limit":50,"vars":["price","mpg"],"sortBy":["-price"]}' \
+  "$BASE_URL/v1/page"
+
+# Multi-variable sort: foreign ascending, then price descending
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"datasetId":"...","offset":0,"limit":50,"vars":["foreign","price","mpg"],"sortBy":["foreign","-price"]}' \
+  "$BASE_URL/v1/page"
+```
+
+**Sort specification format:**
+- `sortBy` is an array of strings (variable names with optional prefix)
+- No prefix or `+` prefix = ascending order (e.g., `"price"` or `"+price"`)
+- `-` prefix = descending order (e.g., `"-price"`)
+- Multiple variables are supported for multi-level sorting
+- Uses Stata's `gsort` command internally
+
+**Sorting with filtered views:**
+- Sorting is fully supported with filtered views
+- The sort is applied to the entire dataset, then filtered indices are re-computed
+- Example: Filter for `price < 5000`, then sort descending by price
+
+```bash
+# Create a filtered view
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"datasetId":"...","frame":"default","filterExpr":"price < 5000"}' \
+  "$BASE_URL/v1/views"
+# Returns: {"view": {"id": "view_abc123", "filteredN": 37}}
+
+# Get sorted page from filtered view
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"offset":0,"limit":50,"vars":["price","mpg"],"sortBy":["-price"]}' \
+  "$BASE_URL/v1/views/view_abc123/page"
+```
+
 Notes:
 
 - `datasetId` is used for cache invalidation. If the dataset changes due to running Stata commands, the server will report a new dataset id and view handles become invalid.
 - Filter expressions are evaluated in Python using values read from Stata via `sfi.Data.get`. Use boolean operators like `==`, `!=`, `<`, `>`, and `and`/`or` (Stata-style `&`/`|` are also accepted).
+- Sorting modifies the dataset order in memory using `gsort`. When combined with views, the filtered indices are automatically re-computed after sorting.
 
 ## License
 

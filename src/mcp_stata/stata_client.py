@@ -1425,6 +1425,65 @@ class StataClient:
 
         return indices
 
+    def apply_sort(self, sort_spec: List[str]) -> None:
+        """
+        Apply sorting to the dataset using gsort.
+
+        Args:
+            sort_spec: List of variables to sort by, with optional +/- prefix.
+                      e.g., ["-price", "+mpg"] sorts by price descending, then mpg ascending.
+                      No prefix is treated as ascending (+).
+
+        Raises:
+            ValueError: If sort_spec is invalid or contains invalid variables
+            RuntimeError: If no data in memory or sort command fails
+        """
+        if not self._initialized:
+            self.init()
+
+        state = self.get_dataset_state()
+        if int(state.get("k", 0) or 0) == 0 and int(state.get("n", 0) or 0) == 0:
+            raise RuntimeError("No data in memory")
+
+        if not sort_spec or not isinstance(sort_spec, list):
+            raise ValueError("sort_spec must be a non-empty list")
+
+        # Validate all variables exist
+        var_map = self._get_var_index_map()
+        for spec in sort_spec:
+            if not isinstance(spec, str) or not spec:
+                raise ValueError(f"Invalid sort specification: {spec!r}")
+
+            # Extract variable name (remove +/- prefix if present)
+            varname = spec.lstrip("+-")
+            if not varname:
+                raise ValueError(f"Invalid sort specification: {spec!r}")
+
+            if varname not in var_map:
+                raise ValueError(f"Variable not found: {varname}")
+
+        # Build gsort command
+        # gsort uses - for descending, + or nothing for ascending
+        gsort_args = []
+        for spec in sort_spec:
+            if spec.startswith("-") or spec.startswith("+"):
+                gsort_args.append(spec)
+            else:
+                # No prefix means ascending, add + explicitly for clarity
+                gsort_args.append(f"+{spec}")
+
+        cmd = f"gsort {' '.join(gsort_args)}"
+
+        try:
+            result = self.run_command_structured(cmd, echo=False)
+            if not result.success:
+                error_msg = result.error.message if result.error else "Sort failed"
+                raise RuntimeError(f"Failed to sort dataset: {error_msg}")
+        except Exception as e:
+            if isinstance(e, RuntimeError):
+                raise
+            raise RuntimeError(f"Failed to sort dataset: {e}")
+
     def get_variable_details(self, varname: str) -> str:
         """Returns codebook/summary for a specific variable."""
         resp = self.run_command_structured(f"codebook {varname}", echo=True)
