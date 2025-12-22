@@ -27,6 +27,7 @@ class ViewHandle:
     view_id: str
     dataset_id: str
     frame: str
+    filter_expr: str
     obs_indices: list[int]
     filtered_n: int
     created_at: float
@@ -86,7 +87,7 @@ class UIChannelManager:
             return UIChannelInfo(base_url=base_url, token=self._token or "", expires_at=self._expires_at)
 
     def capabilities(self) -> dict[str, bool]:
-        return {"dataBrowser": True, "filtering": True}
+        return {"dataBrowser": True, "filtering": True, "sorting": True}
 
     def current_dataset_id(self) -> str:
         with self._lock:
@@ -138,6 +139,7 @@ class UIChannelManager:
             view_id=view_id,
             dataset_id=current_id,
             frame=frame,
+            filter_expr=filter_expr,
             obs_indices=obs_indices,
             filtered_n=len(obs_indices),
             created_at=now,
@@ -483,6 +485,13 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
     vars_req = body.get("vars", [])
     include_obs_no = bool(body.get("includeObsNo", False))
 
+    # Parse sortBy parameter
+    sort_by = body.get("sortBy", [])
+    if sort_by is not None and not isinstance(sort_by, list):
+        raise HTTPError(400, "invalid_request", f"sortBy must be an array, got: {type(sort_by).__name__}")
+    if sort_by and not all(isinstance(s, str) for s in sort_by):
+        raise HTTPError(400, "invalid_request", "sortBy must be an array of strings")
+
     # Parse maxChars
     max_chars_raw = body.get("maxChars", max_chars)
     try:
@@ -519,6 +528,20 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
         filtered_n = view.filtered_n
 
     try:
+        # Apply sorting if requested
+        if sort_by:
+            try:
+                manager._client.apply_sort(sort_by)
+                # If sorting with a filtered view, re-compute indices after sort
+                if view_id is not None:
+                    assert view is not None
+                    obs_indices = manager._client.compute_view_indices(view.filter_expr)
+                    filtered_n = len(obs_indices)
+            except ValueError as e:
+                raise HTTPError(400, "invalid_request", f"Invalid sort specification: {e}")
+            except RuntimeError as e:
+                raise HTTPError(500, "internal_error", f"Failed to apply sort: {e}")
+
         dataset_state = manager._client.get_dataset_state()
         page = manager._client.get_page(
             offset=offset,
@@ -528,6 +551,9 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
             max_chars=max_chars_req,
             obs_indices=obs_indices,
         )
+    except HTTPError:
+        # Re-raise HTTPError exceptions as-is
+        raise
     except RuntimeError as e:
         # StataClient uses RuntimeError("No data in memory") for empty dataset.
         msg = str(e) or "No data in memory"
