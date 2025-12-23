@@ -152,9 +152,8 @@ class StataClient:
                 # If we hit r(123); we might want the line ABOVE it if it's not noise
                 continue
 
-            # Strip SMCL tags
-            clean_msg = re.sub(r'\{.*?\}', '', stripped).strip()
-            return clean_msg
+            # Preserve SMCL tags
+            return stripped
 
         # If we couldn't find a better message, try to find r(N);
         match = re.search(r"r\(\d+\);", text)
@@ -493,36 +492,32 @@ class StataClient:
 
         lines = log_content.splitlines()
 
-        # Find the {err} tag which marks error lines in SMCL
-        clean_msg = f"Stata error r({rc})"
-        err_line_idx = None
-
         # Search backwards for the {err} tag
         for i in range(len(lines) - 1, -1, -1):
             line = lines[i]
             if '{err}' in line:
-                err_line_idx = i
-                # Extract text after {err} tag
-                err_match = re.search(r'\{err\}(.+)', line)
-                if err_match:
-                    error_text = err_match.group(1)
-                    # Strip any remaining SMCL tags from the error text
-                    clean_msg = re.sub(r'\{.*?\}', '', error_text).strip()
-                    if clean_msg:
-                        break
+                # Found the (last) error line. 
+                # Walk backwards to find the start of the error block (consecutive {err} lines)
+                start_idx = i
+                while start_idx > 0 and '{err}' in lines[start_idx-1]:
+                    start_idx -= 1
+                
+                # The full error message is the concatenation of all {err} lines in this block
+                error_lines = []
+                for j in range(start_idx, i + 1):
+                    error_lines.append(lines[j].strip())
+                
+                clean_msg = " ".join(filter(None, error_lines)) or f"Stata error r({rc})"
+                
+                # Capture everything from the start of the error block to the end
+                context_str = "\n".join(lines[start_idx:])
+                return clean_msg, context_str
 
-        # Extract focused context around the error
-        if err_line_idx is not None:
-            # Include 20 lines before error and 5 lines after (to capture end markers)
-            context_start = max(0, err_line_idx - 20)
-            context_end = min(len(lines), err_line_idx + 6)
-            context_str = "\n".join(lines[context_start:context_end])
-        else:
-            # Fallback: grab the last 30 lines
-            context_start = max(0, len(lines) - 30)
-            context_str = "\n".join(lines[context_start:])
+        # Fallback: grab the last 30 lines
+        context_start = max(0, len(lines) - 30)
+        context_str = "\n".join(lines[context_start:])
 
-        return clean_msg, context_str
+        return f"Stata error r({rc})", context_str
 
     def _exec_with_capture(self, code: str, echo: bool = True, trace: bool = False, cwd: Optional[str] = None) -> CommandResponse:
         if not self._initialized:
@@ -570,9 +565,9 @@ class StataClient:
                 snippet = sys_error  # Include the exception message as snippet
             else:
                 # Extract error message from log tail
-                msg, snippet = self._extract_error_and_context(full_log, rc)
+                msg, context = self._extract_error_and_context(full_log, rc)
 
-            error_envelope = ErrorEnvelope(message=msg, rc=rc, snippet=snippet)
+            error_envelope = ErrorEnvelope(message=msg, rc=rc, context=context, snippet=full_log[-800:])
 
         return CommandResponse(
             command=code,
