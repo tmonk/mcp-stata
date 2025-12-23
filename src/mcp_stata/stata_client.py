@@ -6,12 +6,13 @@ import re
 import subprocess
 import sys
 import threading
+import uuid
 from importlib.metadata import PackageNotFoundError, version
 import tempfile
 import time
 from contextlib import contextmanager
 from io import StringIO
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Generator, List, Optional, Tuple
 
 import anyio
 from anyio import get_cancelled_exc_class
@@ -129,38 +130,6 @@ class StataClient:
         finally:
             sys.stdout, sys.stderr = backup_stdout, backup_stderr
 
-    def _select_stata_error_message(self, text: str, fallback: str) -> str:
-        """
-        Helper for tests and legacy callers to extract the clean error message.
-        """
-        if not text:
-            return fallback
-
-        lines = text.splitlines()
-        trace_pattern = re.compile(r'^\s*[-=.]')
-        noise_pattern = re.compile(r'^(?:\}|\{txt\}|\{com\}|end of do-file)')
-
-        for line in reversed(lines):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            if trace_pattern.match(line):
-                continue
-            if noise_pattern.match(stripped):
-                continue
-            if stripped.startswith("r(") and stripped.endswith(");"):
-                # If we hit r(123); we might want the line ABOVE it if it's not noise
-                continue
-
-            # Preserve SMCL tags
-            return stripped
-
-        # If we couldn't find a better message, try to find r(N);
-        match = re.search(r"r\(\d+\);", text)
-        if match:
-            return match.group(0)
-
-        return fallback
 
     @staticmethod
     def _stata_quote(value: str) -> str:
@@ -180,6 +149,121 @@ class StataClient:
             yield
         finally:
             sys.stdout, sys.stderr = backup_stdout, backup_stderr
+
+    @contextmanager
+    def _smcl_log_capture(self) -> "Generator[Tuple[str, str], None, None]":
+        """
+        Context manager that wraps command execution in a named SMCL log.
+        
+        This runs alongside any user logs (named logs can coexist).
+        Yields (log_name, log_path) tuple for use within the context.
+        The SMCL file is NOT deleted automatically - caller should clean up.
+        
+        Usage:
+            with self._smcl_log_capture() as (log_name, smcl_path):
+                self.stata.run(cmd)
+            # After context, read smcl_path for raw SMCL output
+        """
+        # Create temp file for SMCL output
+        smcl_file = tempfile.NamedTemporaryFile(
+            prefix="mcp_smcl_",
+            suffix=".smcl",
+            delete=False,
+            mode="w",
+        )
+        smcl_path = smcl_file.name
+        smcl_file.close()
+        
+        # Unique log name to avoid collisions with user logs
+        log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
+        
+        try:
+            # Open named SMCL log (quietly to avoid polluting output)
+            self.stata.run(f'quietly log using "{smcl_path}", replace smcl name({log_name})', echo=False)
+            yield log_name, smcl_path
+        finally:
+            # Always close our named log
+            try:
+                self.stata.run(f'capture log close {log_name}', echo=False)
+            except Exception:
+                # Fallback: try capture in case log wasn't opened
+                try:
+                    self.stata.run(f'capture log close {log_name}', echo=False)
+                except Exception:
+                    pass
+
+    def _read_smcl_file(self, path: str) -> str:
+        """Read SMCL file contents, handling encoding issues."""
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"Failed to read SMCL file {path}: {e}")
+            return ""
+
+    def _extract_error_from_smcl(self, smcl_content: str, rc: int) -> Tuple[str, str]:
+        """
+        Extract error message and context from raw SMCL output.
+        
+        Uses {err} tags as the authoritative source for error detection.
+        
+        Returns:
+            Tuple of (error_message, context_string)
+        """
+        if not smcl_content:
+            return f"Stata error r({rc})", ""
+        
+        lines = smcl_content.splitlines()
+        
+        # Search backwards for {err} tags - they indicate error lines
+        error_lines = []
+        error_start_idx = -1
+        
+        for i in range(len(lines) - 1, -1, -1):
+            line = lines[i]
+            if '{err}' in line:
+                if error_start_idx == -1:
+                    error_start_idx = i
+                # Walk backwards to find consecutive {err} lines
+                j = i
+                while j >= 0 and '{err}' in lines[j]:
+                    error_lines.insert(0, lines[j])
+                    j -= 1
+                break
+        
+        if error_lines:
+            # Clean SMCL tags from error message
+            clean_lines = []
+            for line in error_lines:
+                # Remove SMCL tags but keep the text content
+                cleaned = re.sub(r'\{[^}]*\}', '', line).strip()
+                if cleaned:
+                    clean_lines.append(cleaned)
+            
+            error_msg = " ".join(clean_lines) or f"Stata error r({rc})"
+            
+            # Context is everything from error start to end
+            context_start = max(0, error_start_idx - 5)  # Include 5 lines before error
+            context = "\n".join(lines[context_start:])
+            
+            return error_msg, context
+        
+        # Fallback: no {err} found, return last 30 lines as context
+        context_start = max(0, len(lines) - 30)
+        context = "\n".join(lines[context_start:])
+        
+        return f"Stata error r({rc})", context
+
+    def _parse_rc_from_smcl(self, smcl_content: str) -> Optional[int]:
+        """Parse return code from SMCL content."""
+        # Look for r(N) pattern which indicates error code
+        match = re.search(r'r\((\d+)\)', smcl_content)
+        if match:
+            try:
+                return int(match.group(1))
+            except Exception:
+                return None
+        return None
 
     @staticmethod
     def _create_graph_cache_callback(on_graph_cached, notify_log):
@@ -408,32 +492,11 @@ class StataClient:
 
         return pat.sub(repl, code)
 
-    def _read_return_code(self) -> int:
-        """Read the last Stata return code without mutating rc."""
-        try:
-            from sfi import Macro  # type: ignore[import-not-found]
-            rc_val = Macro.getCValue("rc")  # type: ignore[attr-defined]
-            if rc_val is not None:
-                return int(float(rc_val))
-            # If getCValue returns None, fall through to the alternative approach
-        except Exception:
-            pass
-
-        # Alternative approach: use a global macro
-        # CRITICAL: This must be done carefully to avoid mutating c(rc)
-        try:
-            self.stata.run("global MCP_RC = c(rc)")
-            from sfi import Macro as Macro2  # type: ignore[import-not-found]
-            rc_val = Macro2.getGlobal("MCP_RC")
-            return int(float(rc_val))
-        except Exception:
-            return -1
-
     def _get_rc_from_scalar(self, Scalar) -> int:
         """Safely get return code, handling None values."""
         try:
             from sfi import Macro
-            rc_val = Macro.getCValue("rc")
+            rc_val = Macro.getGlobal("_rc")
             if rc_val is None:
                 return -1
             return int(float(rc_val))
@@ -457,6 +520,98 @@ class StataClient:
             except Exception:
                 return None
         return None
+
+    def _read_log_backwards_until_error(self, path: str, max_bytes: int = 5_000_000) -> str:
+        """
+        Read log file backwards in chunks, stopping when we find {err} tags or reach the start.
+
+        This is more efficient and robust than reading huge fixed tails, as we only read
+        what we need to find the error.
+
+        Args:
+            path: Path to the log file
+            max_bytes: Maximum total bytes to read (safety limit, default 5MB)
+
+        Returns:
+            The relevant portion of the log containing the error and context
+        """
+        try:
+            chunk_size = 50_000  # Read 50KB chunks at a time
+            total_read = 0
+            chunks = []
+
+            with open(path, 'rb') as f:
+                # Get file size
+                f.seek(0, os.SEEK_END)
+                file_size = f.tell()
+
+                if file_size == 0:
+                    return ""
+
+                # Start from the end
+                position = file_size
+
+                while position > 0 and total_read < max_bytes:
+                    # Calculate how much to read in this chunk
+                    read_size = min(chunk_size, position, max_bytes - total_read)
+                    position -= read_size
+
+                    # Seek and read
+                    f.seek(position)
+                    chunk = f.read(read_size)
+                    chunks.insert(0, chunk)
+                    total_read += read_size
+
+                    # Decode and check for error tags
+                    try:
+                        accumulated = b''.join(chunks).decode('utf-8', errors='replace')
+
+                        # Check if we've found an error tag
+                        if '{err}' in accumulated:
+                            # Found it! Read one more chunk for context before the error
+                            if position > 0 and total_read < max_bytes:
+                                extra_read = min(chunk_size, position, max_bytes - total_read)
+                                position -= extra_read
+                                f.seek(position)
+                                extra_chunk = f.read(extra_read)
+                                chunks.insert(0, extra_chunk)
+
+                            return b''.join(chunks).decode('utf-8', errors='replace')
+
+                    except UnicodeDecodeError:
+                        # Continue reading if we hit a decode error (might be mid-character)
+                        continue
+
+                # Read everything we've accumulated
+                return b''.join(chunks).decode('utf-8', errors='replace')
+
+        except Exception as e:
+            logger.warning(f"Error reading log backwards: {e}")
+            # Fallback to regular tail read
+            return self._read_log_tail(path, 200_000)
+
+    def _read_log_tail_smart(self, path: str, rc: int, trace: bool = False) -> str:
+        """
+        Smart log tail reader that adapts based on whether an error occurred.
+
+        - If rc == 0: Read normal tail (20KB without trace, 200KB with trace)
+        - If rc != 0: Search backwards dynamically to find the error
+
+        Args:
+            path: Path to the log file
+            rc: Return code from Stata
+            trace: Whether trace mode was enabled
+
+        Returns:
+            Relevant log content
+        """
+        if rc != 0:
+            # Error occurred - search backwards for {err} tags
+            return self._read_log_backwards_until_error(path)
+        else:
+            # Success - just read normal tail
+            tail_size = 200_000 if trace else 20_000
+            return self._read_log_tail(path, tail_size)
 
     def _read_log_tail(self, path: str, max_chars: int) -> str:
         try:
@@ -530,17 +685,52 @@ class StataClient:
         error_buffer = StringIO()
         rc = 0
         sys_error = None
+        error_envelope = None
+        smcl_content = ""
+        smcl_path = None
 
         with self._exec_lock:
             try:
-                from sfi import Scalar, SFIToolkit  # Import SFI tools inside execution block
+                from sfi import Scalar, SFIToolkit
                 with self._temp_cwd(cwd):
-                    with self._redirect_io(output_buffer, error_buffer):
-                        if trace:
-                            self.stata.run("set trace on")
-                        
-                        # 1. Run the user code
-                        self.stata.run(code, echo=echo)
+                    # Create SMCL log for authoritative output capture
+                    smcl_file = tempfile.NamedTemporaryFile(
+                        prefix="mcp_smcl_",
+                        suffix=".smcl",
+                        delete=False,
+                        mode="w",
+                    )
+                    smcl_path = smcl_file.name
+                    smcl_file.close()
+                    log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
+                    
+                    # Open SMCL log BEFORE output redirection
+                    self.stata.run(f'log using "{smcl_path}", replace smcl name({log_name})', echo=False)
+                    
+                    try:
+                        with self._redirect_io(output_buffer, error_buffer):
+                            try:
+                                if trace:
+                                    self.stata.run("set trace on")
+
+                                # Run the user code
+                                self.stata.run(code, echo=echo)
+                                
+                            finally:
+                                if trace:
+                                    try:
+                                        self.stata.run("set trace off")
+                                    except Exception:
+                                        pass
+                    finally:
+                        # Close SMCL log AFTER output redirection
+                        try:
+                            self.stata.run(f'capture log close {log_name}', echo=False)
+                        except Exception:
+                            try:
+                                self.stata.run(f'capture log close {log_name}', echo=False)
+                            except Exception:
+                                pass
 
             except Exception as e:
                 sys_error = str(e)
@@ -548,26 +738,40 @@ class StataClient:
                 parsed_rc = self._parse_rc_from_text(sys_error)
                 rc = parsed_rc if parsed_rc is not None else 1
 
+        # Read SMCL content as the authoritative source
+        if smcl_path:
+            smcl_content = self._read_smcl_file(smcl_path)
+            # Clean up SMCL file
+            try:
+                os.unlink(smcl_path)
+            except Exception:
+                pass
+
         stdout_content = output_buffer.getvalue()
         stderr_content = error_buffer.getvalue()
-        full_log = stdout_content + "\n" + stderr_content
 
-        # 2. Extract RC from log tail (primary error detection method)
-        if rc == 1 and not sys_error:  # No exception but might have error in log
-            parsed_rc = self._parse_rc_from_text(full_log)
-            if parsed_rc is not None:
+        # If RC wasn't captured (exception path), try to parse from SMCL
+        if rc == 0 and sys_error:
+            parsed_rc = self._parse_rc_from_smcl(smcl_content)
+            if parsed_rc is not None and parsed_rc != 0:
                 rc = parsed_rc
 
-        error_envelope = None
         if rc != 0:
             if sys_error:
                 msg = sys_error
-                snippet = sys_error  # Include the exception message as snippet
+                context = sys_error
             else:
-                # Extract error message from log tail
-                msg, context = self._extract_error_and_context(full_log, rc)
+                # Extract error from SMCL (authoritative source)
+                msg, context = self._extract_error_from_smcl(smcl_content, rc)
 
-            error_envelope = ErrorEnvelope(message=msg, rc=rc, context=context, snippet=full_log[-800:])
+            error_envelope = ErrorEnvelope(
+                message=msg, 
+                rc=rc, 
+                context=context, 
+                snippet=smcl_content[-800:] if smcl_content else (stdout_content + stderr_content)[-800:],
+                smcl_output=smcl_content  # Include raw SMCL for debugging
+            )
+            stderr_content = context
 
         return CommandResponse(
             command=code,
@@ -576,8 +780,9 @@ class StataClient:
             stderr=stderr_content,
             success=(rc == 0),
             error=error_envelope,
+            smcl_output=smcl_content,  # Include raw SMCL in response
         )
-
+        
     def _exec_no_capture(self, code: str, echo: bool = False, trace: bool = False) -> CommandResponse:
         """Execute Stata code while leaving stdout/stderr alone."""
         if not self._initialized:
@@ -595,9 +800,7 @@ class StataClient:
                 ret = self.stata.run(code, echo=echo)
                 if isinstance(ret, str) and ret:
                     ret_text = ret
-                
-                # Robust RC check even for no-capture
-                rc = self._read_return_code()
+
                 
             except Exception as e:
                 exc = e
@@ -665,6 +868,8 @@ class StataClient:
 
         start_time = time.time()
         exc: Optional[Exception] = None
+        smcl_content = ""
+        smcl_path = None
 
         # Setup streaming graph cache if enabled
         graph_cache = None
@@ -688,6 +893,17 @@ class StataClient:
         tail = TailBuffer(max_chars=200000 if trace else 20000)
         tee = FileTeeIO(log_file, tail)
 
+        # Create SMCL log for authoritative output capture
+        smcl_file = tempfile.NamedTemporaryFile(
+            prefix="mcp_smcl_",
+            suffix=".smcl",
+            delete=False,
+            mode="w",
+        )
+        smcl_path = smcl_file.name
+        smcl_file.close()
+        smcl_log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
+
         # Inform the MCP client immediately where to read/tail the output.
         await notify_log(json.dumps({"event": "log_path", "path": log_path}))
 
@@ -700,30 +916,40 @@ class StataClient:
                 try:
                     from sfi import Scalar, SFIToolkit # Import SFI tools
                     with self._temp_cwd(cwd):
-                        with self._redirect_io_streaming(tee, tee):
+                        # Open SMCL log BEFORE output redirection
+                        self.stata.run(f'log using "{smcl_path}", replace smcl name({smcl_log_name})', echo=False)
+                        
+                        try:
+                            with self._redirect_io_streaming(tee, tee):
+                                try:
+                                    if trace:
+                                        self.stata.run("set trace on")
+                                    ret = self.stata.run(code, echo=echo)
+                                    # Some PyStata builds return output as a string rather than printing.
+                                    if isinstance(ret, str) and ret:
+                                        try:
+                                            tee.write(ret)
+                                        except Exception:
+                                            pass
+
+                                except Exception as e:
+                                    exc = e
+                                    if rc == 0: rc = 1
+                                finally:
+                                    if trace:
+                                        try:
+                                            self.stata.run("set trace off")
+                                        except Exception:
+                                            pass
+                        finally:
+                            # Close SMCL log AFTER output redirection
                             try:
-                                if trace:
-                                    self.stata.run("set trace on")
-                                ret = self.stata.run(code, echo=echo)
-                                # Some PyStata builds return output as a string rather than printing.
-                                if isinstance(ret, str) and ret:
-                                    try:
-                                        tee.write(ret)
-                                    except Exception:
-                                        pass
-
-                                # ROBUST DETECTION & OUTPUT
-                                rc = self._read_return_code()
-
-                            except Exception as e:
-                                exc = e
-                                if rc == 0: rc = 1
-                            finally:
-                                if trace:
-                                    try:
-                                        self.stata.run("set trace off")
-                                    except Exception:
-                                        pass
+                                self.stata.run(f'capture log close {smcl_log_name}', echo=False)
+                            except Exception:
+                                try:
+                                    self.stata.run(f'capture log close {smcl_log_name}', echo=False)
+                                except Exception:
+                                    pass
                 finally:
                     self._is_executing = False
 
@@ -740,6 +966,9 @@ class StataClient:
         finally:
             tee.close()
 
+        # Read SMCL content as the authoritative source
+        smcl_content = self._read_smcl_file(smcl_path)
+
         # Cache detected graphs after command completes
         if graph_cache:
             try:
@@ -755,17 +984,30 @@ class StataClient:
                 logger.warning(f"Failed to cache detected graphs: {e}")
 
         tail_text = tail.get_value()
-        log_tail = self._read_log_tail(log_path, 200000 if trace else 20000)
+        log_tail = self._read_log_tail_smart(log_path, rc, trace)
         if log_tail and len(log_tail) > len(tail_text):
             tail_text = log_tail
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
         
+        # Use SMCL content as primary source for RC detection
+        if rc == -1 and not exc:
+            parsed_rc = self._parse_rc_from_smcl(smcl_content)
+            if parsed_rc is not None:
+                rc = parsed_rc
+            else:
+                rc = 0  # Default to success if no error found
+
         success = (rc == 0 and exc is None)
+        stderr_out = None
         error = None
         
         if not success:
-            # Use robust extractor
-            msg, context = self._extract_error_and_context(combined, rc)
+            # Use SMCL as authoritative source for error extraction
+            if smcl_content:
+                msg, context = self._extract_error_from_smcl(smcl_content, rc)
+            else:
+                # Fallback to combined log
+                msg, context = self._extract_error_and_context(combined, rc)
             
             error = ErrorEnvelope(
                 message=msg,
@@ -773,8 +1015,10 @@ class StataClient:
                 rc=rc,
                 command=code,
                 log_path=log_path,
-                snippet=combined[-800:] # Keep snippet for backward compat
+                snippet=smcl_content[-800:] if smcl_content else combined[-800:],
+                smcl_output=smcl_content,
             )
+            stderr_out = context
 
         duration = time.time() - start_time
         code_preview = code.replace("\n", "\\n")
@@ -791,10 +1035,11 @@ class StataClient:
             command=code,
             rc=rc,
             stdout="",
-            stderr=None,
+            stderr=stderr_out,
             log_path=log_path,
             success=success,
             error=error,
+            smcl_output=smcl_content,
         )
 
         if notify_progress is not None:
@@ -895,6 +1140,8 @@ class StataClient:
 
         start_time = time.time()
         exc: Optional[Exception] = None
+        smcl_content = ""
+        smcl_path = None
 
         # Setup streaming graph cache if enabled
         graph_cache = None
@@ -917,6 +1164,17 @@ class StataClient:
         log_path = log_file.name
         tail = TailBuffer(max_chars=200000 if trace else 20000)
         tee = FileTeeIO(log_file, tail)
+
+        # Create SMCL log for authoritative output capture
+        smcl_file = tempfile.NamedTemporaryFile(
+            prefix="mcp_smcl_",
+            suffix=".smcl",
+            delete=False,
+            mode="w",
+        )
+        smcl_path = smcl_file.name
+        smcl_file.close()
+        smcl_log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
 
         # Inform the MCP client immediately where to read/tail the output.
         await notify_log(json.dumps({"event": "log_path", "path": log_path}))
@@ -942,28 +1200,38 @@ class StataClient:
                 try:
                     from sfi import Scalar, SFIToolkit # Import SFI tools
                     with self._temp_cwd(cwd):
-                        with self._redirect_io_streaming(tee, tee):
-                            try:
-                                if trace:
-                                    self.stata.run("set trace on")
-                                ret = self.stata.run(command, echo=echo)
-                                # Some PyStata builds return output as a string rather than printing.
-                                if isinstance(ret, str) and ret:
-                                    try:
-                                        tee.write(ret)
-                                    except Exception:
-                                        pass
-                                
-                                # ROBUST DETECTION & OUTPUT
-                                rc = self._read_return_code()
+                        # Open SMCL log BEFORE output redirection
+                        self.stata.run(f'log using "{smcl_path}", replace smcl name({smcl_log_name})', echo=False)
+                        
+                        try:
+                            with self._redirect_io_streaming(tee, tee):
+                                try:
+                                    if trace:
+                                        self.stata.run("set trace on")
+                                    ret = self.stata.run(command, echo=echo)
+                                    # Some PyStata builds return output as a string rather than printing.
+                                    if isinstance(ret, str) and ret:
+                                        try:
+                                            tee.write(ret)
+                                        except Exception:
+                                            pass
 
-                            except Exception as e:
-                                exc = e
-                                if rc == 0: rc = 1
-                            finally:
-                                if trace:
-                                    try: self.stata.run("set trace off")
-                                    except: pass
+                                except Exception as e:
+                                    exc = e
+                                    if rc == 0: rc = 1
+                                finally:
+                                    if trace:
+                                        try: self.stata.run("set trace off")
+                                        except: pass
+                        finally:
+                            # Close SMCL log AFTER output redirection
+                            try:
+                                self.stata.run(f'capture log close {smcl_log_name}', echo=False)
+                            except Exception:
+                                try:
+                                    self.stata.run(f'capture log close {smcl_log_name}', echo=False)
+                                except Exception:
+                                    pass
                 finally:
                     # Clear execution flag
                     self._is_executing = False
@@ -1010,6 +1278,9 @@ class StataClient:
                 done.set()
                 tee.close()
 
+        # Read SMCL content as the authoritative source
+        smcl_content = self._read_smcl_file(smcl_path)
+
         # Robust post-execution graph detection and caching
         if graph_cache and graph_cache.auto_cache:
             try:
@@ -1050,17 +1321,30 @@ class StataClient:
                 logger.error(f"Post-execution graph detection failed: {e}")
 
         tail_text = tail.get_value()
-        log_tail = self._read_log_tail(log_path, 200000 if trace else 20000)
+        log_tail = self._read_log_tail_smart(log_path, rc, trace)
         if log_tail and len(log_tail) > len(tail_text):
             tail_text = log_tail
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
         
+        # Use SMCL content as primary source for RC detection
+        if rc == -1 and not exc:
+            parsed_rc = self._parse_rc_from_smcl(smcl_content)
+            if parsed_rc is not None:
+                rc = parsed_rc
+            else:
+                rc = 0  # Default to success if no error found
+
         success = (rc == 0 and exc is None)
+        stderr_final = None
         error = None
         
         if not success:
-            # Robust extraction
-            msg, context = self._extract_error_and_context(combined, rc)
+            # Use SMCL as authoritative source for error extraction
+            if smcl_content:
+                msg, context = self._extract_error_from_smcl(smcl_content, rc)
+            else:
+                # Fallback to combined log
+                msg, context = self._extract_error_and_context(combined, rc)
 
             error = ErrorEnvelope(
                 message=msg,
@@ -1068,8 +1352,10 @@ class StataClient:
                 rc=rc,
                 command=command,
                 log_path=log_path,
-                snippet=combined[-800:]
+                snippet=smcl_content[-800:] if smcl_content else combined[-800:],
+                smcl_output=smcl_content,
             )
+            stderr_final = context
 
         duration = time.time() - start_time
         logger.info(
@@ -1085,10 +1371,11 @@ class StataClient:
             command=command,
             rc=rc,
             stdout="",
-            stderr=None,
+            stderr=stderr_final,
             log_path=log_path,
             success=success,
             error=error,
+            smcl_output=smcl_content,
         )
 
         if notify_progress is not None:
@@ -1182,16 +1469,19 @@ class StataClient:
         sortlist = ""
         changed = False
         try:
-            frame = str(Macro.getCValue("frame") or "default")
+            frame = str(Macro.getGlobal("frame") or "default")
         except Exception:
+            logger.debug("Failed to get 'frame' macro", exc_info=True)
             frame = "default"
         try:
-            sortlist = str(Macro.getCValue("sortlist") or "")
+            sortlist = str(Macro.getGlobal("sortlist") or "")
         except Exception:
+            logger.debug("Failed to get 'sortlist' macro", exc_info=True)
             sortlist = ""
         try:
-            changed = bool(int(float(Macro.getCValue("changed") or "0")))
+            changed = bool(int(float(Macro.getGlobal("changed") or "0")))
         except Exception:
+            logger.debug("Failed to get 'changed' macro", exc_info=True)
             changed = False
 
         return {"frame": frame, "n": n, "k": k, "sortlist": sortlist, "changed": changed}
@@ -2290,6 +2580,8 @@ class StataClient:
 
         start_time = time.time()
         exc: Optional[Exception] = None
+        smcl_content = ""
+        smcl_path = None
         path_for_stata = effective_path.replace("\\", "/")
         command = f'do "{path_for_stata}"'
 
@@ -2306,33 +2598,57 @@ class StataClient:
         tail = TailBuffer(max_chars=200000 if trace else 20000)
         tee = FileTeeIO(log_file, tail)
 
+        # Create SMCL log for authoritative output capture
+        smcl_file = tempfile.NamedTemporaryFile(
+            prefix="mcp_smcl_",
+            suffix=".smcl",
+            delete=False,
+            mode="w",
+        )
+        smcl_path = smcl_file.name
+        smcl_file.close()
+        smcl_log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
+
         rc = -1
 
         with self._exec_lock:
             try:
                 from sfi import Scalar, SFIToolkit # Import SFI tools
                 with self._temp_cwd(cwd):
-                    with self._redirect_io_streaming(tee, tee):
+                    # Open SMCL log BEFORE output redirection
+                    self.stata.run(f'log using "{smcl_path}", replace smcl name({smcl_log_name})', echo=False)
+                    
+                    try:
+                        with self._redirect_io_streaming(tee, tee):
+                            try:
+                                if trace:
+                                    self.stata.run("set trace on")
+                                ret = self.stata.run(command, echo=echo)
+                                # Some PyStata builds return output as a string rather than printing.
+                                if isinstance(ret, str) and ret:
+                                    try:
+                                        tee.write(ret)
+                                    except Exception:
+                                        pass
+                                
+                            except Exception as e:
+                                exc = e
+                                rc = 1
+                            finally:
+                                if trace:
+                                    try:
+                                        self.stata.run("set trace off")
+                                    except Exception:
+                                        pass
+                    finally:
+                        # Close SMCL log AFTER output redirection
                         try:
-                            if trace:
-                                self.stata.run("set trace on")
-                            ret = self.stata.run(command, echo=echo)
-                            # Some PyStata builds return output as a string rather than printing.
-                            if isinstance(ret, str) and ret:
-                                try:
-                                    tee.write(ret)
-                                except Exception:
-                                    pass
-                            
-                        except Exception as e:
-                            exc = e
-                            rc = 1
-                        finally:
-                            if trace:
-                                try:
-                                    self.stata.run("set trace off")
-                                except Exception:
-                                    pass
+                            self.stata.run(f'capture log close {smcl_log_name}', echo=False)
+                        except Exception:
+                            try:
+                                self.stata.run(f'capture log close {smcl_log_name}', echo=False)
+                            except Exception:
+                                pass
             except Exception as e:
                 # Outer catch in case imports or locks fail
                 exc = e
@@ -2340,18 +2656,26 @@ class StataClient:
 
         tee.close()
 
+        # Read SMCL content as the authoritative source
+        smcl_content = self._read_smcl_file(smcl_path)
+
         tail_text = tail.get_value()
-        log_tail = self._read_log_tail(log_path, 200000 if trace else 20000)
+        log_tail = self._read_log_tail_smart(log_path, rc, trace)
         if log_tail and len(log_tail) > len(tail_text):
             tail_text = log_tail
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
 
-        # Parse RC from log tail if no exception occurred
+        # Use SMCL content as primary source for RC detection if not already captured
         if rc == -1 and not exc:
-            parsed_rc = self._parse_rc_from_text(combined)
-            rc = parsed_rc if parsed_rc is not None else 0
-        elif exc:
-            # Try to parse RC from exception message
+            parsed_rc = self._parse_rc_from_smcl(smcl_content)
+            if parsed_rc is not None:
+                rc = parsed_rc
+            else:
+                # Fallback to text parsing
+                parsed_rc = self._parse_rc_from_text(combined)
+                rc = parsed_rc if parsed_rc is not None else 0
+        elif exc and rc == 1:
+            # Try to parse more specific RC from exception message
             parsed_rc = self._parse_rc_from_text(str(exc))
             if parsed_rc is not None:
                 rc = parsed_rc
@@ -2360,15 +2684,20 @@ class StataClient:
         error = None
 
         if not success:
-            # Robust extraction
-            msg, context = self._extract_error_and_context(combined, rc)
+            # Use SMCL as authoritative source for error extraction
+            if smcl_content:
+                msg, context = self._extract_error_from_smcl(smcl_content, rc)
+            else:
+                # Fallback to combined log
+                msg, context = self._extract_error_and_context(combined, rc)
 
             error = ErrorEnvelope(
                 message=msg,
                 rc=rc,
                 snippet=context,
                 command=command,
-                log_path=log_path
+                log_path=log_path,
+                smcl_output=smcl_content,
             )
 
         duration = time.time() - start_time
@@ -2389,6 +2718,7 @@ class StataClient:
             log_path=log_path,
             success=success,
             error=error,
+            smcl_output=smcl_content,
         )
 
     def load_data(self, source: str, clear: bool = True, max_output_lines: Optional[int] = None) -> CommandResponse:
