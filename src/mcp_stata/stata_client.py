@@ -129,38 +129,6 @@ class StataClient:
         finally:
             sys.stdout, sys.stderr = backup_stdout, backup_stderr
 
-    def _select_stata_error_message(self, text: str, fallback: str) -> str:
-        """
-        Helper for tests and legacy callers to extract the clean error message.
-        """
-        if not text:
-            return fallback
-
-        lines = text.splitlines()
-        trace_pattern = re.compile(r'^\s*[-=.]')
-        noise_pattern = re.compile(r'^(?:\}|\{txt\}|\{com\}|end of do-file)')
-
-        for line in reversed(lines):
-            stripped = line.strip()
-            if not stripped:
-                continue
-            if trace_pattern.match(line):
-                continue
-            if noise_pattern.match(stripped):
-                continue
-            if stripped.startswith("r(") and stripped.endswith(");"):
-                # If we hit r(123); we might want the line ABOVE it if it's not noise
-                continue
-
-            # Preserve SMCL tags
-            return stripped
-
-        # If we couldn't find a better message, try to find r(N);
-        match = re.search(r"r\(\d+\);", text)
-        if match:
-            return match.group(0)
-
-        return fallback
 
     @staticmethod
     def _stata_quote(value: str) -> str:
@@ -558,16 +526,17 @@ class StataClient:
             if parsed_rc is not None:
                 rc = parsed_rc
 
-        error_envelope = None
         if rc != 0:
             if sys_error:
                 msg = sys_error
-                snippet = sys_error  # Include the exception message as snippet
+                context = sys_error
             else:
                 # Extract error message from log tail
                 msg, context = self._extract_error_and_context(full_log, rc)
 
             error_envelope = ErrorEnvelope(message=msg, rc=rc, context=context, snippet=full_log[-800:])
+            # Top-level stderr should be the concise context when an error occurs
+            stderr_content = context
 
         return CommandResponse(
             command=code,
@@ -761,8 +730,7 @@ class StataClient:
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
         
         success = (rc == 0 and exc is None)
-        error = None
-        
+        stderr_out = None
         if not success:
             # Use robust extractor
             msg, context = self._extract_error_and_context(combined, rc)
@@ -775,6 +743,8 @@ class StataClient:
                 log_path=log_path,
                 snippet=combined[-800:] # Keep snippet for backward compat
             )
+            # Top-level stderr should be the concise context when an error occurs
+            stderr_out = context
 
         duration = time.time() - start_time
         code_preview = code.replace("\n", "\\n")
@@ -791,7 +761,7 @@ class StataClient:
             command=code,
             rc=rc,
             stdout="",
-            stderr=None,
+            stderr=stderr_out,
             log_path=log_path,
             success=success,
             error=error,
@@ -1056,8 +1026,7 @@ class StataClient:
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
         
         success = (rc == 0 and exc is None)
-        error = None
-        
+        stderr_final = None
         if not success:
             # Robust extraction
             msg, context = self._extract_error_and_context(combined, rc)
@@ -1070,6 +1039,8 @@ class StataClient:
                 log_path=log_path,
                 snippet=combined[-800:]
             )
+            # Top-level stderr should be the concise context when an error occurs
+            stderr_final = context
 
         duration = time.time() - start_time
         logger.info(
@@ -1085,7 +1056,7 @@ class StataClient:
             command=command,
             rc=rc,
             stdout="",
-            stderr=None,
+            stderr=stderr_final,
             log_path=log_path,
             success=success,
             error=error,
