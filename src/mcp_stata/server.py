@@ -10,20 +10,40 @@ from .models import (
     GraphExportResponse,
 )
 import logging
+import sys
 import json
 import os
 
 from .ui_http import UIChannelManager
 
 
-LOG_LEVEL = os.getenv("MCP_STATA_LOGLEVEL", "INFO").upper()
-logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
+# Configure logging to stderr with immediate flush for MCP transport
+LOG_LEVEL = os.getenv("MCP_STATA_LOGLEVEL", "DEBUG").upper()  # Default to DEBUG for diagnostics
+
+# Create a handler that flushes immediately
+handler = logging.StreamHandler(sys.stderr)
+handler.setLevel(logging.DEBUG)
+handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
+
+# Configure root logger
+logging.root.handlers = []
+logging.root.addHandler(handler)
+logging.root.setLevel(logging.DEBUG)
+
+# Also configure the mcp_stata logger explicitly
+logger = logging.getLogger("mcp_stata")
+logger.setLevel(logging.DEBUG)
+logger.addHandler(handler)
+
 try:
     _mcp_stata_version = version("mcp-stata")
 except PackageNotFoundError:
     _mcp_stata_version = "unknown"
-logging.info("mcp-stata version: %s", _mcp_stata_version)
-logging.info("STATA_PATH env at startup: %s", os.getenv("STATA_PATH", "<not set>"))
+
+logger.info("=== mcp-stata server starting ===")
+logger.info("mcp-stata version: %s", _mcp_stata_version)
+logger.info("STATA_PATH env at startup: %s", os.getenv("STATA_PATH", "<not set>"))
+logger.info("LOG_LEVEL: %s", LOG_LEVEL)
 
 # Initialize FastMCP
 mcp = FastMCP("mcp_stata")

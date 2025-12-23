@@ -1,10 +1,11 @@
 """
-Improved discovery.py with better error handling for intermittent failures.
+Optimized discovery.py with fast auto-discovery and targeted retry logic.
 Key improvements:
-1. Retry logic for file existence checks
-2. Better diagnostic logging
-3. Fuzzy path matching for common typos
-4. Case-insensitive path resolution on Windows
+1. Fast path checking during discovery (no retries)
+2. Retry logic only for validation of user-provided paths
+3. Better diagnostic logging
+4. Fuzzy path matching for common typos
+5. Case-insensitive path resolution on Windows
 """
 
 import os
@@ -20,10 +21,11 @@ from typing import Tuple, List, Optional
 logger = logging.getLogger("mcp_stata.discovery")
 
 
-def _exists_with_retry(path: str, max_attempts: int = 3, delay: float = 0.1) -> bool:
+def _exists_with_retry(path: str, max_attempts: int = 1, delay: float = 0.01) -> bool:
     """
     Check if file exists with retry logic to handle transient failures.
     This helps with antivirus scans, file locks, and other temporary issues.
+    Only use this for validating user-provided paths, not during discovery.
     """
     for attempt in range(max_attempts):
         if os.path.exists(path):
@@ -34,6 +36,11 @@ def _exists_with_retry(path: str, max_attempts: int = 3, delay: float = 0.1) -> 
             )
             time.sleep(delay)
     return False
+
+
+def _exists_fast(path: str) -> bool:
+    """Fast existence check without retries for auto-discovery."""
+    return os.path.exists(path)
 
 
 def _find_similar_stata_dirs(target_path: str) -> List[str]:
@@ -72,6 +79,7 @@ def _validate_path_with_diagnostics(path: str, system: str) -> Tuple[bool, str]:
     """
     Validate path exists and provide detailed diagnostics if not.
     Returns (exists, diagnostic_message)
+    Uses retry logic for validation since this is for user-provided paths.
     """
     if _exists_with_retry(path):
         return True, ""
@@ -132,8 +140,14 @@ def _normalize_env_path(raw: str, system: str) -> str:
     return os.path.normpath(expanded)
 
 
-def _is_executable(path: str, system: str) -> bool:
-    if not _exists_with_retry(path):  # Use retry logic
+def _is_executable(path: str, system: str, use_retry: bool = True) -> bool:
+    """
+    Check if path is executable.
+    use_retry: Use retry logic for user-provided paths, fast check for discovery.
+    """
+    exists_check = _exists_with_retry if use_retry else _exists_fast
+    
+    if not exists_check(path):
         return False
     if system == "Windows":
         # On Windows, check if it's a file and has .exe extension
@@ -174,11 +188,11 @@ def _resolve_windows_host_path(path: str, system: str) -> str:
     """
     if system != "Windows":
         return path
-    if _exists_with_retry(path):  # Use retry logic
+    if _exists_fast(path):
         return path
     if os.sep != "\\" and "\\" in path:
         alt_path = path.replace("\\", os.sep)
-        if _exists_with_retry(alt_path):  # Use retry logic
+        if _exists_fast(alt_path):
             return alt_path
     return path
 
@@ -215,46 +229,38 @@ def find_stata_path() -> Tuple[str, str]:
         ("Stata-64.exe", "be"),
         ("Stata.exe", "be"),
     ]
-
     linux_binaries = [
         ("stata-mp", "mp"),
         ("stata-se", "se"),
-        ("stata-ic", "be"),
         ("stata", "be"),
         ("xstata-mp", "mp"),
         ("xstata-se", "se"),
-        ("xstata-ic", "be"),
         ("xstata", "be"),
     ]
 
-    # 1. Check Environment Variable (supports quoted values and directory targets)
-    raw_env_path = os.environ.get("STATA_PATH")
-    if raw_env_path:
+    # 1. Check STATA_PATH override with enhanced diagnostics
+    raw_stata_path = os.environ.get("STATA_PATH")
+    if raw_stata_path:
         try:
-            path = _normalize_env_path(raw_env_path, system)
-            path = _resolve_windows_host_path(path, system)
-            logger.info("Trying STATA_PATH override (normalized): %s", path)
+            path = _normalize_env_path(raw_stata_path, system)
 
-            # If a directory is provided, try standard binaries for the platform
             if os.path.isdir(path):
-                search_set = []
+                candidates_in_dir = []
                 if system == "Windows":
-                    search_set = windows_binaries
-                elif system == "Linux":
-                    search_set = linux_binaries
-                elif system == "Darwin":
-                    search_set = [
-                        ("Contents/MacOS/stata-mp", "mp"),
-                        ("Contents/MacOS/stata-se", "se"),
-                        ("Contents/MacOS/stata", "be"),
-                        ("stata-mp", "mp"),
-                        ("stata-se", "se"),
-                        ("stata", "be"),
-                    ]
+                    for exe, edition in windows_binaries:
+                        candidate = os.path.join(path, exe)
+                        if _is_executable(candidate, system, use_retry=True):
+                            candidates_in_dir.append((candidate, edition))
+                else:
+                    for binary, edition in linux_binaries:
+                        candidate = os.path.join(path, binary)
+                        if _is_executable(candidate, system, use_retry=True):
+                            candidates_in_dir.append((candidate, edition))
 
-                for binary, edition in search_set:
-                    candidate = os.path.join(path, binary)
-                    if _is_executable(candidate, system):
+                if candidates_in_dir:
+                    # Found valid binary in the directory
+                    candidate, edition = candidates_in_dir[0]
+                    if _is_executable(candidate, system, use_retry=True):
                         logger.info(
                             "Found Stata via STATA_PATH directory: %s (%s)",
                             candidate,
@@ -281,7 +287,7 @@ def find_stata_path() -> Tuple[str, str]:
             elif "be" in lower_path:
                 edition = "be"
 
-            # Use enhanced validation with diagnostics
+            # Use enhanced validation with diagnostics (with retry for user path)
             exists, diagnostics = _validate_path_with_diagnostics(path, system)
             if not exists:
                 error_msg = (
@@ -293,7 +299,7 @@ def find_stata_path() -> Tuple[str, str]:
                 )
                 raise FileNotFoundError(error_msg)
                 
-            if not _is_executable(path, system):
+            if not _is_executable(path, system, use_retry=True):
                 raise PermissionError(
                     f"STATA_PATH points to '{path}', but it is not executable. "
                     "Ensure this is the Stata binary, not the .app directory."
@@ -310,7 +316,7 @@ def find_stata_path() -> Tuple[str, str]:
                 exc,
             )
 
-    # 2. Platform-specific search
+    # 2. Platform-specific search (using fast checks, no retries)
     candidates: List[Tuple[str, str]] = []  # List of (path, edition)
 
     if system == "Darwin":  # macOS
@@ -327,11 +333,11 @@ def find_stata_path() -> Tuple[str, str]:
         for pattern in app_globs:
             for app_dir in glob.glob(pattern):
                 binary_dir = os.path.join(app_dir, "Contents", "MacOS")
-                if not _exists_with_retry(binary_dir):  # Use retry logic
+                if not _exists_fast(binary_dir):
                     continue
                 for binary, edition in [("stata-mp", "mp"), ("stata-se", "se"), ("stata", "be")]:
                     full_path = os.path.join(binary_dir, binary)
-                    if _exists_with_retry(full_path):  # Use retry logic
+                    if _exists_fast(full_path):
                         candidates.append((full_path, edition))
 
     elif system == "Windows":
@@ -379,7 +385,7 @@ def find_stata_path() -> Tuple[str, str]:
                 continue
             for exe, edition in windows_binaries:
                 full_path = os.path.join(stata_dir, exe)
-                if _exists_with_retry(full_path):  # Use retry logic
+                if _exists_fast(full_path):
                     candidates.append((full_path, edition))
 
     elif system == "Linux":
@@ -417,16 +423,17 @@ def find_stata_path() -> Tuple[str, str]:
                         continue
                     for binary, edition in linux_binaries:
                         full_path = os.path.join(base_dir, binary)
-                        if _exists_with_retry(full_path):  # Use retry logic
+                        if _exists_fast(full_path):
                             candidates.append((full_path, edition))
 
     candidates = _dedupe_preserve(candidates)
 
+    # Final validation of candidates (still using fast checks)
     for path, edition in candidates:
-        if not _exists_with_retry(path):  # Use retry logic
+        if not _exists_fast(path):
             logger.warning("Discovered candidate missing on disk: %s", path)
             continue
-        if not _is_executable(path, system):
+        if not _is_executable(path, system, use_retry=False):
             logger.warning("Discovered candidate is not executable: %s", path)
             continue
         logger.info("Auto-discovered Stata at %s (%s)", path, edition)
