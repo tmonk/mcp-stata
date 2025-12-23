@@ -120,15 +120,48 @@ class StataClient:
         return inst
 
     @contextmanager
-    def _redirect_io(self):
+    def _redirect_io(self, out_buf, err_buf):
         """Safely redirect stdout/stderr for the duration of a Stata call."""
-        out_buf, err_buf = StringIO(), StringIO()
         backup_stdout, backup_stderr = sys.stdout, sys.stderr
         sys.stdout, sys.stderr = out_buf, err_buf
         try:
-            yield out_buf, err_buf
+            yield
         finally:
             sys.stdout, sys.stderr = backup_stdout, backup_stderr
+
+    def _select_stata_error_message(self, text: str, fallback: str) -> str:
+        """
+        Helper for tests and legacy callers to extract the clean error message.
+        """
+        if not text:
+            return fallback
+
+        lines = text.splitlines()
+        trace_pattern = re.compile(r'^\s*[-=.]')
+        noise_pattern = re.compile(r'^(?:\}|\{txt\}|\{com\}|end of do-file)')
+
+        for line in reversed(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if trace_pattern.match(line):
+                continue
+            if noise_pattern.match(stripped):
+                continue
+            if stripped.startswith("r(") and stripped.endswith(");"):
+                # If we hit r(123); we might want the line ABOVE it if it's not noise
+                continue
+
+            # Strip SMCL tags
+            clean_msg = re.sub(r'\{.*?\}', '', stripped).strip()
+            return clean_msg
+
+        # If we couldn't find a better message, try to find r(N);
+        match = re.search(r"r\(\d+\);", text)
+        if match:
+            return match.group(0)
+
+        return fallback
 
     @staticmethod
     def _stata_quote(value: str) -> str:
@@ -381,15 +414,32 @@ class StataClient:
         try:
             from sfi import Macro  # type: ignore[import-not-found]
             rc_val = Macro.getCValue("rc")  # type: ignore[attr-defined]
+            if rc_val is not None:
+                return int(float(rc_val))
+            # If getCValue returns None, fall through to the alternative approach
+        except Exception:
+            pass
+
+        # Alternative approach: use a global macro
+        # CRITICAL: This must be done carefully to avoid mutating c(rc)
+        try:
+            self.stata.run("global MCP_RC = c(rc)")
+            from sfi import Macro as Macro2  # type: ignore[import-not-found]
+            rc_val = Macro2.getGlobal("MCP_RC")
             return int(float(rc_val))
         except Exception:
-            try:
-                self.stata.run("global MCP_RC = c(rc)")
-                from sfi import Macro as Macro2  # type: ignore[import-not-found]
-                rc_val = Macro2.getGlobal("MCP_RC")
-                return int(float(rc_val))
-            except Exception:
+            return -1
+
+    def _get_rc_from_scalar(self, Scalar) -> int:
+        """Safely get return code, handling None values."""
+        try:
+            from sfi import Macro
+            rc_val = Macro.getCValue("rc")
+            if rc_val is None:
                 return -1
+            return int(float(rc_val))
+        except Exception:
+            return -1
 
     def _parse_rc_from_text(self, text: str) -> Optional[int]:
         match = re.search(r"r\((\d+)\)", text)
@@ -436,41 +486,50 @@ class StataClient:
 
     def _extract_error_and_context(self, log_content: str, rc: int) -> Tuple[str, str]:
         """
-        Extracts the error message and trace context. 
-        Using SFIToolkit.error(rc), the last line is likely the clean message.
+        Extracts the error message and trace context using {err} SMCL tags.
         """
         if not log_content:
             return f"Stata error r({rc})", ""
 
         lines = log_content.splitlines()
-        
-        # 1. Context: Grab the last 30 lines (trace + error)
-        context_lines = 30
-        start_idx = max(0, len(lines) - context_lines)
-        context_str = "\n".join(lines[start_idx:])
 
-        # 2. Headline: Find the last meaningful line
+        # Find the {err} tag which marks error lines in SMCL
         clean_msg = f"Stata error r({rc})"
-        
-        trace_pattern = re.compile(r'^\s*[-=.]')
-        # We ignore standard noise, but we DO NOT ignore the standard error text
-        noise_pattern = re.compile(r'^(?:\}|\{txt\}|\{com\}|end of do-file)')
+        err_line_idx = None
 
-        for line in reversed(lines):
-            stripped = line.strip()
-            if not stripped: continue
-            if trace_pattern.match(line): continue
-            if noise_pattern.match(stripped): continue
-            
-            # Strip SMCL tags
-            clean_msg = re.sub(r'\{.*?\}', '', stripped).strip()
-            break
+        # Search backwards for the {err} tag
+        for i in range(len(lines) - 1, -1, -1):
+            line = lines[i]
+            if '{err}' in line:
+                err_line_idx = i
+                # Extract text after {err} tag
+                err_match = re.search(r'\{err\}(.+)', line)
+                if err_match:
+                    error_text = err_match.group(1)
+                    # Strip any remaining SMCL tags from the error text
+                    clean_msg = re.sub(r'\{.*?\}', '', error_text).strip()
+                    if clean_msg:
+                        break
+
+        # Extract focused context around the error
+        if err_line_idx is not None:
+            # Include 20 lines before error and 5 lines after (to capture end markers)
+            context_start = max(0, err_line_idx - 20)
+            context_end = min(len(lines), err_line_idx + 6)
+            context_str = "\n".join(lines[context_start:context_end])
+        else:
+            # Fallback: grab the last 30 lines
+            context_start = max(0, len(lines) - 30)
+            context_str = "\n".join(lines[context_start:])
 
         return clean_msg, context_str
 
     def _exec_with_capture(self, code: str, echo: bool = True, trace: bool = False, cwd: Optional[str] = None) -> CommandResponse:
         if not self._initialized:
             self.init()
+
+        # Rewrite graph names with special characters to internal aliases
+        code = self._maybe_rewrite_graph_name_in_command(code)
 
         output_buffer = StringIO()
         error_buffer = StringIO()
@@ -487,36 +546,33 @@ class StataClient:
                         
                         # 1. Run the user code
                         self.stata.run(code, echo=echo)
-                        
-                        # 2. Check for error (Infallible)
-                        rc = int(Scalar.getValue("_rc"))
-
-                        # 3. FORCE ERROR OUTPUT
-                        # If an error occurred, force Stata to print the standard description.
-                        if rc != 0:
-                            try:
-                                SFIToolkit.error(rc)
-                            except Exception:
-                                pass
 
             except Exception as e:
-                rc = 1
                 sys_error = str(e)
+                # Try to parse RC from exception message
+                parsed_rc = self._parse_rc_from_text(sys_error)
+                rc = parsed_rc if parsed_rc is not None else 1
 
         stdout_content = output_buffer.getvalue()
         stderr_content = error_buffer.getvalue()
         full_log = stdout_content + "\n" + stderr_content
 
+        # 2. Extract RC from log tail (primary error detection method)
+        if rc == 1 and not sys_error:  # No exception but might have error in log
+            parsed_rc = self._parse_rc_from_text(full_log)
+            if parsed_rc is not None:
+                rc = parsed_rc
+
         error_envelope = None
         if rc != 0:
             if sys_error:
                 msg = sys_error
-                context = "System error."
+                snippet = sys_error  # Include the exception message as snippet
             else:
-                # Now the log is guaranteed to end with the standard error message
-                msg, context = self._extract_error_and_context(full_log, rc)
-                
-            error_envelope = ErrorEnvelope(message=msg, context=context)
+                # Extract error message from log tail
+                msg, snippet = self._extract_error_and_context(full_log, rc)
+
+            error_envelope = ErrorEnvelope(message=msg, rc=rc, snippet=snippet)
 
         return CommandResponse(
             command=code,
@@ -546,7 +602,7 @@ class StataClient:
                     ret_text = ret
                 
                 # Robust RC check even for no-capture
-                rc = int(Scalar.getValue("_rc"))
+                rc = self._read_return_code()
                 
             except Exception as e:
                 exc = e
@@ -662,14 +718,7 @@ class StataClient:
                                         pass
 
                                 # ROBUST DETECTION & OUTPUT
-                                rc = int(Scalar.getValue("_rc"))
-                                
-                                # Force standard error message to log if failed
-                                if rc != 0:
-                                    try:
-                                        SFIToolkit.error(rc)
-                                    except Exception:
-                                        pass
+                                rc = self._read_return_code()
 
                             except Exception as e:
                                 exc = e
@@ -911,10 +960,7 @@ class StataClient:
                                         pass
                                 
                                 # ROBUST DETECTION & OUTPUT
-                                rc = int(Scalar.getValue("_rc"))
-                                if rc != 0:
-                                    try: SFIToolkit.error(rc)
-                                    except: pass
+                                rc = self._read_return_code()
 
                             except Exception as e:
                                 exc = e
@@ -2283,15 +2329,9 @@ class StataClient:
                                 except Exception:
                                     pass
                             
-                            # ROBUST DETECTION & OUTPUT
-                            rc = int(Scalar.getValue("_rc"))
-                            if rc != 0:
-                                try: SFIToolkit.error(rc)
-                                except: pass
-
                         except Exception as e:
                             exc = e
-                            if rc == 0: rc = 1
+                            rc = 1
                         finally:
                             if trace:
                                 try:
@@ -2310,21 +2350,30 @@ class StataClient:
         if log_tail and len(log_tail) > len(tail_text):
             tail_text = log_tail
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
-        
+
+        # Parse RC from log tail if no exception occurred
+        if rc == -1 and not exc:
+            parsed_rc = self._parse_rc_from_text(combined)
+            rc = parsed_rc if parsed_rc is not None else 0
+        elif exc:
+            # Try to parse RC from exception message
+            parsed_rc = self._parse_rc_from_text(str(exc))
+            if parsed_rc is not None:
+                rc = parsed_rc
+
         success = (rc == 0 and exc is None)
         error = None
-        
+
         if not success:
             # Robust extraction
             msg, context = self._extract_error_and_context(combined, rc)
 
             error = ErrorEnvelope(
                 message=msg,
-                context=context,
                 rc=rc,
+                snippet=context,
                 command=command,
-                log_path=log_path,
-                snippet=combined[-800:]
+                log_path=log_path
             )
 
         duration = time.time() - start_time
