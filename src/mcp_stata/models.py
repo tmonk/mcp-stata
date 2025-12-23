@@ -8,6 +8,7 @@ class ErrorEnvelope(BaseModel):
     line: Optional[int] = None
     command: Optional[str] = None
     log_path: Optional[str] = None
+    context: Optional[str] = None
     stdout: Optional[str] = None
     stderr: Optional[str] = None
     snippet: Optional[str] = None
