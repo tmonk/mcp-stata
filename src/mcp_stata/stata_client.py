@@ -408,6 +408,20 @@ class StataClient:
                 return None
         return None
 
+    def _read_log_tail(self, path: str, max_chars: int) -> str:
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                if size <= 0:
+                    return ""
+                read_size = min(size, max_chars)
+                f.seek(-read_size, os.SEEK_END)
+                data = f.read(read_size)
+            return data.decode("utf-8", errors="replace")
+        except Exception:
+            return ""
+
     def _select_stata_error_message(self, text: str, fallback: str) -> str:
         if not text:
             return fallback
@@ -417,11 +431,44 @@ class StataClient:
             r"^execution terminated$",
             r"^[-=*]{3,}.*$",
         )
-        for raw in reversed(text.splitlines()):
+        rc_pattern = r"^r\(\d+\);?$"
+        error_patterns = (
+            r"\btype mismatch\b",
+            r"\bnot found\b",
+            r"\bnot allowed\b",
+            r"\bno observations\b",
+            r"\bconformability error\b",
+            r"\binvalid\b",
+            r"\bsyntax error\b",
+            r"\berror\b",
+        )
+        lines = text.splitlines()
+        for raw in reversed(lines):
             line = raw.strip()
             if not line:
                 continue
-            if line.startswith((".", ">")):
+            if any(re.search(pat, line, re.IGNORECASE) for pat in error_patterns):
+                return line
+        for i in range(len(lines) - 1, -1, -1):
+            line = lines[i].strip()
+            if not line:
+                continue
+            if re.match(rc_pattern, line, re.IGNORECASE):
+                for j in range(i - 1, -1, -1):
+                    prev_line = lines[j].strip()
+                    if not prev_line:
+                        continue
+                    if prev_line.startswith((".", ">", "-", "=")):
+                        continue
+                    if any(re.match(pat, prev_line, re.IGNORECASE) for pat in ignore_patterns):
+                        continue
+                    return prev_line
+                return line
+        for raw in reversed(lines):
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith((".", ">", "-", "=")):
                 continue
             if any(re.match(pat, line, re.IGNORECASE) for pat in ignore_patterns):
                 continue
@@ -454,6 +501,8 @@ class StataClient:
         line_no = self._parse_line_from_text(combined) if combined else None
         snippet = combined[-800:] if combined else None
         fallback = (stderr or (str(exc) if exc else "") or stdout or "Stata error").strip()
+        if fallback == "Stata error" and rc_final is not None:
+            fallback = f"Stata error r({rc_final})"
         message = self._select_stata_error_message(combined, fallback)
         return ErrorEnvelope(
             message=message,
@@ -661,7 +710,7 @@ class StataClient:
             buffering=1,
         )
         log_path = log_file.name
-        tail = TailBuffer(max_chars=8000)
+        tail = TailBuffer(max_chars=200000 if trace else 20000)
         tee = FileTeeIO(log_file, tail)
 
         # Inform the MCP client immediately where to read/tail the output.
@@ -726,6 +775,9 @@ class StataClient:
                 logger.warning(f"Failed to cache detected graphs: {e}")
 
         tail_text = tail.get_value()
+        log_tail = self._read_log_tail(log_path, 200000 if trace else 20000)
+        if log_tail and len(log_tail) > len(tail_text):
+            tail_text = log_tail
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
         rc_hint = self._parse_rc_from_text(combined) if combined else None
         if exc is None and rc_hint is not None and rc_hint != 0:
@@ -740,6 +792,8 @@ class StataClient:
             rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
             line_no = self._parse_line_from_text(combined) if combined else None
             fallback = (str(exc).strip() if exc is not None else "") or "Stata error"
+            if fallback == "Stata error" and rc_final is not None:
+                fallback = f"Stata error r({rc_final})"
             message = self._select_stata_error_message(combined, fallback)
 
             error = ErrorEnvelope(
@@ -891,7 +945,7 @@ class StataClient:
             buffering=1,
         )
         log_path = log_file.name
-        tail = TailBuffer(max_chars=8000)
+        tail = TailBuffer(max_chars=200000 if trace else 20000)
         tee = FileTeeIO(log_file, tail)
 
         # Inform the MCP client immediately where to read/tail the output.
@@ -1057,6 +1111,9 @@ class StataClient:
                 logger.error(f"Post-execution graph detection failed: {e}")
 
         tail_text = tail.get_value()
+        log_tail = self._read_log_tail(log_path, 200000 if trace else 20000)
+        if log_tail and len(log_tail) > len(tail_text):
+            tail_text = log_tail
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
         rc_hint = self._parse_rc_from_text(combined) if combined else None
         if exc is None and rc_hint is not None and rc_hint != 0:
@@ -1071,6 +1128,8 @@ class StataClient:
             rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
             line_no = self._parse_line_from_text(combined) if combined else None
             fallback = (str(exc).strip() if exc is not None else "") or "Stata error"
+            if fallback == "Stata error" and rc_final is not None:
+                fallback = f"Stata error r({rc_final})"
             message = self._select_stata_error_message(combined, fallback)
 
             error = ErrorEnvelope(
@@ -2315,7 +2374,7 @@ class StataClient:
             buffering=1,
         )
         log_path = log_file.name
-        tail = TailBuffer(max_chars=8000)
+        tail = TailBuffer(max_chars=200000 if trace else 20000)
         tee = FileTeeIO(log_file, tail)
 
         rc = -1
@@ -2346,6 +2405,9 @@ class StataClient:
         tee.close()
 
         tail_text = tail.get_value()
+        log_tail = self._read_log_tail(log_path, 200000 if trace else 20000)
+        if log_tail and len(log_tail) > len(tail_text):
+            tail_text = log_tail
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
         rc_hint = self._parse_rc_from_text(combined) if combined else None
         if exc is None and rc_hint is not None and rc_hint != 0:
@@ -2360,14 +2422,10 @@ class StataClient:
             rc_hint = self._parse_rc_from_text(combined) if combined else None
             rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
             line_no = self._parse_line_from_text(combined) if combined else None
-            message = "Stata error"
-            if tail_text and tail_text.strip():
-                for line in reversed(tail_text.splitlines()):
-                    if line.strip():
-                        message = line.strip()
-                        break
-            elif exc is not None:
-                message = str(exc).strip() or message
+            fallback = (str(exc).strip() if exc is not None else "") or "Stata error"
+            if fallback == "Stata error" and rc_final is not None:
+                fallback = f"Stata error r({rc_final})"
+            message = self._select_stata_error_message(combined, fallback)
 
             error = ErrorEnvelope(
                 message=message,

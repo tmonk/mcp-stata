@@ -93,4 +93,19 @@ end of do-file
 
 r(459);
 """
-    assert client._select_stata_error_message(text, "fallback") == "fallback"
+    assert client._select_stata_error_message(text, "fallback") == "r(459);"
+
+
+def test_select_stata_error_message_skips_prompts_but_finds_error():
+    client = StataClient()
+    text = """
+  - gen pc_11_10 = total_deaths11_10 / population * 100000
+  - capture confirm variable total_deaths_in_US11_10
+  - if _rc == 0 {
+    gen pc_11_10_in_US = total_deaths_in_US11_10 / population_U
+> S * 100000
+    }
+invalid name
+r(198);
+"""
+    assert client._select_stata_error_message(text, "fallback") == "invalid name"
