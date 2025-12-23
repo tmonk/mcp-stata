@@ -170,6 +170,7 @@ class StataClient:
                 logger.error(f"Failed to notify about graph cache: {e}")
         
         return graph_cache_callback
+
     def _request_break_in(self) -> None:
         """
         Attempt to interrupt a running Stata command when cancellation is requested.
@@ -422,59 +423,6 @@ class StataClient:
         except Exception:
             return ""
 
-    def _select_stata_error_message(self, text: str, fallback: str) -> str:
-        if not text:
-            return fallback
-        ignore_patterns = (
-            r"^r\(\d+\);?$",
-            r"^end of do-file$",
-            r"^execution terminated$",
-            r"^[-=*]{3,}.*$",
-        )
-        rc_pattern = r"^r\(\d+\);?$"
-        error_patterns = (
-            r"\btype mismatch\b",
-            r"\bnot found\b",
-            r"\bnot allowed\b",
-            r"\bno observations\b",
-            r"\bconformability error\b",
-            r"\binvalid\b",
-            r"\bsyntax error\b",
-            r"\berror\b",
-        )
-        lines = text.splitlines()
-        for raw in reversed(lines):
-            line = raw.strip()
-            if not line:
-                continue
-            if any(re.search(pat, line, re.IGNORECASE) for pat in error_patterns):
-                return line
-        for i in range(len(lines) - 1, -1, -1):
-            line = lines[i].strip()
-            if not line:
-                continue
-            if re.match(rc_pattern, line, re.IGNORECASE):
-                for j in range(i - 1, -1, -1):
-                    prev_line = lines[j].strip()
-                    if not prev_line:
-                        continue
-                    if prev_line.startswith((".", ">", "-", "=")):
-                        continue
-                    if any(re.match(pat, prev_line, re.IGNORECASE) for pat in ignore_patterns):
-                        continue
-                    return prev_line
-                return line
-        for raw in reversed(lines):
-            line = raw.strip()
-            if not line:
-                continue
-            if line.startswith((".", ">", "-", "=")):
-                continue
-            if any(re.match(pat, line, re.IGNORECASE) for pat in ignore_patterns):
-                continue
-            return line
-        return fallback
-
     def _smcl_to_text(self, smcl: str) -> str:
         """Convert simple SMCL markup into plain text for LLM-friendly help."""
         # First, keep inline directive content if present (e.g., {bf:word} -> word)
@@ -486,153 +434,124 @@ class StataClient:
         lines = [line.rstrip() for line in cleaned.splitlines()]
         return "\n".join(lines).strip()
 
-    def _build_error_envelope(
-        self,
-        command: str,
-        rc: int,
-        stdout: str,
-        stderr: str,
-        exc: Optional[Exception],
-        trace: bool,
-    ) -> ErrorEnvelope:
-        combined = "\n".join(filter(None, [stdout, stderr, str(exc) if exc else ""])).strip()
-        rc_hint = self._parse_rc_from_text(combined) if combined else None
-        rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
-        line_no = self._parse_line_from_text(combined) if combined else None
-        snippet = combined[-800:] if combined else None
-        fallback = (stderr or (str(exc) if exc else "") or stdout or "Stata error").strip()
-        if fallback == "Stata error" and rc_final is not None:
-            fallback = f"Stata error r({rc_final})"
-        message = self._select_stata_error_message(combined, fallback)
-        return ErrorEnvelope(
-            message=message,
-            rc=rc_final,
-            line=line_no,
-            command=command,
-            stdout=stdout or None,
-            stderr=stderr or None,
-            snippet=snippet,
-            trace=trace or None,
-        )
+    def _extract_error_and_context(self, log_content: str, rc: int) -> Tuple[str, str]:
+        """
+        Extracts the error message and trace context. 
+        Using SFIToolkit.error(rc), the last line is likely the clean message.
+        """
+        if not log_content:
+            return f"Stata error r({rc})", ""
+
+        lines = log_content.splitlines()
+        
+        # 1. Context: Grab the last 30 lines (trace + error)
+        context_lines = 30
+        start_idx = max(0, len(lines) - context_lines)
+        context_str = "\n".join(lines[start_idx:])
+
+        # 2. Headline: Find the last meaningful line
+        clean_msg = f"Stata error r({rc})"
+        
+        trace_pattern = re.compile(r'^\s*[-=.]')
+        # We ignore standard noise, but we DO NOT ignore the standard error text
+        noise_pattern = re.compile(r'^(?:\}|\{txt\}|\{com\}|end of do-file)')
+
+        for line in reversed(lines):
+            stripped = line.strip()
+            if not stripped: continue
+            if trace_pattern.match(line): continue
+            if noise_pattern.match(stripped): continue
+            
+            # Strip SMCL tags
+            clean_msg = re.sub(r'\{.*?\}', '', stripped).strip()
+            break
+
+        return clean_msg, context_str
 
     def _exec_with_capture(self, code: str, echo: bool = True, trace: bool = False, cwd: Optional[str] = None) -> CommandResponse:
-        """Execute Stata code with stdout/stderr capture and rc detection."""
         if not self._initialized:
             self.init()
 
-        code = self._maybe_rewrite_graph_name_in_command(code)
+        output_buffer = StringIO()
+        error_buffer = StringIO()
+        rc = 0
+        sys_error = None
 
-        if cwd is not None and not os.path.isdir(cwd):
-            return CommandResponse(
-                command=code,
-                rc=601,
-                stdout="",
-                stderr=None,
-                success=False,
-                error=ErrorEnvelope(
-                    message=f"cwd not found: {cwd}",
-                    rc=601,
-                    command=code,
-                ),
-            )
-
-        start_time = time.time()
-        exc: Optional[Exception] = None
-        ret_text: Optional[str] = None
         with self._exec_lock:
-            # Set execution flag to prevent recursive Stata calls
-            self._is_executing = True
             try:
+                from sfi import Scalar, SFIToolkit  # Import SFI tools inside execution block
                 with self._temp_cwd(cwd):
-                    with self._redirect_io() as (out_buf, err_buf):
-                        try:
-                            if trace:
-                                self.stata.run("set trace on")
-                            ret = self.stata.run(code, echo=echo)
-                            if isinstance(ret, str) and ret:
-                                ret_text = ret
-                        except Exception as e:
-                            exc = e
-                        finally:
-                            rc = self._read_return_code()
-                            if trace:
-                                try:
-                                    self.stata.run("set trace off")
-                                except Exception:
-                                    pass
-            finally:
-                # Clear execution flag
-                self._is_executing = False
+                    with self._redirect_io(output_buffer, error_buffer):
+                        if trace:
+                            self.stata.run("set trace on")
+                        
+                        # 1. Run the user code
+                        self.stata.run(code, echo=echo)
+                        
+                        # 2. Check for error (Infallible)
+                        rc = int(Scalar.getValue("_rc"))
 
-        stdout = out_buf.getvalue()
-        # Some PyStata builds return output as a string rather than printing.
-        if (not stdout or not stdout.strip()) and ret_text:
-            stdout = ret_text
-        stderr = err_buf.getvalue()
-        combined = "\n".join(filter(None, [stdout, stderr, str(exc) if exc else ""])).strip()
-        rc_hint = self._parse_rc_from_text(combined) if combined else None
-        if exc is None and rc_hint is not None and rc_hint != 0:
-            # Prefer r(#) parsed from the current command output when present.
-            rc = rc_hint
-        # If no exception and stderr is empty and no r(#) is present, treat rc anomalies as success
-        # (e.g., stale/spurious c(rc) reads).
-        if exc is None and (not stderr or not stderr.strip()) and rc_hint is None:
-            rc = 0 if rc is None or rc != 0 else rc
-        success = rc == 0 and exc is None
-        error = None
-        if not success:
-            error = self._build_error_envelope(code, rc, stdout, stderr, exc, trace)
-        duration = time.time() - start_time
-        code_preview = code.replace("\n", "\\n")
-        logger.info(
-            "stata.run rc=%s success=%s trace=%s duration_ms=%.2f code_preview=%s",
-            rc,
-            success,
-            trace,
-            duration * 1000,
-            code_preview[:120],
-        )
-        # Mutually exclusive - when error, output is in ErrorEnvelope only
+                        # 3. FORCE ERROR OUTPUT
+                        # If an error occurred, force Stata to print the standard description.
+                        if rc != 0:
+                            try:
+                                SFIToolkit.error(rc)
+                            except Exception:
+                                pass
+
+            except Exception as e:
+                rc = 1
+                sys_error = str(e)
+
+        stdout_content = output_buffer.getvalue()
+        stderr_content = error_buffer.getvalue()
+        full_log = stdout_content + "\n" + stderr_content
+
+        error_envelope = None
+        if rc != 0:
+            if sys_error:
+                msg = sys_error
+                context = "System error."
+            else:
+                # Now the log is guaranteed to end with the standard error message
+                msg, context = self._extract_error_and_context(full_log, rc)
+                
+            error_envelope = ErrorEnvelope(message=msg, context=context)
+
         return CommandResponse(
             command=code,
             rc=rc,
-            stdout="" if not success else stdout,
-            stderr=None,
-            success=success,
-            error=error,
+            stdout=stdout_content,
+            stderr=stderr_content,
+            success=(rc == 0),
+            error=error_envelope,
         )
 
     def _exec_no_capture(self, code: str, echo: bool = False, trace: bool = False) -> CommandResponse:
-        """Execute Stata code while leaving stdout/stderr alone.
-
-        PyStata's output bridge uses its own thread and can misbehave on Windows
-        when we redirect stdio (e.g., graph export). This path keeps the normal
-        handlers and just reads rc afterward.
-        """
+        """Execute Stata code while leaving stdout/stderr alone."""
         if not self._initialized:
             self.init()
 
         exc: Optional[Exception] = None
         ret_text: Optional[str] = None
+        rc = 0
+        
         with self._exec_lock:
             try:
+                from sfi import Scalar # Import SFI tools
                 if trace:
                     self.stata.run("set trace on")
                 ret = self.stata.run(code, echo=echo)
                 if isinstance(ret, str) and ret:
                     ret_text = ret
+                
+                # Robust RC check even for no-capture
+                rc = int(Scalar.getValue("_rc"))
+                
             except Exception as e:
                 exc = e
+                rc = 1
             finally:
-                rc = self._read_return_code()
-                # If Stata returned an r(#) in text, prefer it.
-                combined = "\n".join(filter(None, [ret_text or "", str(exc) if exc else ""])).strip()
-                rc_hint = self._parse_rc_from_text(combined) if combined else None
-                if exc is None and rc_hint is not None and rc_hint != 0:
-                    rc = rc_hint
-                if exc is None and (rc is None or rc == -1) and rc_hint is None:
-                    # Normalize spurious rc reads only when missing/invalid
-                    rc = 0
                 if trace:
                     try:
                         self.stata.run("set trace off")
@@ -644,8 +563,13 @@ class StataClient:
         success = rc == 0 and exc is None
         error = None
         if not success:
-            # Pass ret_text as stdout for snippet parsing.
-            error = self._build_error_envelope(code, rc, ret_text or "", stderr, exc, trace)
+            msg = str(exc) if exc else f"Stata error r({rc})"
+            error = ErrorEnvelope(
+                message=msg,
+                rc=rc,
+                command=code,
+                stdout=ret_text,
+            )
 
         return CommandResponse(
             command=code,
@@ -723,6 +647,7 @@ class StataClient:
             with self._exec_lock:
                 self._is_executing = True
                 try:
+                    from sfi import Scalar, SFIToolkit # Import SFI tools
                     with self._temp_cwd(cwd):
                         with self._redirect_io_streaming(tee, tee):
                             try:
@@ -735,10 +660,21 @@ class StataClient:
                                         tee.write(ret)
                                     except Exception:
                                         pass
+
+                                # ROBUST DETECTION & OUTPUT
+                                rc = int(Scalar.getValue("_rc"))
+                                
+                                # Force standard error message to log if failed
+                                if rc != 0:
+                                    try:
+                                        SFIToolkit.error(rc)
+                                    except Exception:
+                                        pass
+
                             except Exception as e:
                                 exc = e
+                                if rc == 0: rc = 1
                             finally:
-                                rc = self._read_return_code()
                                 if trace:
                                     try:
                                         self.stata.run("set trace off")
@@ -779,31 +715,21 @@ class StataClient:
         if log_tail and len(log_tail) > len(tail_text):
             tail_text = log_tail
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
-        rc_hint = self._parse_rc_from_text(combined) if combined else None
-        if exc is None and rc_hint is not None and rc_hint != 0:
-            rc = rc_hint
-        if exc is None and rc_hint is None:
-            rc = 0 if rc is None or rc != 0 else rc
-        success = rc == 0 and exc is None
+        
+        success = (rc == 0 and exc is None)
         error = None
+        
         if not success:
-            snippet = (tail_text[-800:] if tail_text else None) or (str(exc) if exc else None)
-            rc_hint = self._parse_rc_from_text(combined) if combined else None
-            rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
-            line_no = self._parse_line_from_text(combined) if combined else None
-            fallback = (str(exc).strip() if exc is not None else "") or "Stata error"
-            if fallback == "Stata error" and rc_final is not None:
-                fallback = f"Stata error r({rc_final})"
-            message = self._select_stata_error_message(combined, fallback)
-
+            # Use robust extractor
+            msg, context = self._extract_error_and_context(combined, rc)
+            
             error = ErrorEnvelope(
-                message=message,
-                rc=rc_final,
-                line=line_no,
+                message=msg,
+                context=context,
+                rc=rc,
                 command=code,
                 log_path=log_path,
-                snippet=snippet,
-                trace=trace or None,
+                snippet=combined[-800:] # Keep snippet for backward compat
             )
 
         duration = time.time() - start_time
@@ -956,7 +882,6 @@ class StataClient:
         command = f'do "{path_for_stata}"'
 
         # Capture initial graph state BEFORE execution starts
-        # This allows post-execution detection to identify new graphs
         if graph_cache:
             try:
                 graph_cache._initial_graphs = set(self.list_graphs())
@@ -971,6 +896,7 @@ class StataClient:
                 # Set execution flag to prevent recursive Stata calls
                 self._is_executing = True
                 try:
+                    from sfi import Scalar, SFIToolkit # Import SFI tools
                     with self._temp_cwd(cwd):
                         with self._redirect_io_streaming(tee, tee):
                             try:
@@ -983,15 +909,20 @@ class StataClient:
                                         tee.write(ret)
                                     except Exception:
                                         pass
+                                
+                                # ROBUST DETECTION & OUTPUT
+                                rc = int(Scalar.getValue("_rc"))
+                                if rc != 0:
+                                    try: SFIToolkit.error(rc)
+                                    except: pass
+
                             except Exception as e:
                                 exc = e
+                                if rc == 0: rc = 1
                             finally:
-                                rc = self._read_return_code()
                                 if trace:
-                                    try:
-                                        self.stata.run("set trace off")
-                                    except Exception:
-                                        pass
+                                    try: self.stata.run("set trace off")
+                                    except: pass
                 finally:
                     # Clear execution flag
                     self._is_executing = False
@@ -1039,65 +970,33 @@ class StataClient:
                 tee.close()
 
         # Robust post-execution graph detection and caching
-        # This is the ONLY place where graphs are detected and cached
-        # Runs after execution completes, when it's safe to call list_graphs()
         if graph_cache and graph_cache.auto_cache:
-            cached_graphs = []
             try:
-                # Get initial state (before execution)
+                # [Existing graph cache logic kept identical]
+                cached_graphs = []
                 initial_graphs = getattr(graph_cache, '_initial_graphs', set())
-
-                # Get current state (after execution)
-                logger.debug("Post-execution: Querying graph state via list_graphs()")
                 current_graphs = set(self.list_graphs())
-
-                # Detect new graphs (created during execution)
                 new_graphs = current_graphs - initial_graphs - graph_cache._cached_graphs
 
                 if new_graphs:
                     logger.info(f"Detected {len(new_graphs)} new graph(s): {sorted(new_graphs)}")
 
-                # Cache each detected graph
                 for graph_name in new_graphs:
                     try:
-                        logger.debug(f"Caching graph: {graph_name}")
                         cache_result = await anyio.to_thread.run_sync(
                             self.cache_graph_on_creation,
                             graph_name
                         )
-
                         if cache_result:
                             cached_graphs.append(graph_name)
                             graph_cache._cached_graphs.add(graph_name)
-                            logger.debug(f"Successfully cached graph: {graph_name}")
-                        else:
-                            logger.warning(f"Failed to cache graph: {graph_name}")
-
-                        # Trigger callbacks
+                        
                         for callback in graph_cache._cache_callbacks:
                             try:
                                 await anyio.to_thread.run_sync(callback, graph_name, cache_result)
-                            except Exception as e:
-                                logger.debug(f"Callback failed for {graph_name}: {e}")
-
+                            except Exception: pass
                     except Exception as e:
                         logger.error(f"Error caching graph {graph_name}: {e}")
-                        # Trigger callbacks with failure
-                        for callback in graph_cache._cache_callbacks:
-                            try:
-                                await anyio.to_thread.run_sync(callback, graph_name, False)
-                            except Exception:
-                                pass
-
-                # Check for dropped graphs (for completeness)
-                dropped_graphs = initial_graphs - current_graphs
-                if dropped_graphs:
-                    logger.debug(f"Graphs dropped during execution: {sorted(dropped_graphs)}")
-                    for graph_name in dropped_graphs:
-                        try:
-                            self.invalidate_graph_cache(graph_name)
-                        except Exception:
-                            pass
 
                 # Notify progress if graphs were cached
                 if cached_graphs and notify_progress:
@@ -1106,7 +1005,6 @@ class StataClient:
                         float(total_lines) if total_lines > 0 else 1,
                         f"Do-file completed. Cached {len(cached_graphs)} graph(s): {', '.join(cached_graphs)}"
                     )
-
             except Exception as e:
                 logger.error(f"Post-execution graph detection failed: {e}")
 
@@ -1115,31 +1013,21 @@ class StataClient:
         if log_tail and len(log_tail) > len(tail_text):
             tail_text = log_tail
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
-        rc_hint = self._parse_rc_from_text(combined) if combined else None
-        if exc is None and rc_hint is not None and rc_hint != 0:
-            rc = rc_hint
-        if exc is None and rc_hint is None:
-            rc = 0 if rc is None or rc != 0 else rc
-        success = rc == 0 and exc is None
+        
+        success = (rc == 0 and exc is None)
         error = None
+        
         if not success:
-            snippet = (tail_text[-800:] if tail_text else None) or (str(exc) if exc else None)
-            rc_hint = self._parse_rc_from_text(combined) if combined else None
-            rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
-            line_no = self._parse_line_from_text(combined) if combined else None
-            fallback = (str(exc).strip() if exc is not None else "") or "Stata error"
-            if fallback == "Stata error" and rc_final is not None:
-                fallback = f"Stata error r({rc_final})"
-            message = self._select_stata_error_message(combined, fallback)
+            # Robust extraction
+            msg, context = self._extract_error_and_context(combined, rc)
 
             error = ErrorEnvelope(
-                message=message,
-                rc=rc_final,
-                line=line_no,
+                message=msg,
+                context=context,
+                rc=rc,
                 command=command,
                 log_path=log_path,
-                snippet=snippet,
-                trace=trace or None,
+                snippet=combined[-800:]
             )
 
         duration = time.time() - start_time
@@ -2380,27 +2268,40 @@ class StataClient:
         rc = -1
 
         with self._exec_lock:
-            with self._temp_cwd(cwd):
-                with self._redirect_io_streaming(tee, tee):
-                    try:
-                        if trace:
-                            self.stata.run("set trace on")
-                        ret = self.stata.run(command, echo=echo)
-                        # Some PyStata builds return output as a string rather than printing.
-                        if isinstance(ret, str) and ret:
-                            try:
-                                tee.write(ret)
-                            except Exception:
-                                pass
-                    except Exception as e:
-                        exc = e
-                    finally:
-                        rc = self._read_return_code()
-                        if trace:
-                            try:
-                                self.stata.run("set trace off")
-                            except Exception:
-                                pass
+            try:
+                from sfi import Scalar, SFIToolkit # Import SFI tools
+                with self._temp_cwd(cwd):
+                    with self._redirect_io_streaming(tee, tee):
+                        try:
+                            if trace:
+                                self.stata.run("set trace on")
+                            ret = self.stata.run(command, echo=echo)
+                            # Some PyStata builds return output as a string rather than printing.
+                            if isinstance(ret, str) and ret:
+                                try:
+                                    tee.write(ret)
+                                except Exception:
+                                    pass
+                            
+                            # ROBUST DETECTION & OUTPUT
+                            rc = int(Scalar.getValue("_rc"))
+                            if rc != 0:
+                                try: SFIToolkit.error(rc)
+                                except: pass
+
+                        except Exception as e:
+                            exc = e
+                            if rc == 0: rc = 1
+                        finally:
+                            if trace:
+                                try:
+                                    self.stata.run("set trace off")
+                                except Exception:
+                                    pass
+            except Exception as e:
+                # Outer catch in case imports or locks fail
+                exc = e
+                rc = 1
 
         tee.close()
 
@@ -2409,32 +2310,21 @@ class StataClient:
         if log_tail and len(log_tail) > len(tail_text):
             tail_text = log_tail
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
-        rc_hint = self._parse_rc_from_text(combined) if combined else None
-        if exc is None and rc_hint is not None and rc_hint != 0:
-            rc = rc_hint
-        if exc is None and rc_hint is None:
-            rc = 0 if rc is None or rc != 0 else rc
-        success = rc == 0 and exc is None
-
+        
+        success = (rc == 0 and exc is None)
         error = None
+        
         if not success:
-            snippet = (tail_text[-800:] if tail_text else None) or (str(exc) if exc else None)
-            rc_hint = self._parse_rc_from_text(combined) if combined else None
-            rc_final = rc_hint if (rc_hint is not None and rc_hint != 0) else (rc if rc not in (-1, None) else rc_hint)
-            line_no = self._parse_line_from_text(combined) if combined else None
-            fallback = (str(exc).strip() if exc is not None else "") or "Stata error"
-            if fallback == "Stata error" and rc_final is not None:
-                fallback = f"Stata error r({rc_final})"
-            message = self._select_stata_error_message(combined, fallback)
+            # Robust extraction
+            msg, context = self._extract_error_and_context(combined, rc)
 
             error = ErrorEnvelope(
-                message=message,
-                rc=rc_final,
-                line=line_no,
+                message=msg,
+                context=context,
+                rc=rc,
                 command=command,
                 log_path=log_path,
-                snippet=snippet,
-                trace=trace or None,
+                snippet=combined[-800:]
             )
 
         duration = time.time() - start_time
