@@ -273,7 +273,7 @@ Call the MCP tool `get_ui_channel()` and parse the JSON:
 Server-enforced limits (current defaults):
 
 - **maxLimit**: 500
-- **maxVars**: 200
+- **maxVars**: 500
 - **maxChars**: 500
 - **maxRequestBytes**: 1,000,000
 

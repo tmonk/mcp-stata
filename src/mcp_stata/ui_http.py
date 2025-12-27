@@ -44,7 +44,7 @@ class UIChannelManager:
         token_ttl_s: int = 20 * 60,
         view_ttl_s: int = 30 * 60,
         max_limit: int = 500,
-        max_vars: int = 200,
+        max_vars: int = 500,
         max_chars: int = 500,
         max_request_bytes: int = 1_000_000,
     ):
