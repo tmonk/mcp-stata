@@ -255,14 +255,28 @@ class StataClient:
         return f"Stata error r({rc})", context
 
     def _parse_rc_from_smcl(self, smcl_content: str) -> Optional[int]:
-        """Parse return code from SMCL content."""
-        # Look for r(N) pattern which indicates error code
-        match = re.search(r'r\((\d+)\)', smcl_content)
+        """Parse return code from SMCL content using specific structural patterns."""
+        if not smcl_content:
+            return None
+            
+        # 1. Primary check: SMCL search tag {search r(N), ...}
+        # This is the most authoritative interactive indicator
+        match = re.search(r'\{search r\((\d+)\)', smcl_content)
         if match:
             try:
                 return int(match.group(1))
             except Exception:
-                return None
+                pass
+
+        # 2. Secondary check: Standalone r(N); pattern
+        # This appears at the end of command blocks
+        match = re.search(r'(?<!\w)r\((\d+)\);', smcl_content)
+        if match:
+            try:
+                return int(match.group(1))
+            except Exception:
+                pass
+                
         return None
 
     @staticmethod
@@ -504,12 +518,26 @@ class StataClient:
             return -1
 
     def _parse_rc_from_text(self, text: str) -> Optional[int]:
-        match = re.search(r"r\((\d+)\)", text)
+        """Parse return code from plain text using structural patterns."""
+        if not text:
+            return None
+            
+        # 1. Primary check: 'search r(N)' pattern (SMCL tag potentially stripped)
+        match = re.search(r'search r\((\d+)\)', text)
         if match:
             try:
                 return int(match.group(1))
             except Exception:
-                return None
+                pass
+
+        # 2. Secondary check: Standalone r(N); pattern
+        match = re.search(r'(?<!\w)r\((\d+)\);', text)
+        if match:
+            try:
+                return int(match.group(1))
+            except Exception:
+                pass
+                
         return None
 
     def _parse_line_from_text(self, text: str) -> Optional[int]:
