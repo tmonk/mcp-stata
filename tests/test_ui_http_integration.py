@@ -204,7 +204,7 @@ def test_ui_http_page_limit_validation():
         "datasetId": ds["id"],
         "frame": ds.get("frame", "default"),
         "offset": 0,
-        "limit": 1000,
+        "limit": 100_000,
         "vars": ["price"],
     }
     r = httpx.post(urljoin(base, "/v1/page"), headers=headers, json=page_req_too_large)
