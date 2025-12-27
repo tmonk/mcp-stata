@@ -835,18 +835,18 @@ class StataClient:
         )
 
     async def run_command_streaming(
-        self,
-        code: str,
-        *,
-        notify_log: Callable[[str], Awaitable[None]],
-        notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
-        echo: bool = True,
-        trace: bool = False,
-        max_output_lines: Optional[int] = None,
-        cwd: Optional[str] = None,
-        auto_cache_graphs: bool = False,
-        on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]] = None,
-    ) -> CommandResponse:
+    self,
+    code: str,
+    *,
+    notify_log: Callable[[str], Awaitable[None]],
+    notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
+    echo: bool = True,
+    trace: bool = False,
+    max_output_lines: Optional[int] = None,
+    cwd: Optional[str] = None,
+    auto_cache_graphs: bool = False,
+    on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]] = None,
+) -> CommandResponse:
         if not self._initialized:
             self.init()
 
@@ -905,7 +905,7 @@ class StataClient:
         smcl_log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
 
         # Inform the MCP client immediately where to read/tail the output.
-        await notify_log(json.dumps({"event": "log_path", "path": log_path}))
+        await notify_log(json.dumps({"event": "log_path", "path": smcl_path}))
 
         rc = -1
 
@@ -953,18 +953,48 @@ class StataClient:
                 finally:
                     self._is_executing = False
 
-        try:
+        done = anyio.Event()
+
+        async def _monitor_and_stream_log() -> None:
+            last_pos = 0
+            try:
+                # Read from the SMCL file where Stata is actually writing
+                with open(smcl_path, "r", encoding="utf-8", errors="replace") as f:
+                    while not done.is_set():
+                        f.seek(last_pos)
+                        chunk = f.read()
+                        if chunk:
+                            last_pos = f.tell()
+                            await notify_log(chunk)
+                            if total_lines > 0 and notify_progress:
+                                await on_chunk_for_progress(chunk)
+                        await anyio.sleep(0.05)
+
+                    # Final read after execution completes
+                    f.seek(last_pos)
+                    chunk = f.read()
+                    if chunk:
+                        await notify_log(chunk)
+            except Exception as e:
+                logger.warning(f"Log streaming failed: {e}")
+                return
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_monitor_and_stream_log)
+
             if notify_progress is not None:
                 await notify_progress(0, None, "Running Stata command")
 
-            await anyio.to_thread.run_sync(_run_blocking, abandon_on_cancel=True)
-        except get_cancelled_exc_class():
-            # Best-effort cancellation: signal Stata to break, wait briefly, then propagate.
-            self._request_break_in()
-            await self._wait_for_stata_stop()
-            raise
-        finally:
-            tee.close()
+            try:
+                await anyio.to_thread.run_sync(_run_blocking, abandon_on_cancel=True)
+            except get_cancelled_exc_class():
+                # Best-effort cancellation: signal Stata to break, wait briefly, then propagate.
+                self._request_break_in()
+                await self._wait_for_stata_stop()
+                raise
+            finally:
+                done.set()
+                tee.close()
 
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path)
@@ -1067,18 +1097,18 @@ class StataClient:
         return total
 
     async def run_do_file_streaming(
-        self,
-        path: str,
-        *,
-        notify_log: Callable[[str], Awaitable[None]],
-        notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
-        echo: bool = True,
-        trace: bool = False,
-        max_output_lines: Optional[int] = None,
-        cwd: Optional[str] = None,
-        auto_cache_graphs: bool = False,
-        on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]] = None,
-    ) -> CommandResponse:
+    self,
+    path: str,
+    *,
+    notify_log: Callable[[str], Awaitable[None]],
+    notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
+    echo: bool = True,
+    trace: bool = False,
+    max_output_lines: Optional[int] = None,
+    cwd: Optional[str] = None,
+    auto_cache_graphs: bool = False,
+    on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]] = None,
+) -> CommandResponse:
         if cwd is not None and not os.path.isdir(cwd):
             return CommandResponse(
                 command=f'do "{path}"',
@@ -1177,7 +1207,7 @@ class StataClient:
         smcl_log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
 
         # Inform the MCP client immediately where to read/tail the output.
-        await notify_log(json.dumps({"event": "log_path", "path": log_path}))
+        await notify_log(json.dumps({"event": "log_path", "path": smcl_path}))
 
         rc = -1
         path_for_stata = effective_path.replace("\\", "/")
@@ -1238,29 +1268,36 @@ class StataClient:
 
         done = anyio.Event()
 
-        async def _monitor_progress_from_log() -> None:
-            if notify_progress is None or total_lines <= 0:
-                return
+        async def _monitor_and_stream_log() -> None:
+            """Monitor log file and stream chunks for both display and progress tracking."""
             last_pos = 0
             try:
-                with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                with open(smcl_path, "r", encoding="utf-8", errors="replace") as f:
                     while not done.is_set():
                         f.seek(last_pos)
                         chunk = f.read()
                         if chunk:
                             last_pos = f.tell()
-                            await on_chunk_for_progress(chunk)
+                            # Stream the actual log content for display
+                            await notify_log(chunk)
+                            # Also track progress if needed
+                            if total_lines > 0 and notify_progress:
+                                await on_chunk_for_progress(chunk)
                         await anyio.sleep(0.05)
 
+                    # Final read after execution completes
                     f.seek(last_pos)
                     chunk = f.read()
                     if chunk:
-                        await on_chunk_for_progress(chunk)
-            except Exception:
+                        await notify_log(chunk)
+                        if total_lines > 0 and notify_progress:
+                            await on_chunk_for_progress(chunk)
+            except Exception as e:
+                logger.warning(f"Log streaming failed: {e}")
                 return
 
         async with anyio.create_task_group() as tg:
-            tg.start_soon(_monitor_progress_from_log)
+            tg.start_soon(_monitor_and_stream_log)
 
             if notify_progress is not None:
                 if total_lines > 0:
@@ -1284,7 +1321,6 @@ class StataClient:
         # Robust post-execution graph detection and caching
         if graph_cache and graph_cache.auto_cache:
             try:
-                # [Existing graph cache logic kept identical]
                 cached_graphs = []
                 initial_graphs = getattr(graph_cache, '_initial_graphs', set())
                 current_graphs = set(self.list_graphs())
