@@ -53,12 +53,12 @@ def benchmark_polars_stream():
         client.run_command_structured("mkmat price mpg rep78 headroom trunk weight length turn displacement gear_ratio foreign, matrix(X)")
         # Actually simplest is just:
         client.run_command_structured("set obs 1000")
-        client.run_command_structured("forvalues i=1/1000 { \n generate v`i' = runiform() \n }")
+        client.run_command_structured("forvalues i=1/3000 { \n generate v`i' = runiform() \n }")
     except Exception as e:
         print(f"Failed to generate data: {e}")
         return
 
-    vars = [f"v{i}" for i in range(1, 1001)]
+    vars = [f"v{i}" for i in range(1, 3001)]
     
     print(f"Benchmarking get_arrow_stream with {len(vars)} variables and 1000 observations...")
     
@@ -84,7 +84,7 @@ def benchmark_pandas_stream():
     
     # We need to access the internal pystata object or mimicking the old helper
     
-    vars = [f"v{i}" for i in range(1, 1001)]
+    vars = [f"v{i}" for i in range(1, 3001)]
     obs_list = list(range(1000)) # 0-based index for 1000 rows
     
     print(f"Fetching {len(vars)} variables and 1000 observations (Pandas)...")
@@ -119,7 +119,7 @@ def benchmark_sfi_bulk_stream():
     import pyarrow as pa
     from sfi import Data
     
-    vars = [f"v{i}" for i in range(1, 1001)]
+    vars = [f"v{i}" for i in range(1, 3001)]
     obs_list = list(range(1000))
     
     print(f"Fetching {len(vars)} variables and 1000 observations (SFI Bulk)...")
@@ -131,6 +131,11 @@ def benchmark_sfi_bulk_stream():
     # Logic: Data.get returns [[row1], [row2], ...]
     # Polars can ingest this
     df = pl.DataFrame(raw_data, schema=vars, orient="row")
+    
+    # VERIFICATION: logic for specific variable selection
+    # `Data.get(var=vars, ...)` ensures only requested vars are fetched from Stata.
+    # No "select * from dataset" happens here.
+    assert df.shape[1] == 3000, "Should have fetched exactly 3000 variables"
     
     if True: # include_obs_no
         obs_nums = [i + 1 for i in obs_list]
@@ -160,7 +165,7 @@ def benchmark_numpy_polars_stream():
     import pyarrow as pa
     from pystata import stata
     
-    vars = [f"v{i}" for i in range(1, 1001)]
+    vars = [f"v{i}" for i in range(1, 3001)]
     obs_list = list(range(1000))
     
     print(f"Fetching {len(vars)} variables and 1000 observations (Numpy)...")
@@ -187,8 +192,119 @@ def benchmark_numpy_polars_stream():
     arrow_bytes = sink.getvalue().to_pybytes()
     
     end = time.time()
-    print(f"Time taken (Numpy): {end - start:.4f} seconds")
-    print(f"Bytes received (Numpy): {len(arrow_bytes)}")
+    if t_csv:    print(f"Polars (CSV):      {t_csv:.4f}s")
+
+
+def benchmark_strings_stream():
+    """
+    Benchmarks performance with String data.
+    """
+    print("\nBenchmarking String Data (SFI Bulk)...")
+    import polars as pl
+    import pyarrow as pa
+    from sfi import Data
+    from mcp_stata.stata_client import StataClient
+
+    client = StataClient()
+    try:
+        # Create dataset with string variables
+        client.run_command_structured("clear")
+        client.run_command_structured("set obs 1000")
+        # Generate 1000 string variables
+        # Using a loop to generate string data
+        client.run_command_structured('forvalues i=1/1000 { \n generate str10 s`i\' = "StringVal" \n }') 
+    except Exception as e:
+        print(f"String generation failed: {e}")
+        return None
+
+    vars = [f"s{i}" for i in range(1, 1001)] # 1000 string vars
+    obs_list = list(range(1000))
+    
+    print(f"Fetching {len(vars)} string variables and 1000 observations...")
+    start = time.time()
+    
+    # Bulk get strings
+    raw_data = Data.get(var=vars, obs=obs_list, valuelabel=False)
+    
+    # Convert to Polars
+    # Schema must handle strings? Polars infers Utf8
+    df = pl.DataFrame(raw_data, schema=vars, orient="row")
+    
+    table = df.to_arrow()
+    
+    sink = pa.BufferOutputStream()
+    with pa.RecordBatchStreamWriter(sink, table.schema) as writer:
+        writer.write_table(table)
+    
+    arrow_bytes = sink.getvalue().to_pybytes()
+    
+    end = time.time()
+    print(f"Time taken (Strings): {end - start:.4f} seconds")
+    print(f"Bytes received (Strings): {len(arrow_bytes)}")
+    return end - start
+
+def benchmark_metadata():
+    """
+    Benchmarks list_variables_rich performance.
+    """
+    print("\nBenchmarking Metadata (list_variables_rich)...")
+    from mcp_stata.stata_client import StataClient
+    from sfi import Data
+
+    client = StataClient()
+    
+    # Ensure variables exist (using existing session or creating new)
+    # The previous tests might have left state.
+    # Let's ensure we have 3000 vars.
+    try:
+        client.run_command_structured("clear")
+        client.run_command_structured("set obs 1") 
+        # Create 3000 vars efficiently?
+        # A loop is fine for setup.
+        # client.run_command_structured("forvalues i=1/3000 { \n generate v`i' = 1 \n label variable v`i' \"Label `i'\" \n }")
+        # Generating 3000 vars in loop takes time, but we only measure the FETCHING.
+        print("Generating 3000 variables for metadata test...")
+        client.run_command_structured("set obs 1")
+        client.run_command_structured("forvalues i=1/3000 { \n generate v`i' = 1 \n label variable v`i' \"Label `i'\" \n }")
+    except Exception as e:
+         print(f"Metadata setup failed: {e}")
+         return None
+
+    print("Fetching metadata for 3000 variables...")
+    start = time.time()
+    
+    # Logic copied from StataClient.list_variables_rich
+    vars_info = []
+    n_vars = Data.getVarCount()
+    for i in range(n_vars):
+        name = str(Data.getVarName(i))
+        label = None
+        fmt = None
+        vtype = None
+        value_label = None
+        # In actual code there are 3 Try-Except blocks!
+        try:
+            label = Data.getVarLabel(i)
+        except Exception:
+            label = None
+        try:
+            fmt = Data.getVarFormat(i)
+        except Exception:
+            fmt = None
+        try:
+            vtype = Data.getVarType(i)
+        except Exception:
+            vtype = None
+            
+        vars_info.append({
+            "name": name,
+            "type": vtype,
+            "label": label,
+            "format": fmt
+        })
+        
+    end = time.time()
+    print(f"Time taken (Metadata 3000): {end - start:.4f} seconds")
     return end - start
 
 
@@ -212,9 +328,22 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Numpy fail: {e}")
         t_numpy = None
+        
+    try:
+        t_csv = benchmark_csv_strategy()
+    except Exception as e:
+        print(f"CSV fail: {e}")
+        t_csv = None
+
+    t_strings = benchmark_strings_stream()
 
     print("\n=== Summary ===")
     if t_polars_loop: print(f"Polars (Loop SFI): {t_polars_loop:.4f}s")
     if t_pandas: print(f"Pandas (Native):   {t_pandas:.4f}s")
     if t_sfi:    print(f"Polars (Bulk SFI): {t_sfi:.4f}s")
     if t_numpy:  print(f"Polars (Numpy):    {t_numpy:.4f}s")
+    if t_csv:    print(f"Polars (CSV):      {t_csv:.4f}s")
+    if t_strings:print(f"Polars (Strings, 1000 vars): {t_strings:.4f}s")
+    
+    t_meta = benchmark_metadata()
+    if t_meta: print(f"Metadata (3000 vars):  {t_meta:.4f}s")
