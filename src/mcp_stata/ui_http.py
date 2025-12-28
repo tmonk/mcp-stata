@@ -9,6 +9,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Optional
 
 from .stata_client import StataClient
+from .config import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    MAX_ARROW_LIMIT,
+    MAX_CHARS,
+    MAX_LIMIT,
+    MAX_REQUEST_BYTES,
+    MAX_VARS,
+    TOKEN_TTL_S,
+    VIEW_TTL_S,
+)
 
 
 def _stable_hash(payload: dict[str, Any]) -> str:
@@ -39,14 +50,15 @@ class UIChannelManager:
         self,
         client: StataClient,
         *,
-        host: str = "127.0.0.1",
-        port: int = 0,
-        token_ttl_s: int = 20 * 60,
-        view_ttl_s: int = 30 * 60,
-        max_limit: int = 500,
-        max_vars: int = 32_767,
-        max_chars: int = 500,
-        max_request_bytes: int = 1_000_000,
+        host: str = DEFAULT_HOST,
+        port: int = DEFAULT_PORT,
+        token_ttl_s: int = TOKEN_TTL_S,
+        view_ttl_s: int = VIEW_TTL_S,
+        max_limit: int = MAX_LIMIT,
+        max_vars: int = MAX_VARS,
+        max_chars: int = MAX_CHARS,
+        max_request_bytes: int = MAX_REQUEST_BYTES,
+        max_arrow_limit: int = MAX_ARROW_LIMIT,
     ):
         self._client = client
         self._host = host
@@ -57,6 +69,7 @@ class UIChannelManager:
         self._max_vars = max_vars
         self._max_chars = max_chars
         self._max_request_bytes = max_request_bytes
+        self._max_arrow_limit = max_arrow_limit
 
         self._lock = threading.Lock()
         self._httpd: ThreadingHTTPServer | None = None
@@ -87,7 +100,7 @@ class UIChannelManager:
             return UIChannelInfo(base_url=base_url, token=self._token or "", expires_at=self._expires_at)
 
     def capabilities(self) -> dict[str, bool]:
-        return {"dataBrowser": True, "filtering": True, "sorting": True}
+        return {"dataBrowser": True, "filtering": True, "sorting": True, "arrowStream": True}
 
     def current_dataset_id(self) -> str:
         with self._lock:
@@ -193,10 +206,18 @@ class UIChannelManager:
             manager = self
 
             class Handler(BaseHTTPRequestHandler):
+
                 def _send_json(self, status: int, payload: dict[str, Any]) -> None:
                     data = json.dumps(payload).encode("utf-8")
                     self.send_response(status)
                     self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+
+                def _send_binary(self, status: int, data: bytes, content_type: str) -> None:
+                    self.send_response(status)
+                    self.send_header("Content-Type", content_type)
                     self.send_header("Content-Length", str(len(data)))
                     self.end_headers()
                     self.wfile.write(data)
@@ -288,6 +309,22 @@ class UIChannelManager:
                     if not self._require_auth():
                         return
 
+
+                    if self.path == "/v1/arrow":
+                        body = self._read_json()
+                        if body is None:
+                            return
+                        try:
+                            resp_bytes = handle_arrow_request(manager, body, view_id=None)
+                            self._send_binary(200, resp_bytes, "application/vnd.apache.arrow.stream")
+                            return
+                        except HTTPError as e:
+                            self._error(e.status, e.code, e.message, stata_rc=e.stata_rc)
+                            return
+                        except Exception as e:
+                            self._error(500, "internal_error", str(e))
+                            return
+
                     if self.path == "/v1/page":
                         body = self._read_json()
                         if body is None:
@@ -364,6 +401,26 @@ class UIChannelManager:
                             return
                         except HTTPError as e:
                             print(f"[DEBUG] HTTPError: {e.code} - {e.message}", file=sys.stderr, flush=True)
+                            self._error(e.status, e.code, e.message, stata_rc=e.stata_rc)
+                            return
+                        except Exception as e:
+                            self._error(500, "internal_error", str(e))
+                            return
+
+                    if self.path.startswith("/v1/views/") and self.path.endswith("/arrow"):
+                        parts = self.path.split("/")
+                        if len(parts) != 5:
+                            self._error(404, "not_found", "Not found")
+                            return
+                        view_id = parts[3]
+                        body = self._read_json()
+                        if body is None:
+                            return
+                        try:
+                            resp_bytes = handle_arrow_request(manager, body, view_id=view_id)
+                            self._send_binary(200, resp_bytes, "application/vnd.apache.arrow.stream")
+                            return
+                        except HTTPError as e:
                             self._error(e.status, e.code, e.message, stata_rc=e.stata_rc)
                             return
                         except Exception as e:
@@ -593,3 +650,108 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
             "missing": ".",
         },
     }
+
+
+def handle_arrow_request(manager: UIChannelManager, body: dict[str, Any], *, view_id: str | None) -> bytes:
+    max_limit, max_vars, max_chars, _ = manager.limits()
+    # Use the specific Arrow limit instead of the general UI page limit
+    chunk_limit = getattr(manager, "_max_arrow_limit", 1_000_000)
+
+    if view_id is None:
+        dataset_id = str(body.get("datasetId", ""))
+        frame = str(body.get("frame", "default"))
+    else:
+        view = manager.get_view(view_id)
+        if view is None:
+            raise HTTPError(404, "not_found", "View not found")
+        dataset_id = view.dataset_id
+        frame = view.frame
+
+    # Parse offset (default 0)
+    try:
+        offset = int(body.get("offset") or 0)
+    except (ValueError, TypeError):
+        raise HTTPError(400, "invalid_request", "offset must be a valid integer")
+
+    # Parse limit (required)
+    limit_raw = body.get("limit")
+    if limit_raw is None:
+        # Default to the max arrow limit if not specified? 
+        # The previous code required it. Let's keep it required but allow large values.
+        raise HTTPError(400, "invalid_request", "limit is required")
+    try:
+        limit = int(limit_raw)
+    except (ValueError, TypeError):
+        raise HTTPError(400, "invalid_request", "limit must be a valid integer")
+
+    vars_req = body.get("vars", [])
+    include_obs_no = bool(body.get("includeObsNo", False))
+    sort_by = body.get("sortBy", [])
+
+    if offset < 0:
+        raise HTTPError(400, "invalid_request", "offset must be >= 0")
+    if limit <= 0:
+        raise HTTPError(400, "invalid_request", "limit must be > 0")
+    # Arrow streams are efficient, but we still respect a (much larger) max limit
+    if limit > chunk_limit:
+        raise HTTPError(400, "request_too_large", f"limit must be <= {chunk_limit}")
+
+    if not isinstance(vars_req, list) or not all(isinstance(v, str) for v in vars_req):
+        raise HTTPError(400, "invalid_request", "vars must be a list of strings")
+    if len(vars_req) > max_vars:
+        raise HTTPError(400, "request_too_large", f"vars length must be <= {max_vars}")
+
+    current_id = manager.current_dataset_id()
+    if dataset_id != current_id:
+        raise HTTPError(409, "dataset_changed", "Dataset changed")
+
+    if view_id is None:
+        obs_indices = None
+    else:
+        assert view is not None
+        obs_indices = view.obs_indices
+
+    try:
+        # Apply sorting if requested
+        if sort_by:
+            if not isinstance(sort_by, list) or not all(isinstance(s, str) for s in sort_by):
+                raise HTTPError(400, "invalid_request", "sortBy must be a list of strings")
+            try:
+                manager._client.apply_sort(sort_by)
+                if view_id is not None:
+                    # encapsulated re-computation if view is active
+                    # Note: original code only does this for view_id is not None
+                    # But if we sort global dataset, existing views might become invalid unless
+                    # they rely on stable indices. Stata indices change on sort.
+                    # The current implementation of create_view computes indices once.
+                    # If we sort, those indices point to different rows! 
+                    # The original code handles this by re-computing view indices on sort.
+                    assert view is not None
+                    obs_indices = manager._client.compute_view_indices(view.filter_expr)
+            except ValueError as e:
+                raise HTTPError(400, "invalid_request", f"Invalid sort: {e}")
+            except RuntimeError as e:
+                raise HTTPError(500, "internal_error", f"Sort failed: {e}")
+
+        arrow_bytes = manager._client.get_arrow_stream(
+            offset=offset,
+            limit=limit,
+            vars=vars_req,
+            include_obs_no=include_obs_no,
+            obs_indices=obs_indices,
+        )
+        return arrow_bytes
+
+    except RuntimeError as e:
+        msg = str(e) or "No data in memory"
+        if "no data" in msg.lower():
+            raise HTTPError(400, "no_data_in_memory", msg)
+        raise HTTPError(500, "internal_error", msg)
+    except ValueError as e:
+        msg = str(e)
+        if "invalid variable" in msg.lower():
+            raise HTTPError(400, "invalid_variable", msg)
+        raise HTTPError(400, "invalid_request", msg)
+    except Exception as e:
+        raise HTTPError(500, "internal_error", str(e))
+

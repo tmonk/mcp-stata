@@ -265,7 +265,8 @@ Call the MCP tool `get_ui_channel()` and parse the JSON:
   "capabilities": {
     "dataBrowser": true,
     "filtering": true,
-    "sorting": true
+    "sorting": true,
+    "arrowStream": true
   }
 }
 ```
@@ -276,6 +277,7 @@ Server-enforced limits (current defaults):
 - **maxVars**: 32,767
 - **maxChars**: 500
 - **maxRequestBytes**: 1,000,000
+- **maxArrowLimit**: 1,000,000 (specific to `/v1/arrow`)
 
 ### Endpoints
 
@@ -287,10 +289,14 @@ All endpoints are under `baseUrl` and require the bearer token.
   - Returns variable metadata (`name`, `type`, `label`, `format`).
 - `POST /v1/page`
   - Returns a page of data for selected variables.
+- `POST /v1/arrow`
+  - Returns a binary Arrow IPC stream (same input as `/v1/page`).
 - `POST /v1/views`
   - Creates a server-side filtered view (handle-based filtering).
 - `POST /v1/views/:viewId/page`
   - Pages within a filtered view.
+- `POST /v1/views/:viewId/arrow`
+  - Returns a binary Arrow IPC stream from a filtered view.
 - `DELETE /v1/views/:viewId`
   - Deletes a view handle.
 - `POST /v1/filters/validate`
