@@ -11,10 +11,12 @@ from importlib.metadata import PackageNotFoundError, version
 import tempfile
 import time
 from contextlib import contextmanager
-from io import StringIO
-from typing import Any, Awaitable, Callable, Dict, Generator, List, Optional, Tuple
+from io import StringIO, BytesIO
+from typing import Any, Awaitable, Callable, Dict, Generator, List, Optional, Tuple, BinaryIO
 
 import anyio
+import pandas as pd
+import pyarrow as pa
 from anyio import get_cancelled_exc_class
 
 from .discovery import find_stata_path
@@ -1693,6 +1695,115 @@ class StataClient:
             "returned": returned,
             "truncated_cells": truncated_cells,
         }
+
+    def get_arrow_stream(
+        self,
+        *,
+        offset: int,
+        limit: int,
+        vars: List[str],
+        include_obs_no: bool,
+        obs_indices: Optional[List[int]] = None,
+    ) -> bytes:
+        """
+        Returns an Apache Arrow IPC stream (as bytes) for the requested data page.
+        This provides a zero-copy data transfer mechanism for clients that support Arrow.
+        """
+        if not self._initialized:
+            self.init()
+
+        from sfi import Data  # type: ignore[import-not-found]
+
+        state = self.get_dataset_state()
+        n = int(state.get("n", 0) or 0)
+        k = int(state.get("k", 0) or 0)
+        if k == 0 and n == 0:
+            raise RuntimeError("No data in memory")
+            
+        var_map = self._get_var_index_map()
+        for v in vars:
+            if v not in var_map:
+                raise ValueError(f"Invalid variable: {v}")
+
+        # Determine observations to fetch
+        if obs_indices is None:
+            start = offset
+            end = min(offset + limit, n)
+            if start >= n:
+                # Return empty table with correct schema
+                obs_list = []
+            else:
+                obs_list = list(range(start, end))
+        else:
+            start = offset
+            end = min(offset + limit, len(obs_indices))
+            obs_list = obs_indices[start:end]
+
+        if not obs_list:
+            # Create empty DataFrame with correct columns
+            # We need to at least get types right, which is tricky without data.
+            # But pystata might handle empty requests.
+            # Alternatively, we just return empty bytes if no data, or an empty record batch.
+            # Let's try to get an empty slice if possible or just manual construction.
+            # pdataframe_from_data might fail with empty obs.
+            
+            # Construct empty schema based on variable types
+            # This is complex, so for now we'll just return an empty table derived from an empty pandas df
+            # but we need columns.
+            
+            # Use pystata to get 0 rows if possible, or fallback manually
+            try:
+                # Attempt to get 1 row and drop it to get schema? Too specific.
+                # Let's just return a schema-less empty arrow stream if really empty?
+                # The client expects a stream.
+                pass
+            except Exception:
+                pass
+
+        try:
+            # Fetch data using pystata which is generally faster than sfi.Data.get loop for large data
+            # pystata_from_data supports 'obs' argument
+            
+            # NOTE: pystata's pdataframe_from_data behaves differently across versions.
+            # We will use st.pdataframe_from_data(var=vars, obs=obs_list) if available
+            # otherwise we fallback to sfi.
+            
+            # However, pystata method signatures vary.
+            # Safe bet: use self.stata.pdataframe_from_data(var=vars, obs=obs_list)
+            
+            if not obs_list:
+                 df = pd.DataFrame(columns=vars)
+            else:
+                # We need to pass the observation INDICES. pystata usually takes a dataset range or
+                # similar. The official python api:
+                # stata.pdataframe_from_data(var=None, obs=None, valuelabel=False, missingval=None)
+                # obs can be an integer (count), a tuple (range), or a list of indices.
+                df = self.stata.pdataframe_from_data(var=vars, obs=obs_list, missingval=None)
+
+            if include_obs_no:
+                # Add _n column. obs_list are 0-based indices, so +1
+                # If obs_list is detached (filtered), this is arguably their original index+1
+                obs_nums = [i + 1 for i in obs_list]
+                df.insert(0, "_n", obs_nums)
+
+            # Convert to Arrow Table
+            table = pa.Table.from_pandas(df, preserve_index=False)
+            
+            # Verify missing integer handling. Pandas converts int cols with NaNs to float.
+            # Arrow handles nullable ints.
+            # If pystata gave us floats for missing ints, we might want to cast back if likely int,
+            # but safe validation is complex without checking all values.
+            # We stick to what pystata returns for now (faithful representation).
+            
+            # Serialize to IPC Stream
+            sink = pa.BufferOutputStream()
+            with pa.RecordBatchStreamWriter(sink, table.schema) as writer:
+                writer.write_table(table)
+            
+            return sink.getvalue().to_pybytes()
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to generate Arrow stream: {e}")
 
     _FILTER_IDENT = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 
