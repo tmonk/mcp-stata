@@ -1,0 +1,14 @@
+{
+    "name": "mcp-stata-benchmark",
+    "version": "1.0.0",
+    "description": "E2E Benchmark for Stata MCP HTTP Arrow Stream",
+    "main": "benchmark.js",
+    "scripts": {
+        "test": "node benchmark.js"
+    },
+    "dependencies": {
+        "apache-arrow": "^18.0.0",
+        "node-fetch": "^3.3.2"
+    },
+    "type": "module"
+}

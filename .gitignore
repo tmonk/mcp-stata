@@ -16,3 +16,4 @@ py.typed
 test_external_do_file_full.py
 mcp.json
 scripts/test.do
+scripts/js_benchmark/node_modules/
