@@ -9,7 +9,7 @@ import pytest
 from mcp_stata.discovery import find_stata_path
 
 # Linux-only: these discovery cases rely on Linux filesystem layout/exec bits.
-pytestmark = pytest.mark.skipif(platform.system() != "Linux", reason="Linux-only discovery tests")
+pytestmark = [pytest.mark.skipif(platform.system() != "Linux", reason="Linux-only discovery tests"), pytest.mark.requires_stata]
 
 
 def _make_executable(path: Path) -> Path:

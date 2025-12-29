@@ -23,6 +23,8 @@ class TestArrowUnit:
         
         # We need to mock sfi.Data being imported inside methods
         with patch.dict(sys.modules, {"sfi": MagicMock(Data=mock_data_ns)}):
+            # Mock Data.get to return valid data (nested list of rows)
+            mock_data_ns.get.return_value = [[1, "a"], [2, "b"]]
             # Mock get_dataset_state to return non-empty
             with patch.object(client, "get_dataset_state", return_value={"n": 10, "k": 2}):
                 with patch.object(client, "_get_var_index_map", return_value={"v1": 0, "v2": 1}):
@@ -41,7 +43,7 @@ class TestArrowUnit:
                     # Verify calling arguments
                     # Note: we can't easily check 'obs' arg if it was a list object, 
                     # but we can check it was called.
-                    client.stata.pdataframe_from_data.assert_called_once()
+                    mock_data_ns.get.assert_called_once()
                     
                     # Verify output is valid Arrow stream
                     reader = pa.ipc.open_stream(arrow_bytes)
@@ -55,6 +57,7 @@ class TestArrowUnit:
 
     def test_get_arrow_stream_with_obs_no(self, client):
         mock_data_ns = MagicMock()
+        mock_data_ns.get.return_value = [[10.5]]
         
         with patch.dict(sys.modules, {"sfi": MagicMock(Data=mock_data_ns)}):
             with patch.object(client, "get_dataset_state", return_value={"n": 10, "k": 1}):

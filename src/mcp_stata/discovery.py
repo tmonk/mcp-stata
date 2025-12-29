@@ -243,6 +243,7 @@ def find_stata_path() -> Tuple[str, str]:
     if raw_stata_path:
         try:
             path = _normalize_env_path(raw_stata_path, system)
+            path = _resolve_windows_host_path(path, system)
 
             if os.path.isdir(path):
                 candidates_in_dir = []
@@ -251,6 +252,21 @@ def find_stata_path() -> Tuple[str, str]:
                         candidate = os.path.join(path, exe)
                         if _is_executable(candidate, system, use_retry=True):
                             candidates_in_dir.append((candidate, edition))
+                elif system == "Darwin" or (system != "Windows" and path.endswith(".app")):
+                    # macOS app bundle logic
+                    sub_path = os.path.join(path, "Contents", "MacOS")
+                    if os.path.isdir(sub_path):
+                        for binary, edition in [("stata-mp", "mp"), ("stata-se", "se"), ("stata", "be")]:
+                            candidate = os.path.join(sub_path, binary)
+                            if _is_executable(candidate, system, use_retry=True):
+                                candidates_in_dir.append((candidate, edition))
+                    
+                    # Also try direct if not in a bundle
+                    if not candidates_in_dir:
+                        for binary, edition in linux_binaries:
+                            candidate = os.path.join(path, binary)
+                            if _is_executable(candidate, system, use_retry=True):
+                                candidates_in_dir.append((candidate, edition))
                 else:
                     for binary, edition in linux_binaries:
                         candidate = os.path.join(path, binary)
