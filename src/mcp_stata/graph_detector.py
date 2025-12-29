@@ -95,15 +95,21 @@ class GraphCreationDetector:
         try:
             # Use pystata to get graph list directly
             if self._stata_client and hasattr(self._stata_client, 'list_graphs'):
-                return self._stata_client.list_graphs()
+                return self._stata_client.list_graphs(force_refresh=True)
             else:
                 # Fallback to sfi Macro interface - only if stata is available
                 if self._stata_client and hasattr(self._stata_client, 'stata'):
                     try:
                         from sfi import Macro
-                        self._stata_client.stata.run("quietly graph dir, memory")
-                        self._stata_client.stata.run("global mcp_graph_list `r(list)'")
-                        graph_list_str = Macro.getGlobal("mcp_graph_list")
+                        hold_name = f"_mcp_detector_hold_{int(time.time() * 1000 % 1000000)}"
+                        self._stata_client.stata.run(f"capture _return hold {hold_name}", echo=False)
+                        try:
+                            self._stata_client.stata.run("macro define mcp_graph_list \"\"", echo=False)
+                            self._stata_client.stata.run("quietly graph dir, memory", echo=False)
+                            self._stata_client.stata.run("macro define mcp_graph_list `r(list)'", echo=False)
+                            graph_list_str = Macro.getGlobal("mcp_graph_list")
+                        finally:
+                            self._stata_client.stata.run(f"capture _return restore {hold_name}", echo=False)
                         return graph_list_str.split() if graph_list_str else []
                     except ImportError:
                         logger.warning("sfi.Macro not available for fallback graph detection")

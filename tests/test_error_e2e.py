@@ -130,6 +130,9 @@ capture noisily regress price nonexistent_var
         for i in range(1000):
             content += f'display "cleanup operation {i}"\n'
         
+        # Finally exit with the error code to simulate a failed command
+        content += "exit 111\n"
+        
         dofile.write_text(content)
         
         logs = []

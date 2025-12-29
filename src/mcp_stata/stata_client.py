@@ -1,4 +1,3 @@
-import base64
 import json
 import logging
 import os
@@ -13,10 +12,11 @@ import time
 from contextlib import contextmanager
 from io import StringIO, BytesIO
 from typing import Any, Awaitable, Callable, Dict, Generator, List, Optional, Tuple, BinaryIO
+import platform
+import sys
+from typing import Optional
 
 import anyio
-import pandas as pd
-import pyarrow as pa
 from anyio import get_cancelled_exc_class
 
 from .discovery import find_stata_path
@@ -36,6 +36,29 @@ from .graph_detector import StreamingGraphCache
 
 logger = logging.getLogger("mcp_stata")
 
+_POLARS_AVAILABLE: Optional[bool] = None
+
+def _check_polars_available() -> bool:
+    """
+    Check if Polars can be safely imported.
+    Must detect problematic platforms BEFORE attempting import,
+    since the crash is a fatal signal, not a catchable exception.
+    """
+    if sys.platform == "win32" and platform.machine().lower() in ("arm64", "aarch64"):
+        return False
+    
+    try:
+        import polars  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _get_polars_available() -> bool:
+    global _POLARS_AVAILABLE
+    if _POLARS_AVAILABLE is None:
+        _POLARS_AVAILABLE = _check_polars_available()
+    return _POLARS_AVAILABLE
 
 # ============================================================================
 # MODULE-LEVEL DISCOVERY CACHE
@@ -118,7 +141,7 @@ class StataClient:
 
     def __new__(cls):
         inst = super(StataClient, cls).__new__(cls)
-        inst._exec_lock = threading.Lock()
+        inst._exec_lock = threading.RLock()
         inst._is_executing = False
         return inst
 
@@ -166,15 +189,13 @@ class StataClient:
                 self.stata.run(cmd)
             # After context, read smcl_path for raw SMCL output
         """
-        # Create temp file for SMCL output
-        smcl_file = tempfile.NamedTemporaryFile(
-            prefix="mcp_smcl_",
-            suffix=".smcl",
-            delete=False,
-            mode="w",
-        )
-        smcl_path = smcl_file.name
-        smcl_file.close()
+        # Create temp file path for SMCL output (remove immediately to avoid Windows replace locks)
+        smcl_fd, smcl_path = tempfile.mkstemp(prefix="mcp_smcl_", suffix=".smcl")
+        os.close(smcl_fd)
+        try:
+            os.unlink(smcl_path)
+        except Exception:
+            pass
         
         # Unique log name to avoid collisions with user logs
         log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
@@ -263,19 +284,19 @@ class StataClient:
             
         # 1. Primary check: SMCL search tag {search r(N), ...}
         # This is the most authoritative interactive indicator
-        match = re.search(r'\{search r\((\d+)\)', smcl_content)
-        if match:
+        matches = list(re.finditer(r'\{search r\((\d+)\)', smcl_content))
+        if matches:
             try:
-                return int(match.group(1))
+                return int(matches[-1].group(1))
             except Exception:
                 pass
 
         # 2. Secondary check: Standalone r(N); pattern
         # This appears at the end of command blocks
-        match = re.search(r'(?<!\w)r\((\d+)\);', smcl_content)
-        if match:
+        matches = list(re.finditer(r'(?<!\w)r\((\d+)\);?', smcl_content))
+        if matches:
             try:
-                return int(match.group(1))
+                return int(matches[-1].group(1))
             except Exception:
                 pass
                 
@@ -377,6 +398,10 @@ class StataClient:
         if self._initialized:
             return
 
+        # Suppress any non-UTF8 banner output from PyStata on stdout, which breaks MCP stdio transport
+        from contextlib import redirect_stdout, redirect_stderr
+        devnull = open(os.devnull, "w", encoding="utf-8", errors="ignore")
+
         try:
             import stata_setup
             
@@ -419,7 +444,8 @@ class StataClient:
             success = False
             for path in candidates:
                 try:
-                    stata_setup.config(path, edition)
+                    with redirect_stdout(devnull), redirect_stderr(devnull):
+                        stata_setup.config(path, edition)
                     success = True
                     logger.debug("stata_setup.config succeeded with path: %s", path)
                     break
@@ -435,7 +461,10 @@ class StataClient:
             # Cache the binary path for later use (e.g., PNG export on Windows)
             self._stata_exec_path = os.path.abspath(stata_exec_path)
 
-            from pystata import stata  # type: ignore[import-not-found]
+            with redirect_stdout(devnull), redirect_stderr(devnull):
+                from pystata import stata  # type: ignore[import-not-found]
+                # Warm up the engine and swallow any late splash screen output
+                stata.run("display 1", echo=False)
             self.stata = stata
             self._initialized = True
             
@@ -456,6 +485,11 @@ class StataClient:
                 f"Failed to import stata_setup or pystata: {e}. "
                 "Ensure they are installed (pip install pystata stata-setup)."
             ) from e
+        finally:
+            try:
+                devnull.close()
+            except Exception:
+                pass
 
     def _make_valid_stata_name(self, name: str) -> str:
         """Create a valid Stata name (<=32 chars, [A-Za-z_][A-Za-z0-9_]*)."""
@@ -525,18 +559,19 @@ class StataClient:
             return None
             
         # 1. Primary check: 'search r(N)' pattern (SMCL tag potentially stripped)
-        match = re.search(r'search r\((\d+)\)', text)
-        if match:
+        matches = list(re.finditer(r'search r\((\d+)\)', text))
+        if matches:
             try:
-                return int(match.group(1))
+                return int(matches[-1].group(1))
             except Exception:
                 pass
 
         # 2. Secondary check: Standalone r(N); pattern
-        match = re.search(r'(?<!\w)r\((\d+)\);', text)
-        if match:
+        # This appears at the end of command blocks
+        matches = list(re.finditer(r'(?<!\w)r\((\d+)\);?', text))
+        if matches:
             try:
-                return int(match.group(1))
+                return int(matches[-1].group(1))
             except Exception:
                 pass
                 
@@ -648,6 +683,7 @@ class StataClient:
             with open(path, "rb") as f:
                 f.seek(0, os.SEEK_END)
                 size = f.tell()
+
                 if size <= 0:
                     return ""
                 read_size = min(size, max_chars)
@@ -656,6 +692,68 @@ class StataClient:
             return data.decode("utf-8", errors="replace")
         except Exception:
             return ""
+
+    def _run_plain_capture(self, code: str) -> str:
+        """
+        Run a Stata command while capturing output using a named SMCL log.
+        This is the most reliable way to capture output (like return list)
+        without interfering with user logs or being affected by stdout redirection issues.
+        """
+        if not self._initialized:
+            self.init()
+
+        with self._exec_lock:
+            hold_name = f"mcp_hold_{uuid.uuid4().hex[:8]}"
+            # Hold results BEFORE opening the capture log
+            self.stata.run(f"capture _return hold {hold_name}", echo=False)
+            
+            try:
+                with self._smcl_log_capture() as (log_name, smcl_path):
+                    # Restore results INSIDE the capture log so return list can see them
+                    self.stata.run(f"capture _return restore {hold_name}", echo=False)
+                    try:
+                        self.stata.run(code, echo=True)
+                    except Exception:
+                        pass
+            except Exception:
+                # Cleanup hold if log capture failed to open
+                self.stata.run(f"capture _return drop {hold_name}", echo=False)
+                content = ""
+                smcl_path = None
+            else:
+                # Read SMCL content and convert to text
+                content = self._read_smcl_file(smcl_path)
+            # Remove the temp file
+            try:
+                os.unlink(smcl_path)
+            except Exception:
+                pass
+            
+            return self._smcl_to_text(content)
+
+    def _count_do_file_lines(self, path: str) -> int:
+        """
+        Count the number of executable lines in a .do file for progress inference.
+
+        Blank lines and comment-only lines (starting with * or //) are ignored.
+        """
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except Exception:
+            return 0
+
+        total = 0
+        for line in lines:
+            s = line.strip()
+            if not s:
+                continue
+            if s.startswith("*"):
+                continue
+            if s.startswith("//"):
+                continue
+            total += 1
+        return total
 
     def _smcl_to_text(self, smcl: str) -> str:
         """Convert simple SMCL markup into plain text for LLM-friendly help."""
@@ -724,14 +822,12 @@ class StataClient:
                 from sfi import Scalar, SFIToolkit
                 with self._temp_cwd(cwd):
                     # Create SMCL log for authoritative output capture
-                    smcl_file = tempfile.NamedTemporaryFile(
-                        prefix="mcp_smcl_",
-                        suffix=".smcl",
-                        delete=False,
-                        mode="w",
-                    )
-                    smcl_path = smcl_file.name
-                    smcl_file.close()
+                    smcl_fd, smcl_path = tempfile.mkstemp(prefix="mcp_smcl_", suffix=".smcl")
+                    os.close(smcl_fd)
+                    try:
+                        os.unlink(smcl_path)
+                    except Exception:
+                        pass
                     log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
                     
                     # Open SMCL log BEFORE output redirection
@@ -746,6 +842,10 @@ class StataClient:
                                 # Run the user code
                                 self.stata.run(code, echo=echo)
                                 
+                                # Hold results IMMEDIATELY to prevent clobbering by cleanup
+                                self._hold_name = f"mcp_hold_{uuid.uuid4().hex[:8]}"
+                                self.stata.run(f"capture _return hold {self._hold_name}", echo=False)
+                                
                             finally:
                                 if trace:
                                     try:
@@ -757,8 +857,14 @@ class StataClient:
                         try:
                             self.stata.run(f'capture log close {log_name}', echo=False)
                         except Exception:
+                            pass
+
+                        # Restore and capture results while still inside the lock
+                        if hasattr(self, '_hold_name'):
                             try:
-                                self.stata.run(f'capture log close {log_name}', echo=False)
+                                self.stata.run(f"capture _return restore {self._hold_name}", echo=False)
+                                self._last_results = self.get_stored_results(force_fresh=True)
+                                delattr(self, '_hold_name')
                             except Exception:
                                 pass
 
@@ -780,11 +886,13 @@ class StataClient:
         stdout_content = output_buffer.getvalue()
         stderr_content = error_buffer.getvalue()
 
-        # If RC wasn't captured (exception path), try to parse from SMCL
-        if rc == 0 and sys_error:
+        # If RC wasn't captured or is generic, try to parse from SMCL
+        if rc in (0, 1, -1) and smcl_content:
             parsed_rc = self._parse_rc_from_smcl(smcl_content)
             if parsed_rc is not None and parsed_rc != 0:
                 rc = parsed_rc
+            elif rc == -1:
+                rc = 0
 
         if rc != 0:
             if sys_error:
@@ -803,15 +911,23 @@ class StataClient:
             )
             stderr_content = context
 
-        return CommandResponse(
+        resp = CommandResponse(
             command=code,
             rc=rc,
             stdout=stdout_content,
             stderr=stderr_content,
             success=(rc == 0),
             error=error_envelope,
-            smcl_output=smcl_content,  # Include raw SMCL in response
+            log_path=smcl_path if smcl_path else None
         )
+
+        # Capture results immediately after execution, INSIDE the lock
+        try:
+            self._last_results = self.get_stored_results(force_fresh=True)
+        except Exception:
+            self._last_results = None
+
+        return resp
         
     def _exec_no_capture(self, code: str, echo: bool = False, trace: bool = False) -> CommandResponse:
         """Execute Stata code while leaving stdout/stderr alone."""
@@ -881,6 +997,7 @@ class StataClient:
             self.init()
 
         code = self._maybe_rewrite_graph_name_in_command(code)
+        total_lines = 0  # Commands (not do-files) do not have line-based progress
 
         if cwd is not None and not os.path.isdir(cwd):
             return CommandResponse(
@@ -923,25 +1040,31 @@ class StataClient:
         tail = TailBuffer(max_chars=200000 if trace else 20000)
         tee = FileTeeIO(log_file, tail)
 
-        # Create SMCL log for authoritative output capture
-        smcl_file = tempfile.NamedTemporaryFile(
-            prefix="mcp_smcl_",
-            suffix=".smcl",
-            delete=False,
-            mode="w",
-        )
-        smcl_path = smcl_file.name
-        smcl_file.close()
+        # Create SMCL log path for authoritative output capture
+        smcl_fd, smcl_path = tempfile.mkstemp(prefix="mcp_smcl_", suffix=".smcl")
+        os.close(smcl_fd)
         smcl_log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
 
         # Inform the MCP client immediately where to read/tail the output.
         await notify_log(json.dumps({"event": "log_path", "path": smcl_path}))
 
         rc = -1
+        path_for_stata = code.replace("\\", "/")
+        command = f'{path_for_stata}'
+
+        # Capture initial graph state BEFORE execution starts
+        if graph_cache:
+            try:
+                graph_cache._initial_graphs = set(self.list_graphs())
+                logger.debug(f"Initial graph state captured: {graph_cache._initial_graphs}")
+            except Exception as e:
+                logger.debug(f"Failed to capture initial graph state: {e}")
+                graph_cache._initial_graphs = set()
 
         def _run_blocking() -> None:
             nonlocal rc, exc
             with self._exec_lock:
+                # Set execution flag to prevent recursive Stata calls
                 self._is_executing = True
                 try:
                     from sfi import Scalar, SFIToolkit # Import SFI tools
@@ -954,17 +1077,26 @@ class StataClient:
                                 try:
                                     if trace:
                                         self.stata.run("set trace on")
-                                    ret = self.stata.run(code, echo=echo)
+                                    ret = self.stata.run(command, echo=echo)
+                                    
+                                    # Hold results IMMEDIATELY to prevent clobbering by cleanup
+                                    self._hold_name_stream = f"mcp_hold_{uuid.uuid4().hex[:8]}"
+                                    self.stata.run(f"capture _return hold {self._hold_name_stream}", echo=False)
                                     # Some PyStata builds return output as a string rather than printing.
                                     if isinstance(ret, str) and ret:
                                         try:
                                             tee.write(ret)
                                         except Exception:
                                             pass
+                                    try:
+                                        rc = self._get_rc_from_scalar(Scalar)
+                                    except Exception:
+                                        pass
 
                                 except Exception as e:
                                     exc = e
-                                    if rc == 0: rc = 1
+                                    if rc in (-1, 0):
+                                        rc = 1
                                 finally:
                                     if trace:
                                         try:
@@ -976,26 +1108,38 @@ class StataClient:
                             try:
                                 self.stata.run(f'capture log close {smcl_log_name}', echo=False)
                             except Exception:
+                                pass
+
+                            # Restore and capture results while still inside the lock
+                            if hasattr(self, '_hold_name_stream'):
                                 try:
-                                    self.stata.run(f'capture log close {smcl_log_name}', echo=False)
+                                    self.stata.run(f"capture _return restore {self._hold_name_stream}", echo=False)
+                                    self._last_results = self.get_stored_results(force_fresh=True)
+                                    delattr(self, '_hold_name_stream')
                                 except Exception:
                                     pass
                 finally:
+                    # Clear execution flag
                     self._is_executing = False
 
         done = anyio.Event()
 
         async def _monitor_and_stream_log() -> None:
+            """Monitor log file and stream chunks for both display and progress tracking."""
             last_pos = 0
+            # Wait for Stata to create the SMCL file (we removed the placeholder to avoid locks)
+            while not done.is_set() and not os.path.exists(smcl_path):
+                await anyio.sleep(0.05)
             try:
-                # Read from the SMCL file where Stata is actually writing
                 with open(smcl_path, "r", encoding="utf-8", errors="replace") as f:
                     while not done.is_set():
                         f.seek(last_pos)
                         chunk = f.read()
                         if chunk:
                             last_pos = f.tell()
+                            # Stream the actual log content for display
                             await notify_log(chunk)
+                            # Also track progress if needed
                             if total_lines > 0 and notify_progress:
                                 await on_chunk_for_progress(chunk)
                         await anyio.sleep(0.05)
@@ -1005,6 +1149,8 @@ class StataClient:
                     chunk = f.read()
                     if chunk:
                         await notify_log(chunk)
+                        if total_lines > 0 and notify_progress:
+                            await on_chunk_for_progress(chunk)
             except Exception as e:
                 logger.warning(f"Log streaming failed: {e}")
                 return
@@ -1013,12 +1159,14 @@ class StataClient:
             tg.start_soon(_monitor_and_stream_log)
 
             if notify_progress is not None:
-                await notify_progress(0, None, "Running Stata command")
+                if total_lines > 0:
+                    await notify_progress(0, float(total_lines), f"Executing command: 0/{total_lines}")
+                else:
+                    await notify_progress(0, None, "Running command")
 
             try:
                 await anyio.to_thread.run_sync(_run_blocking, abandon_on_cancel=True)
             except get_cancelled_exc_class():
-                # Best-effort cancellation: signal Stata to break, wait briefly, then propagate.
                 self._request_break_in()
                 await self._wait_for_stata_stop()
                 raise
@@ -1029,36 +1177,65 @@ class StataClient:
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path)
 
-        # Cache detected graphs after command completes
-        if graph_cache:
+        # Robust post-execution graph detection and caching
+        if graph_cache and graph_cache.auto_cache:
             try:
-                # Use the enhanced pystata-integrated caching method
-                if hasattr(graph_cache, 'cache_detected_graphs_with_pystata'):
-                    cached_graphs = await graph_cache.cache_detected_graphs_with_pystata()
-                else:
-                    cached_graphs = await graph_cache.cache_detected_graphs()
-                    
+                cached_graphs = []
+                initial_graphs = getattr(graph_cache, '_initial_graphs', set())
+                current_graphs = set(self.list_graphs())
+                new_graphs = current_graphs - initial_graphs - graph_cache._cached_graphs
+
+                if new_graphs:
+                    logger.info(f"Detected {len(new_graphs)} new graph(s): {sorted(new_graphs)}")
+
+                for graph_name in new_graphs:
+                    try:
+                        cache_result = await anyio.to_thread.run_sync(
+                            self.cache_graph_on_creation,
+                            graph_name
+                        )
+                        if cache_result:
+                            cached_graphs.append(graph_name)
+                            graph_cache._cached_graphs.add(graph_name)
+                        
+                        for callback in graph_cache._cache_callbacks:
+                            try:
+                                await anyio.to_thread.run_sync(callback, graph_name, cache_result)
+                            except Exception: pass
+                    except Exception as e:
+                        logger.error(f"Error caching graph {graph_name}: {e}")
+
+                # Notify progress if graphs were cached
                 if cached_graphs and notify_progress:
-                    await notify_progress(1, 1, f"Command completed. Cached {len(cached_graphs)} graphs: {', '.join(cached_graphs)}")
+                    await notify_progress(
+                        float(total_lines) if total_lines > 0 else 1,
+                        float(total_lines) if total_lines > 0 else 1,
+                        f"Command completed. Cached {len(cached_graphs)} graph(s): {', '.join(cached_graphs)}"
+                    )
             except Exception as e:
-                logger.warning(f"Failed to cache detected graphs: {e}")
+                logger.error(f"Post-execution graph detection failed: {e}")
 
         tail_text = tail.get_value()
-        log_tail = self._read_log_tail_smart(log_path, rc, trace)
+        # Use smart log tail to find error if it's far up
+        log_tail = self._read_log_tail_smart(smcl_path, rc, trace)
         if log_tail and len(log_tail) > len(tail_text):
             tail_text = log_tail
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
         
         # Use SMCL content as primary source for RC detection
-        if rc == -1 and not exc:
+        if not exc or rc in (1, -1):
             parsed_rc = self._parse_rc_from_smcl(smcl_content)
-            if parsed_rc is not None:
+            if parsed_rc is not None and parsed_rc != 0:
                 rc = parsed_rc
-            else:
-                rc = 0  # Default to success if no error found
+            elif rc in (-1, 0, 1): # Also check text if rc is generic 1 or unset
+                parsed_rc_text = self._parse_rc_from_text(combined)
+                if parsed_rc_text is not None:
+                    rc = parsed_rc_text
+                elif rc == -1:
+                    rc = 0 # Default to success if no error trace found
 
         success = (rc == 0 and exc is None)
-        stderr_out = None
+        stderr_final = None
         error = None
         
         if not success:
@@ -1068,34 +1245,33 @@ class StataClient:
             else:
                 # Fallback to combined log
                 msg, context = self._extract_error_and_context(combined, rc)
-            
+
             error = ErrorEnvelope(
                 message=msg,
                 context=context,
                 rc=rc,
-                command=code,
+                command=command,
                 log_path=log_path,
                 snippet=smcl_content[-800:] if smcl_content else combined[-800:],
                 smcl_output=smcl_content,
             )
-            stderr_out = context
+            stderr_final = context
 
         duration = time.time() - start_time
-        code_preview = code.replace("\n", "\\n")
         logger.info(
             "stata.run(stream) rc=%s success=%s trace=%s duration_ms=%.2f code_preview=%s",
             rc,
             success,
             trace,
             duration * 1000,
-            code_preview[:120],
+            code.replace("\n", "\\n")[:120],
         )
 
         result = CommandResponse(
             command=code,
             rc=rc,
             stdout="",
-            stderr=stderr_out,
+            stderr=stderr_final,
             log_path=log_path,
             success=success,
             error=error,
@@ -1106,25 +1282,6 @@ class StataClient:
             await notify_progress(1, 1, "Finished")
 
         return result
-
-    def _count_do_file_lines(self, path: str) -> int:
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                lines = f.read().splitlines()
-        except Exception:
-            return 0
-
-        total = 0
-        for line in lines:
-            s = line.strip()
-            if not s:
-                continue
-            if s.startswith("*"):
-                continue
-            if s.startswith("//"):
-                continue
-            total += 1
-        return total
 
     async def run_do_file_streaming(
     self,
@@ -1225,15 +1382,9 @@ class StataClient:
         tail = TailBuffer(max_chars=200000 if trace else 20000)
         tee = FileTeeIO(log_file, tail)
 
-        # Create SMCL log for authoritative output capture
-        smcl_file = tempfile.NamedTemporaryFile(
-            prefix="mcp_smcl_",
-            suffix=".smcl",
-            delete=False,
-            mode="w",
-        )
-        smcl_path = smcl_file.name
-        smcl_file.close()
+        # Create SMCL log path for authoritative output capture (placeholder removed to avoid locks)
+        smcl_fd, smcl_path = tempfile.mkstemp(prefix="mcp_smcl_", suffix=".smcl")
+        os.close(smcl_fd)
         smcl_log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
 
         # Inform the MCP client immediately where to read/tail the output.
@@ -1269,27 +1420,44 @@ class StataClient:
                                     if trace:
                                         self.stata.run("set trace on")
                                     ret = self.stata.run(command, echo=echo)
+                                    
+                                    # Hold results IMMEDIATELY to prevent clobbering by cleanup
+                                    self._hold_name_do = f"mcp_hold_{uuid.uuid4().hex[:8]}"
+                                    self.stata.run(f"capture _return hold {self._hold_name_do}", echo=False)
                                     # Some PyStata builds return output as a string rather than printing.
                                     if isinstance(ret, str) and ret:
                                         try:
                                             tee.write(ret)
                                         except Exception:
                                             pass
+                                    try:
+                                        rc = self._get_rc_from_scalar(Scalar)
+                                    except Exception:
+                                        pass
 
                                 except Exception as e:
                                     exc = e
-                                    if rc == 0: rc = 1
+                                    if rc in (-1, 0):
+                                        rc = 1
                                 finally:
                                     if trace:
-                                        try: self.stata.run("set trace off")
-                                        except: pass
+                                        try:
+                                            self.stata.run("set trace off")
+                                        except Exception:
+                                            pass
                         finally:
                             # Close SMCL log AFTER output redirection
                             try:
                                 self.stata.run(f'capture log close {smcl_log_name}', echo=False)
                             except Exception:
+                                pass
+
+                            # Restore and capture results while still inside the lock
+                            if hasattr(self, '_hold_name_do'):
                                 try:
-                                    self.stata.run(f'capture log close {smcl_log_name}', echo=False)
+                                    self.stata.run(f"capture _return restore {self._hold_name_do}", echo=False)
+                                    self._last_results = self.get_stored_results(force_fresh=True)
+                                    delattr(self, '_hold_name_do')
                                 except Exception:
                                     pass
                 finally:
@@ -1301,6 +1469,9 @@ class StataClient:
         async def _monitor_and_stream_log() -> None:
             """Monitor log file and stream chunks for both display and progress tracking."""
             last_pos = 0
+            # Wait for Stata to create the SMCL file (placeholder removed to avoid locks)
+            while not done.is_set() and not os.path.exists(smcl_path):
+                await anyio.sleep(0.05)
             try:
                 with open(smcl_path, "r", encoding="utf-8", errors="replace") as f:
                     while not done.is_set():
@@ -1393,12 +1564,16 @@ class StataClient:
         combined = (tail_text or "") + (f"\n{exc}" if exc else "")
         
         # Use SMCL content as primary source for RC detection
-        if rc == -1 and not exc:
+        if not exc or rc in (1, -1):
             parsed_rc = self._parse_rc_from_smcl(smcl_content)
-            if parsed_rc is not None:
+            if parsed_rc is not None and parsed_rc != 0:
                 rc = parsed_rc
-            else:
-                rc = 0  # Default to success if no error found
+            elif rc in (-1, 0, 1):
+                parsed_rc_text = self._parse_rc_from_text(combined)
+                if parsed_rc_text is not None:
+                    rc = parsed_rc_text
+                elif rc == -1:
+                    rc = 0  # Default to success if no error found
 
         success = (rc == 0 and exc is None)
         stderr_final = None
@@ -1707,16 +1882,20 @@ class StataClient:
     ) -> bytes:
         """
         Returns an Apache Arrow IPC stream (as bytes) for the requested data page.
-        This provides a zero-copy data transfer mechanism for clients that support Arrow.
-        
-        Optimized implementation using Polars and column-wise extraction via sfi.Data.
+        Uses Polars if available (faster), falls back to Pandas.
         """
         if not self._initialized:
             self.init()
-
-        import polars as pl
+        
+        import pyarrow as pa
         from sfi import Data  # type: ignore[import-not-found]
-
+        
+        use_polars = _get_polars_available()
+        if use_polars:
+            import polars as pl
+        else:
+            import pandas as pd
+        
         state = self.get_dataset_state()
         n = int(state.get("n", 0) or 0)
         k = int(state.get("k", 0) or 0)
@@ -1727,59 +1906,50 @@ class StataClient:
         for v in vars:
             if v not in var_map:
                 raise ValueError(f"Invalid variable: {v}")
-
+        
         # Determine observations to fetch
         if obs_indices is None:
             start = offset
             end = min(offset + limit, n)
-            if start >= n:
-                obs_list = []
-            else:
-                obs_list = list(range(start, end))
+            obs_list = list(range(start, end)) if start < n else []
         else:
             start = offset
             end = min(offset + limit, len(obs_indices))
             obs_list = obs_indices[start:end]
-
+        
         try:
             if not obs_list:
                 # Empty schema-only table
-                # We need to get types to create correct schema
-                schema_cols = {}
-                if include_obs_no:
-                    schema_cols["_n"] = pl.Int64
-                
-                # We can try to infer types from Stata
-                for v in vars:
-                    # simplistic fallback for empty
-                    schema_cols[v] = pl.Utf8 
-                
-                df = pl.DataFrame(schema=schema_cols)
-                
+                if use_polars:
+                    schema_cols = {}
+                    if include_obs_no:
+                        schema_cols["_n"] = pl.Int64
+                    for v in vars:
+                        schema_cols[v] = pl.Utf8
+                    table = pl.DataFrame(schema=schema_cols).to_arrow()
+                else:
+                    columns = {}
+                    if include_obs_no:
+                        columns["_n"] = pa.array([], type=pa.int64())
+                    for v in vars:
+                        columns[v] = pa.array([], type=pa.string())
+                    table = pa.table(columns)
             else:
-                # Optimized Bulk Extraction
-                # sfi.Data.get(var, obs) with a list of variables returns a list of lists (rows).
-                # This is extremely efficiently handled by matching it to Polars' row-oriented construction.
-                # Benchmark (1000x1000): 0.07s vs 0.14s (Pandas) vs 3.1s (Loop SFI).
-                
                 # Fetch all data in one C-call
                 raw_data = Data.get(var=vars, obs=obs_list, valuelabel=False)
                 
-                # Construct DataFrame
-                # We specify orient='row' explicitly, though standard list-of-lists implies it.
-                # Schema is passed to ensure column names and order.
-                # Polars will infer types from the python objects (int, float, str, None).
-                df = pl.DataFrame(raw_data, schema=vars, orient="row")
-
-                if include_obs_no:
-                     # Add _n column efficiently
-                    obs_nums = [i + 1 for i in obs_list]
-                    df = df.with_columns(pl.Series("_n", obs_nums, dtype=pl.Int64).alias("_n"))
-                    # Reorder to put _n first
-                    df = df.select(["_n"] + vars)
-
-            # Convert to Arrow Table
-            table = df.to_arrow()
+                if use_polars:
+                    df = pl.DataFrame(raw_data, schema=vars, orient="row")
+                    if include_obs_no:
+                        obs_nums = [i + 1 for i in obs_list]
+                        df = df.with_columns(pl.Series("_n", obs_nums, dtype=pl.Int64))
+                        df = df.select(["_n"] + vars)
+                    table = df.to_arrow()
+                else:
+                    df = pd.DataFrame(raw_data, columns=vars)
+                    if include_obs_no:
+                        df.insert(0, "_n", [i + 1 for i in obs_list])
+                    table = pa.Table.from_pandas(df, preserve_index=False)
             
             # Serialize to IPC Stream
             sink = pa.BufferOutputStream()
@@ -1787,7 +1957,7 @@ class StataClient:
                 writer.write_table(table)
             
             return sink.getvalue().to_pybytes()
-
+            
         except Exception as e:
             raise RuntimeError(f"Failed to generate Arrow stream: {e}")
 
@@ -1979,15 +2149,21 @@ class StataClient:
 
         # Cache miss or expired, fetch fresh data
         try:
-            # 'graph dir' returns list in r(list)
-            # We need to ensure we run it quietly so we don't spam.
-            self.stata.run("quietly graph dir, memory")
+            # Preservation of r() results is critical because this can be called
+            # automatically after every user command (e.g., during streaming).
+            import time
+            hold_name = f"_mcp_ghold_{int(time.time() * 1000 % 1000000)}"
+            self.stata.run(f"capture _return hold {hold_name}", echo=False)
+            
+            try:
+                self.stata.run("macro define mcp_graph_list \"\"", echo=False)
+                self.stata.run("quietly graph dir, memory", echo=False)
+                from sfi import Macro  # type: ignore[import-not-found]
+                self.stata.run("macro define mcp_graph_list `r(list)'", echo=False)
+                graph_list_str = Macro.getGlobal("mcp_graph_list")
+            finally:
+                self.stata.run(f"capture _return restore {hold_name}", echo=False)
 
-            # Accessing r-class results in Python can be tricky via pystata's run command.
-            # We stash the result in a global macro that python sfi can easily read.
-            from sfi import Macro  # type: ignore[import-not-found]
-            self.stata.run("global mcp_graph_list `r(list)'")
-            graph_list_str = Macro.getGlobal("mcp_graph_list")
             raw_list = graph_list_str.split() if graph_list_str else []
 
             # Map internal Stata names back to user-facing names when we have an alias.
@@ -2188,73 +2364,77 @@ class StataClient:
                     logger.warning("SMCL to Markdown failed, falling back to plain text: %s", parse_err)
                     return self._smcl_to_text(smcl)
             except Exception as e:
-                return f"Error reading help file at {fn}: {e}"
+                logger.warning("Help file read failed for %s: %s", topic, e)
 
-        # Fallback to URL if file not found
-        return f"Help file for '{topic}' not found. Please consult: https://www.stata.com/help.cgi?{topic}"
+        # If no help file found, return a fallback message
+        return f"Help file for '{topic}' not found."
 
-    def get_stored_results(self) -> Dict[str, Any]:
-        """Returns e() and r() results."""
+    def get_stored_results(self, force_fresh: bool = False) -> Dict[str, Any]:
+        """Returns e() and r() results using SFI for maximum reliability."""
+        if not force_fresh and self._last_results is not None:
+            return self._last_results
+
         if not self._initialized:
             self.init()
 
-        results = {"r": {}, "e": {}}
-
-        # We parse 'return list' output as there is no direct bulk export of stored results
-        raw_r_resp = self.run_command_structured("return list", echo=True)
-        raw_e_resp = self.run_command_structured("ereturn list", echo=True)
-        raw_r = raw_r_resp.stdout if raw_r_resp.success else (raw_r_resp.error.snippet if raw_r_resp.error else "")
-        raw_e = raw_e_resp.stdout if raw_e_resp.success else (raw_e_resp.error.snippet if raw_e_resp.error else "")
-
-        # Simple parser
-        def parse_list(text):
-            data = {}
-            # We don't strictly need to track sections if we check patterns
-            for line in text.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-
-                # scalars: r(name) = value
-                if "=" in line and ("r(" in line or "e(" in line):
-                    try:
-                        name_part, val_part = line.split("=", 1)
-                        name_part = name_part.strip()  # "r(mean)"
-                        val_part = val_part.strip()    # "6165.2..."
-
-                        # Extract just the name inside r(...) if desired,
-                        # or keep full key "r(mean)".
-                        # User likely wants "mean" inside "r" dict.
-
-                        if "(" in name_part and name_part.endswith(")"):
-                            # r(mean) -> mean
-                            start = name_part.find("(") + 1
-                            end = name_part.find(")")
-                            key = name_part[start:end]
-                            data[key] = val_part
-                    except Exception:
-                        pass
-
-                # macros: r(name) : "value"
-                elif ":" in line and ("r(" in line or "e(" in line):
-                    try:
-                        name_part, val_part = line.split(":", 1)
-                        name_part = name_part.strip()
-                        val_part = val_part.strip().strip('"')
-
-                        if "(" in name_part and name_part.endswith(")"):
-                            start = name_part.find("(") + 1
-                            end = name_part.find(")")
-                            key = name_part[start:end]
-                            data[key] = val_part
-                    except Exception:
-                        pass
-            return data
-
-        results["r"] = parse_list(raw_r)
-        results["e"] = parse_list(raw_e)
-
-        return results
+        with self._exec_lock:
+            # We must be extremely careful not to clobber r()/e() while fetching their names.
+            # We use a hold to peek at the results.
+            hold_name = f"mcp_peek_{uuid.uuid4().hex[:8]}"
+            self.stata.run(f"capture _return hold {hold_name}", echo=False)
+            
+            try:
+                from sfi import Scalar, Macro
+                results = {"r": {}, "e": {}}
+                
+                for rclass in ["r", "e"]:
+                    # Restore with 'hold' to peek at results without losing them from the hold
+                    # Note: Stata 18+ supports 'restore ..., hold' which is ideal.
+                    self.stata.run(f"capture _return restore {hold_name}, hold", echo=False)
+                    
+                    # Fetch names using backtick expansion (which we verified works better than colon)
+                    # and avoid leading underscores which were causing syntax errors with 'global'
+                    self.stata.run(f"macro define mcp_scnames `: {rclass}(scalars)'", echo=False)
+                    self.stata.run(f"macro define mcp_macnames `: {rclass}(macros)'", echo=False)
+                    
+                    # 1. Capture Scalars
+                    names_str = Macro.getGlobal("mcp_scnames")
+                    if names_str:
+                        for name in names_str.split():
+                            try:
+                                val = Scalar.getValue(f"{rclass}({name})")
+                                results[rclass][name] = val
+                            except Exception:
+                                pass
+                                
+                    # 2. Capture Macros (strings)
+                    macros_str = Macro.getGlobal("mcp_macnames")
+                    if macros_str:
+                        for name in macros_str.split():
+                            try:
+                                # Restore/Hold again to be safe before fetching each macro
+                                self.stata.run(f"capture _return restore {hold_name}, hold", echo=False)
+                                # Capture the string value into a macro
+                                self.stata.run(f"macro define mcp_mval `{rclass}({name})'", echo=False)
+                                val = Macro.getGlobal("mcp_mval")
+                                results[rclass][name] = val
+                            except Exception:
+                                pass
+                
+                # Cleanup
+                self.stata.run("macro drop mcp_scnames mcp_macnames mcp_mval", echo=False)
+                self.stata.run(f"capture _return restore {hold_name}", echo=False) # Restore one last time to leave Stata in correct state
+                
+                self._last_results = results
+                return results
+            except Exception as e:
+                logger.error(f"SFI-based get_stored_results failed: {e}")
+                # Try to clean up hold if we failed
+                try:
+                    self.stata.run(f"capture _return drop {hold_name}", echo=False)
+                except Exception:
+                    pass
+                return {"r": {}, "e": {}}
 
     def invalidate_graph_cache(self, graph_name: str = None) -> None:
         """Invalidate cache for specific graph or all graphs.
@@ -2760,14 +2940,13 @@ class StataClient:
         tee = FileTeeIO(log_file, tail)
 
         # Create SMCL log for authoritative output capture
-        smcl_file = tempfile.NamedTemporaryFile(
-            prefix="mcp_smcl_",
-            suffix=".smcl",
-            delete=False,
-            mode="w",
-        )
-        smcl_path = smcl_file.name
-        smcl_file.close()
+        smcl_fd, smcl_path = tempfile.mkstemp(prefix="mcp_smcl_", suffix=".smcl")
+        os.close(smcl_fd)
+        # Remove the placeholder file so Stata can create it without replace/lock issues on Windows
+        try:
+            os.unlink(smcl_path)
+        except Exception:
+            pass
         smcl_log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
 
         rc = -1
@@ -2810,6 +2989,12 @@ class StataClient:
                                 self.stata.run(f'capture log close {smcl_log_name}', echo=False)
                             except Exception:
                                 pass
+
+                        # Capture results immediately after execution, INSIDE the lock
+                        try:
+                            self._last_results = self.get_stored_results(force_fresh=True)
+                        except Exception:
+                            self._last_results = None
             except Exception as e:
                 # Outer catch in case imports or locks fail
                 exc = e

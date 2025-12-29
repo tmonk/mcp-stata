@@ -1,8 +1,12 @@
+import os
 import platform
+import pytest
 from pathlib import Path
 
 from mcp_stata.discovery import find_stata_path
 
+# limit to Windows
+@pytest.mark.skipif(platform.system() != "Windows", reason="Windows only")
 
 def _touch_file(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
