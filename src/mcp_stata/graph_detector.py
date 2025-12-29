@@ -39,11 +39,14 @@ class GraphCreationDetector:
         if not self._stata_client or not hasattr(self._stata_client, "stata"):
             return ""
         try:
-            # Capture output so we can hash it deterministically.
-            resp = self._stata_client.run_command_structured(f"graph describe {graph_name}", echo=False)
+            # Use lightweight execution to avoid heavy FS I/O for high-frequency polling
+            resp = self._stata_client.exec_lightweight(f"graph describe {graph_name}")
+                
             if resp.success and resp.stdout:
                 return resp.stdout
             if resp.error and resp.error.snippet:
+                # If using lightweight, error might be None or just string in stderr, 
+                # but run_command_structured returns proper error envelope.
                 return resp.error.snippet
         except Exception:
             return ""

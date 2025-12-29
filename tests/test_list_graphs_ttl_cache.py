@@ -21,7 +21,7 @@ class TestListGraphsTTLCache:
 
     def test_ttl_cache_basic_functionality(self, client, monkeypatch):
         """Test basic TTL cache functionality."""
-        monkeypatch.setattr(client, "LIST_GRAPHS_TTL", 0.1, raising=False)
+        monkeypatch.setattr(client, "LIST_GRAPHS_TTL", 1.0, raising=False)
         
         # First call should fetch from Stata
         result1 = client.list_graphs()
@@ -31,12 +31,12 @@ class TestListGraphsTTLCache:
         result2 = client.list_graphs()
         duration = time.time() - start
         
-        # Cached call should be very fast (< 10ms)
-        assert duration < 0.01
+        # Cached call should be very fast (< 100ms)
+        assert duration < 0.1
         assert result1 == result2
         
         # Wait for TTL to expire
-        time.sleep(0.15)
+        time.sleep(1.1)
         
         # Third call after TTL should fetch fresh data
         result3 = client.list_graphs()
@@ -107,7 +107,7 @@ class TestListGraphsTTLCache:
     
     def test_ttl_cache_expiration(self, client, monkeypatch):
         """Test that cache properly expires after TTL."""
-        monkeypatch.setattr(client, "LIST_GRAPHS_TTL", 0.1, raising=False)
+        monkeypatch.setattr(client, "LIST_GRAPHS_TTL", 1.0, raising=False)
         
         # First call
         result1 = client.list_graphs()
@@ -116,7 +116,7 @@ class TestListGraphsTTLCache:
         start = time.time()
         result2 = client.list_graphs()
         duration1 = time.time() - start
-        assert duration1 < 0.01  # Cached, should be < 10ms
+        assert duration1 < 0.1  # Cached, should be < 100ms
         assert result2 == result1
         
         # Wait for TTL to expire

@@ -189,20 +189,40 @@ class StataClient:
                 self.stata.run(cmd)
             # After context, read smcl_path for raw SMCL output
         """
-        # Create temp file path for SMCL output (remove immediately to avoid Windows replace locks)
-        smcl_fd, smcl_path = tempfile.mkstemp(prefix="mcp_smcl_", suffix=".smcl")
-        os.close(smcl_fd)
+        # Create temp file path for SMCL output
+        # Create temp file path for SMCL output
+        # Use a unique name but DO NOT join start with mkstemp to avoid existing file locks.
+        # Stata will create the file.
+        smcl_path = os.path.join(tempfile.gettempdir(), f"mcp_smcl_{uuid.uuid4().hex}.smcl")
+        
+        # Ensure cleanup in case of pre-existing file (unlikely with UUID)
         try:
-            os.unlink(smcl_path)
+             if os.path.exists(smcl_path):
+                os.unlink(smcl_path)
         except Exception:
-            pass
+             pass
         
         # Unique log name to avoid collisions with user logs
         log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
         
         try:
             # Open named SMCL log (quietly to avoid polluting output)
-            self.stata.run(f'quietly log using "{smcl_path}", replace smcl name({log_name})', echo=False)
+            # Add retry logic for Windows file locking flakiness
+            log_opened = False
+            for attempt in range(4):
+                try:
+                    self.stata.run(f'quietly log using "{smcl_path}", replace smcl name({log_name})', echo=False)
+                    log_opened = True
+                    break
+                except Exception:
+                    if attempt < 3:
+                        time.sleep(0.1)
+            
+            if not log_opened:
+                # Still yield, consumer might see empty file or handle error, 
+                # but we can't do much if Stata refuses to log.
+                pass
+                
             yield log_name, smcl_path
         finally:
             # Always close our named log
@@ -216,10 +236,21 @@ class StataClient:
                     pass
 
     def _read_smcl_file(self, path: str) -> str:
-        """Read SMCL file contents, handling encoding issues."""
+        """Read SMCL file contents, handling encoding issues and Windows file locks."""
         try:
             with open(path, 'r', encoding='utf-8', errors='replace') as f:
                 return f.read()
+        except PermissionError:
+            if os.name == "nt":
+                # Windows Fallback: Try to use 'type' command to bypass exclusive lock
+                try:
+                    res = subprocess.run(f'type "{path}"', shell=True, capture_output=True)
+                    if res.returncode == 0:
+                        return res.stdout.decode('utf-8', errors='replace')
+                except Exception as e:
+                    logger.debug(f"Combined fallback read failed: {e}")
+            logger.warning(f"Failed to read SMCL file {path} due to lock")
+            return ""
         except Exception as e:
             logger.warning(f"Failed to read SMCL file {path}: {e}")
             return ""
@@ -822,16 +853,34 @@ class StataClient:
                 from sfi import Scalar, SFIToolkit
                 with self._temp_cwd(cwd):
                     # Create SMCL log for authoritative output capture
-                    smcl_fd, smcl_path = tempfile.mkstemp(prefix="mcp_smcl_", suffix=".smcl")
-                    os.close(smcl_fd)
+                    # Use shorter unique path to avoid Windows path issues
+                    smcl_path = os.path.join(tempfile.gettempdir(), f"mcp_{uuid.uuid4().hex[:16]}.smcl")
+                    
+                    # Ensure cleanup in case of pre-existing file
                     try:
-                        os.unlink(smcl_path)
+                        if os.path.exists(smcl_path):
+                            os.unlink(smcl_path)
                     except Exception:
                         pass
+                    
                     log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
                     
                     # Open SMCL log BEFORE output redirection
-                    self.stata.run(f'log using "{smcl_path}", replace smcl name({log_name})', echo=False)
+                    # Add retry logic for Windows file locking flakiness
+                    log_opened = False
+                    for attempt in range(4):
+                        try:
+                            self.stata.run(f'log using "{smcl_path}", replace smcl name({log_name})', echo=False)
+                            log_opened = True
+                            break
+                        except Exception:
+                            if attempt < 3:
+                                time.sleep(0.1)
+                    
+                    if not log_opened:
+                        # Fallback: try one more time without replace if it was strangely missing, 
+                        # or just proceed (logging will fail but execution might work)
+                        pass
                     
                     try:
                         with self._redirect_io(output_buffer, error_buffer):
@@ -893,6 +942,13 @@ class StataClient:
                 rc = parsed_rc
             elif rc == -1:
                 rc = 0
+
+        # If stdout is empty but SMCL has content AND command succeeded, use SMCL as stdout
+        # This handles cases where Stata writes to log but not to redirected stdout
+        # For errors, we keep stdout empty and error info goes to ErrorEnvelope
+        if rc == 0 and not stdout_content and smcl_content:
+            # Convert SMCL to plain text for stdout
+            stdout_content = self._smcl_to_text(smcl_content)
 
         if rc != 0:
             if sys_error:
@@ -980,6 +1036,42 @@ class StataClient:
             error=error,
         )
 
+    def exec_lightweight(self, code: str) -> CommandResponse:
+        """
+        Executes a command using simple stdout redirection (no SMCL logs).
+        Much faster on Windows as it avoids FS operations.
+        LIMITED: Does not support error envelopes or complex return code parsing.
+        """
+        if not self._initialized:
+            self.init()
+
+        code = self._maybe_rewrite_graph_name_in_command(code)
+        
+        output_buffer = StringIO()
+        error_buffer = StringIO()
+        rc = 0
+        exc = None
+        
+        with self._exec_lock:
+             with self._redirect_io(output_buffer, error_buffer):
+                try:
+                    self.stata.run(code, echo=False)
+                except Exception as e:
+                    exc = e
+                    rc = 1
+        
+        stdout = output_buffer.getvalue()
+        stderr = error_buffer.getvalue()
+        
+        return CommandResponse(
+            command=code,
+            rc=rc,
+            stdout=stdout,
+            stderr=stderr if not exc else str(exc),
+            success=(rc == 0),
+            error=None
+        )
+
     async def run_command_streaming(
     self,
     code: str,
@@ -1041,8 +1133,16 @@ class StataClient:
         tee = FileTeeIO(log_file, tail)
 
         # Create SMCL log path for authoritative output capture
-        smcl_fd, smcl_path = tempfile.mkstemp(prefix="mcp_smcl_", suffix=".smcl")
-        os.close(smcl_fd)
+        # Create SMCL log path for authoritative output capture
+        # Use generated path to avoid locks
+        smcl_path = os.path.join(tempfile.gettempdir(), f"mcp_smcl_{uuid.uuid4().hex}.smcl")
+        
+        # Ensure cleanup in case of pre-existing file
+        try:
+             if os.path.exists(smcl_path):
+                os.unlink(smcl_path)
+        except Exception:
+             pass
         smcl_log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
 
         # Inform the MCP client immediately where to read/tail the output.
@@ -1070,7 +1170,20 @@ class StataClient:
                     from sfi import Scalar, SFIToolkit # Import SFI tools
                     with self._temp_cwd(cwd):
                         # Open SMCL log BEFORE output redirection
-                        self.stata.run(f'log using "{smcl_path}", replace smcl name({smcl_log_name})', echo=False)
+                        # Add retry logic for Windows file locking flakiness
+                        log_opened = False
+                        for attempt in range(4):
+                            try:
+                                self.stata.run(f'log using "{smcl_path}", replace smcl name({smcl_log_name})', echo=False)
+                                log_opened = True
+                                break
+                            except Exception:
+                                if attempt < 3:
+                                    time.sleep(0.1)
+                        
+                        if not log_opened:
+                            # Fallback but allow execution to attempt to proceed
+                            pass
                         
                         try:
                             with self._redirect_io_streaming(tee, tee):
@@ -1130,27 +1243,51 @@ class StataClient:
             # Wait for Stata to create the SMCL file (we removed the placeholder to avoid locks)
             while not done.is_set() and not os.path.exists(smcl_path):
                 await anyio.sleep(0.05)
+            
             try:
-                with open(smcl_path, "r", encoding="utf-8", errors="replace") as f:
-                    while not done.is_set():
-                        f.seek(last_pos)
-                        chunk = f.read()
-                        if chunk:
-                            last_pos = f.tell()
-                            # Stream the actual log content for display
-                            await notify_log(chunk)
-                            # Also track progress if needed
-                            if total_lines > 0 and notify_progress:
-                                await on_chunk_for_progress(chunk)
-                        await anyio.sleep(0.05)
+                # Helper to read file content robustly (handling Windows shared read locks)
+                def _read_content():
+                    try:
+                        with open(smcl_path, "r", encoding="utf-8", errors="replace") as f:
+                            f.seek(last_pos)
+                            return f.read()
+                    except PermissionError:
+                        if os.name == "nt":
+                            # Windows Fallback: Use 'type' command to read locked file
+                            try:
+                                # Start a shell process to 'type' the file. This bypasses locking sometimes.
+                                # Note: Reading full file and seeking in-memory is inefficient for massive logs 
+                                # but acceptable for Stata logs to unblock Windows streaming.
+                                res = subprocess.run(f'type "{smcl_path}"', shell=True, capture_output=True)
+                                full_content = res.stdout.decode("utf-8", errors="replace")
+                                if len(full_content) > last_pos:
+                                    return full_content[last_pos:]
+                                return ""
+                            except Exception:
+                                return ""
+                        raise
+                    except FileNotFoundError:
+                        return ""
 
-                    # Final read after execution completes
-                    f.seek(last_pos)
-                    chunk = f.read()
+                while not done.is_set():
+                    chunk = await anyio.to_thread.run_sync(_read_content)
                     if chunk:
+                        last_pos += len(chunk)
+                        # Stream the actual log content for display
                         await notify_log(chunk)
+                        # Also track progress if needed
                         if total_lines > 0 and notify_progress:
-                            await on_chunk_for_progress(chunk)
+                             await on_chunk_for_progress(chunk)
+                    await anyio.sleep(0.05)
+
+                # Final read
+                chunk = await anyio.to_thread.run_sync(_read_content)
+                if chunk:
+                    last_pos += len(chunk)
+                    await notify_log(chunk)
+                    if total_lines > 0 and notify_progress:
+                        await on_chunk_for_progress(chunk)
+
             except Exception as e:
                 logger.warning(f"Log streaming failed: {e}")
                 return
@@ -1383,8 +1520,16 @@ class StataClient:
         tee = FileTeeIO(log_file, tail)
 
         # Create SMCL log path for authoritative output capture (placeholder removed to avoid locks)
-        smcl_fd, smcl_path = tempfile.mkstemp(prefix="mcp_smcl_", suffix=".smcl")
-        os.close(smcl_fd)
+        # Create SMCL log path for authoritative output capture (placeholder removed to avoid locks)
+        # Use generated path to avoid locks
+        smcl_path = os.path.join(tempfile.gettempdir(), f"mcp_smcl_{uuid.uuid4().hex}.smcl")
+        
+        # Ensure cleanup in case of pre-existing file
+        try:
+             if os.path.exists(smcl_path):
+                os.unlink(smcl_path)
+        except Exception:
+             pass
         smcl_log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
 
         # Inform the MCP client immediately where to read/tail the output.
@@ -1412,10 +1557,24 @@ class StataClient:
                     from sfi import Scalar, SFIToolkit # Import SFI tools
                     with self._temp_cwd(cwd):
                         # Open SMCL log BEFORE output redirection
-                        self.stata.run(f'log using "{smcl_path}", replace smcl name({smcl_log_name})', echo=False)
+                        # Add retry logic for Windows file locking flakiness
+                        log_opened = False
+                        for attempt in range(4):
+                            try:
+                                self.stata.run(f'log using "{smcl_path}", replace smcl name({smcl_log_name})', echo=False)
+                                log_opened = True
+                                break
+                            except Exception:
+                                if attempt < 3:
+                                    time.sleep(0.1)
+                        
+                        if not log_opened:
+                            # Fallback but allow execution to attempt to proceed
+                            pass
                         
                         try:
                             with self._redirect_io_streaming(tee, tee):
+                                print("DEBUG: Python print inside redirect checks capture")
                                 try:
                                     if trace:
                                         self.stata.run("set trace on")
@@ -1472,27 +1631,52 @@ class StataClient:
             # Wait for Stata to create the SMCL file (placeholder removed to avoid locks)
             while not done.is_set() and not os.path.exists(smcl_path):
                 await anyio.sleep(0.05)
+            
             try:
-                with open(smcl_path, "r", encoding="utf-8", errors="replace") as f:
-                    while not done.is_set():
-                        f.seek(last_pos)
-                        chunk = f.read()
-                        if chunk:
-                            last_pos = f.tell()
-                            # Stream the actual log content for display
-                            await notify_log(chunk)
-                            # Also track progress if needed
-                            if total_lines > 0 and notify_progress:
-                                await on_chunk_for_progress(chunk)
-                        await anyio.sleep(0.05)
+                # Helper to read file content robustly (handling Windows shared read locks)
+                def _read_content():
+                    try:
+                        with open(smcl_path, "r", encoding="utf-8", errors="replace") as f:
+                            f.seek(last_pos)
+                            return f.read()
+                    except PermissionError:
+                        if os.name == "nt":
+                            # Windows Fallback: Use 'type' command to read locked file
+                            try:
+                                # Start a shell process to 'type' the file. This bypasses locking sometimes.
+                                # Note: Reading full file and seeking in-memory is inefficient for massive logs 
+                                # but acceptable for Stata logs to unblock Windows streaming.
+                                import subprocess
+                                res = subprocess.run(f'type "{smcl_path}"', shell=True, capture_output=True)
+                                full_content = res.stdout.decode("utf-8", errors="replace")
+                                if len(full_content) > last_pos:
+                                    return full_content[last_pos:]
+                                return ""
+                            except Exception:
+                                return ""
+                        raise
+                    except FileNotFoundError:
+                        return ""
 
-                    # Final read after execution completes
-                    f.seek(last_pos)
-                    chunk = f.read()
+                while not done.is_set():
+                    chunk = await anyio.to_thread.run_sync(_read_content)
                     if chunk:
+                        last_pos += len(chunk)
+                        # Stream the actual log content for display
                         await notify_log(chunk)
+                        # Also track progress if needed
                         if total_lines > 0 and notify_progress:
-                            await on_chunk_for_progress(chunk)
+                                await on_chunk_for_progress(chunk)
+                    await anyio.sleep(0.05)
+
+                # Final read
+                chunk = await anyio.to_thread.run_sync(_read_content)
+                if chunk:
+                    last_pos += len(chunk)
+                    await notify_log(chunk)
+                    if total_lines > 0 and notify_progress:
+                        await on_chunk_for_progress(chunk)
+
             except Exception as e:
                 logger.warning(f"Log streaming failed: {e}")
                 return
@@ -2175,7 +2359,7 @@ class StataClient:
             # Update cache
             with self._list_graphs_cache_lock:
                 self._list_graphs_cache = result
-                self._list_graphs_cache_time = current_time
+                self._list_graphs_cache_time = time.time()
             
             return result
             

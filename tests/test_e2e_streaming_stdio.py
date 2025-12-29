@@ -93,18 +93,14 @@ def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):
                     await anyio.sleep(0.05)
 
             async def watch_log_file_for_start() -> None:
-                await saw_log_path.wait()
-                p = Path(log_path_holder["path"])
-                # Wait until the file exists and contains our marker.
+                # Instead of reading the file (which might be locked by Stata on Windows),
+                # we watch the accumulated logs which come from the tee/tail mechanism.
                 while True:
-                    if p.exists():
-                        try:
-                            txt = p.read_text(encoding="utf-8", errors="replace")
-                            if "streaming_start" in txt:
-                                saw_start.set()
-                                return
-                        except Exception:
-                            pass
+                    # check if "streaming_start" is in any of the received log chunks
+                    combined = "".join(logs)
+                    if "streaming_start" in combined:
+                        saw_start.set()
+                        return
                     await anyio.sleep(0.05)
 
             async def call_tool() -> None:
