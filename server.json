@@ -3,12 +3,12 @@
   "name": "io.github.tmonk/mcp-stata",
   "title": "Stata MCP Server",
   "description": "A lightweight MCP server for Stata.",
-  "version": "1.8.2",
+  "version": "1.9.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mcp-stata",
-      "version": "1.8.2",
+      "version": "1.9.0",
       "transport": {
         "type": "stdio"
       }
