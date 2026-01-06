@@ -424,6 +424,29 @@ class StataClient:
         finally:
             os.chdir(prev)
 
+    @contextmanager
+    def _safe_redirect_fds(self):
+        """Redirects fd 1 (stdout) to fd 2 (stderr) at the OS level."""
+        # Save original stdout fd
+        try:
+            stdout_fd = os.dup(1)
+        except Exception:
+            # Fallback if we can't dup (e.g. strange environment)
+            yield
+            return
+
+        try:
+            # Redirect OS-level stdout to stderr
+            os.dup2(2, 1)
+            yield
+        finally:
+            # Restore stdout
+            try:
+                os.dup2(stdout_fd, 1)
+                os.close(stdout_fd)
+            except Exception:
+                pass
+
     def init(self):
         """Initializes usage of pystata using cached discovery results."""
         if self._initialized:
@@ -431,7 +454,6 @@ class StataClient:
 
         # Suppress any non-UTF8 banner output from PyStata on stdout, which breaks MCP stdio transport
         from contextlib import redirect_stdout, redirect_stderr
-        devnull = open(os.devnull, "w", encoding="utf-8", errors="ignore")
 
         try:
             import stata_setup
@@ -440,12 +462,9 @@ class StataClient:
             stata_exec_path, edition = _get_discovered_stata()
 
             candidates = []
-
             # Prefer the binary directory first (documented input for stata_setup)
             bin_dir = os.path.dirname(stata_exec_path)
-            if bin_dir:
-                candidates.append(bin_dir)
-
+            
             # 2. App Bundle: .../StataMP.app (macOS only)
             curr = bin_dir
             app_bundle = None
@@ -454,50 +473,129 @@ class StataClient:
                     app_bundle = curr
                     break
                 parent = os.path.dirname(curr)
-                if parent == curr:  # Reached root directory, prevent infinite loop on Windows
+                if parent == curr: 
                     break
                 curr = parent
 
+            ordered_candidates = []
+            if bin_dir:
+                ordered_candidates.append(bin_dir)
             if app_bundle:
-                candidates.insert(0, os.path.dirname(app_bundle))
-                candidates.insert(1, app_bundle)
-
+                ordered_candidates.append(app_bundle)
+                parent_dir = os.path.dirname(app_bundle)
+                if parent_dir not in ordered_candidates:
+                    ordered_candidates.append(parent_dir)
+            
             # Deduplicate preserving order
             seen = set()
-            deduped = []
-            for c in candidates:
-                if c in seen:
-                    continue
-                seen.add(c)
-                deduped.append(c)
-            candidates = deduped
+            candidates = []
+            for c in ordered_candidates:
+                if c not in seen:
+                    seen.add(c)
+                    candidates.append(c)
+
+            # Diagnostic: force faulthandler to output to stderr for C crashes
+            import faulthandler
+            faulthandler.enable(file=sys.stderr)
+            import subprocess
 
             success = False
+            last_error = None
             for path in candidates:
                 try:
-                    with redirect_stdout(devnull), redirect_stderr(devnull):
+                    # 1. Pre-flight check in a subprocess to capture hard exits/crashes
+                    sys.stderr.write(f"[mcp_stata] DEBUG: Pre-flight check for path '{path}'\n")
+                    sys.stderr.flush()
+                    
+                    preflight_code = f"""
+import sys
+import stata_setup
+from contextlib import redirect_stdout, redirect_stderr
+with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
+    try:
+        stata_setup.config({repr(path)}, {repr(edition)})
+        from pystata import stata
+        stata.run('about', echo=True)
+        print('PREFLIGHT_OK')
+    except Exception as e:
+        print(f'PREFLIGHT_FAIL: {{e}}', file=sys.stderr)
+        sys.exit(1)
+"""
+                    
+                    try:
+                        res = subprocess.run(
+                            [sys.executable, "-c", preflight_code],
+                            capture_output=True, text=True, timeout=30
+                        )
+                        if res.returncode != 0:
+                            sys.stderr.write(f"[mcp_stata] Pre-flight failed (rc={res.returncode}) for '{path}'\n")
+                            if res.stdout.strip():
+                                sys.stderr.write(f"--- Pre-flight stdout ---\n{res.stdout.strip()}\n")
+                            if res.stderr.strip():
+                                sys.stderr.write(f"--- Pre-flight stderr ---\n{res.stderr.strip()}\n")
+                            sys.stderr.flush()
+                            last_error = f"Pre-flight failed: {res.stdout.strip()} {res.stderr.strip()}"
+                            continue
+                        else:
+                            sys.stderr.write(f"[mcp_stata] Pre-flight succeeded for '{path}'. Proceeding to in-process init.\n")
+                            sys.stderr.flush()
+                    except Exception as pre_e:
+                        sys.stderr.write(f"[mcp_stata] Pre-flight execution error for '{path}': {repr(pre_e)}\n")
+                        sys.stderr.flush()
+                        last_error = pre_e
+                        continue
+
+                    msg = f"[mcp_stata] DEBUG: In-process stata_setup.config('{path}', '{edition}')\n"
+                    sys.stderr.write(msg)
+                    sys.stderr.flush()
+                    # Redirect both sys.stdout/err AND the raw fds to our stderr pipe.
+                    with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr), self._safe_redirect_fds():
                         stata_setup.config(path, edition)
+                    
+                    sys.stderr.write(f"[mcp_stata] DEBUG: stata_setup.config succeeded for path: {path}\n")
+                    sys.stderr.flush()
                     success = True
-                    logger.debug("stata_setup.config succeeded with path: %s", path)
+                    logger.info("stata_setup.config succeeded with path: %s", path)
                     break
-                except Exception:
+                except BaseException as e:
+                    last_error = e
+                    sys.stderr.write(f"[mcp_stata] WARNING: In-process stata_setup.config caught: {repr(e)}\n")
+                    sys.stderr.flush()
+                    logger.warning("stata_setup.config failed for path '%s': %s", path, e)
+                    if isinstance(e, SystemExit):
+                        break
                     continue
 
             if not success:
-                raise RuntimeError(
-                    f"stata_setup.config failed. Tried: {candidates}. "
-                    f"Derived from binary: {stata_exec_path}"
+                error_msg = (
+                    f"stata_setup.config failed to initialize Stata. "
+                    f"Tried candidates: {candidates}. "
+                    f"Last error: {repr(last_error)}"
                 )
+                sys.stderr.write(f"[mcp_stata] ERROR: {error_msg}\n")
+                sys.stderr.flush()
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
 
             # Cache the binary path for later use (e.g., PNG export on Windows)
             self._stata_exec_path = os.path.abspath(stata_exec_path)
 
-            with redirect_stdout(devnull), redirect_stderr(devnull):
-                from pystata import stata  # type: ignore[import-not-found]
-                # Warm up the engine and swallow any late splash screen output
-                stata.run("display 1", echo=False)
-            self.stata = stata
-            self._initialized = True
+            try:
+                sys.stderr.write("[mcp_stata] DEBUG: Importing pystata and warming up...\n")
+                sys.stderr.flush()
+                with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr), self._safe_redirect_fds():
+                    from pystata import stata  # type: ignore[import-not-found]
+                    # Warm up the engine and swallow any late splash screen output
+                    stata.run("display 1", echo=False)
+                self.stata = stata
+                self._initialized = True
+                sys.stderr.write("[mcp_stata] DEBUG: pystata warmed up successfully\n")
+                sys.stderr.flush()
+            except BaseException as e:
+                sys.stderr.write(f"[mcp_stata] ERROR: Failed to load pystata or run initial command: {repr(e)}\n")
+                sys.stderr.flush()
+                logger.error("Failed to load pystata or run initial command: %s", e)
+                raise
             
             # Initialize list_graphs TTL cache
             self._list_graphs_cache = None
@@ -516,11 +614,6 @@ class StataClient:
                 f"Failed to import stata_setup or pystata: {e}. "
                 "Ensure they are installed (pip install pystata stata-setup)."
             ) from e
-        finally:
-            try:
-                devnull.close()
-            except Exception:
-                pass
 
     def _make_valid_stata_name(self, name: str) -> str:
         """Create a valid Stata name (<=32 chars, [A-Za-z_][A-Za-z0-9_]*)."""
@@ -1574,7 +1667,6 @@ class StataClient:
                         
                         try:
                             with self._redirect_io_streaming(tee, tee):
-                                print("DEBUG: Python print inside redirect checks capture")
                                 try:
                                     if trace:
                                         self.stata.run("set trace on")

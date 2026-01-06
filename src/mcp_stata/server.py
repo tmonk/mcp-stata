@@ -17,33 +17,39 @@ import os
 from .ui_http import UIChannelManager
 
 
-# Configure logging to stderr with immediate flush for MCP transport
-LOG_LEVEL = os.getenv("MCP_STATA_LOGLEVEL", "DEBUG").upper()  # Default to DEBUG for diagnostics
-
-# Create a handler that flushes immediately
-handler = logging.StreamHandler(sys.stderr)
-handler.setLevel(logging.DEBUG)
-handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
-
-# Configure root logger
-logging.root.handlers = []
-logging.root.addHandler(handler)
-logging.root.setLevel(logging.DEBUG)
-
-# Also configure the mcp_stata logger explicitly
+# Configure logging
 logger = logging.getLogger("mcp_stata")
-logger.setLevel(logging.DEBUG)
-logger.addHandler(handler)
 
-try:
-    _mcp_stata_version = version("mcp-stata")
-except PackageNotFoundError:
-    _mcp_stata_version = "unknown"
+def setup_logging():
+    # Configure logging to stderr with immediate flush for MCP transport
+    log_level = os.getenv("MCP_STATA_LOGLEVEL", "DEBUG").upper()
+    
+    # Create a handler that flushes immediately
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(getattr(logging, log_level, logging.DEBUG))
+    handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.handlers = []
+    root_logger.addHandler(handler)
+    root_logger.setLevel(getattr(logging, log_level, logging.DEBUG))
+    
+    # Also configure the mcp_stata logger explicitly
+    logger.setLevel(getattr(logging, log_level, logging.DEBUG))
+    logger.handlers = []
+    logger.addHandler(handler)
+    logger.propagate = False
 
-logger.info("=== mcp-stata server starting ===")
-logger.info("mcp-stata version: %s", _mcp_stata_version)
-logger.info("STATA_PATH env at startup: %s", os.getenv("STATA_PATH", "<not set>"))
-logger.info("LOG_LEVEL: %s", LOG_LEVEL)
+    try:
+        _mcp_stata_version = version("mcp-stata")
+    except PackageNotFoundError:
+        _mcp_stata_version = "unknown"
+
+    logger.info("=== mcp-stata server starting ===")
+    logger.info("mcp-stata version: %s", _mcp_stata_version)
+    logger.info("STATA_PATH env at startup: %s", os.getenv("STATA_PATH", "<not set>"))
+    logger.info("LOG_LEVEL: %s", log_level)
 
 # Initialize FastMCP
 mcp = FastMCP("mcp_stata")
@@ -431,17 +437,32 @@ def export_graphs_all(use_base64: bool = False) -> str:
     return exports.model_dump_json(exclude_none=False)
 
 def main():
-    # On Windows, Stata automation relies on COM, which is sensitive to threading models.
-    # The FastMCP server executes tool calls in a thread pool. If Stata is initialized
-    # lazily inside a worker thread, it may fail or hang due to COM/UI limitations.
-    # We explicitly initialize Stata here on the main thread to ensure the COM server
-    # is properly registered and accessible.
-    if os.name == "nt":
+    if "--version" in sys.argv:
         try:
-            client.init()
-        except Exception as e:
-            # Log error but let the server start; specific tools will fail gracefully later
-            logging.error(f"Stata initialization failed: {e}")
+            from importlib.metadata import version
+            print(version("mcp-stata"))
+        except Exception:
+            print("unknown")
+        return
+
+    setup_logging()
+    
+    # Initialize Stata here on the main thread to ensure any issues are logged early.
+    # On Windows, this is critical for COM registration. On other platforms, it helps
+    # catch license or installation errors before the first tool call.
+    try:
+        client.init()
+    except BaseException as e:
+        # Use sys.stderr.write and flush to ensure visibility before exit
+        msg = f"\n{'='*60}\n[mcp_stata] FATAL: STATA INITIALIZATION FAILED\n{'='*60}\nError: {repr(e)}\n"
+        sys.stderr.write(msg)
+        if isinstance(e, SystemExit):
+            sys.stderr.write(f"Stata triggered a SystemExit (code: {e.code}). This is usually a license error.\n")
+        sys.stderr.write(f"{'='*60}\n\n")
+        sys.stderr.flush()
+        
+        # We exit here because the user wants a clear failure when Stata cannot be loaded.
+        sys.exit(1)
 
     mcp.run()
 
