@@ -1,6 +1,6 @@
 ---
 name: stata-mcp
-description: Run or debug Stata workflows through the local io.github.tmonk/mcp-stata server. Use when users mention Stata commands, .do files, r()/e() results, dataset inspection, or Stata graph exports.
+description: Run or debug Stata workflows through the local io.github.tmonk/mcp-stata server. Use when users mention Stata commands, .do files, r()/e() results, dataset inspection, Stata graph exports, or data browsing with sorting/filtering.
 ---
 
 # Stata MCP Skill
@@ -54,10 +54,12 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
   - `as_json`: Return JSON envelope (default: True).
   - `raw`: Return plain output (default: False).
   - `max_output_lines`: Truncate output to this many lines (default: None).
+  - Note: After loading, use UI channel for advanced filtering/sorting at scale.
 
 - `get_data(start=0, count=50)`: Retrieve a slice of the active dataset as JSON.
   - `start`: Zero-based index of first observation (default: 0).
   - `count`: Number of observations to retrieve (default: 50, max: 500).
+  - Note: For advanced sorting/filtering at scale, use the UI channel endpoints (see `get_ui_channel()`).
 
 - `describe()`: Return variable descriptions, storage types, and labels.
 
@@ -72,6 +74,7 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
 
 ### Graph Management
 - `list_graphs()`: List all graphs in Stata's memory with active graph marked.
+  - Note: Graphs are automatically cached during command execution for instant exports.
 
 - `export_graph(graph_name=None, format="pdf")`: Export a stored graph to file.
   - `graph_name`: Name of graph to export (from `list_graphs`); if None, exports active graph.
@@ -91,11 +94,39 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
   - Returns JSON with `baseUrl`, `token`, `expiresAt`, and `capabilities`.
   - Intended for VS Code extension UI to browse data at high volume (paging, filtering, sorting) without sending large payloads over MCP.
   - Loopback only (binds to `127.0.0.1`), requires bearer auth.
+  - **Key endpoints** (all require `Authorization: Bearer <token>` header):
+    - `GET /v1/dataset`: Dataset identity and state
+    - `GET /v1/vars`: Variable metadata
+    - `POST /v1/page`: Page data with optional sorting (`sortBy` parameter)
+    - `POST /v1/arrow`: Binary Arrow IPC stream
+    - `POST /v1/views`: Create filtered view
+    - `POST /v1/views/:viewId/page`: Page within filtered view (supports sorting)
+    - `POST /v1/views/:viewId/arrow`: Arrow stream from filtered view
+    - `DELETE /v1/views/:viewId`: Delete view
+    - `POST /v1/filters/validate`: Validate filter expression
+  - **Sorting**: Use `sortBy` array in page requests (e.g., `["price"]` for ascending, `["-price"]` for descending, `["foreign", "-price"]` for multi-level)
+  - **Filtering**: Filter expressions use Python boolean operators (`==`, `!=`, `<`, `>`, `and`, `or`); Stata-style `&`/`|` also accepted
+  - **Server limits**: maxLimit=500, maxVars=32767, maxChars=500, maxRequestBytes=1000000, maxArrowLimit=1000000
+  - **Dataset tracking**: `datasetId` used for cache invalidation; changing dataset invalidates view handles
 
 ## Cancellation
 - Clients may cancel an in-flight request by sending the MCP notification `notifications/cancelled` with `params.requestId` set to the original tool call ID.
 - Pass a `_meta.progressToken` when invoking the tool if you want progress updates (optional).
 - Cancellation is best-effort and depends on Stata surfacing `BreakError`.
+
+## Error Reporting
+- All tools executing Stata commands support JSON envelopes (`as_json=true`) containing:
+  - `rc`: Return code from r()/c(rc)
+  - `stdout`: Standard output
+  - `stderr`: Standard error (captures "red text")
+  - `message`: Error message
+  - `line`: Line number (when Stata reports it)
+  - `command`: The command that was executed
+  - `log_path`: Path to log file for streaming (when applicable)
+  - `snippet`: Excerpt of error output
+- Stata-specific error codes (`r(XXX)`) are parsed and preserved
+- Use `trace=true` to enable `set trace on` for detailed program-defined error diagnostics
+- Set `MCP_STATA_LOGLEVEL` environment variable (e.g., `DEBUG`, `INFO`) to control server logging
 
 ## MCP Resources
 The server exposes these resources for MCP clients:
@@ -149,4 +180,22 @@ get_data(start=0, count=10)
 read_log("/tmp/stata_log_abc123.log", offset=0)
 # Continue reading with next_offset for incremental output
 read_log("/tmp/stata_log_abc123.log", offset=4096)
+```
+
+### Advanced data browsing with sorting and filtering
+```
+# Get UI channel for high-volume data operations
+get_ui_channel()  # Returns baseUrl, token, expiresAt
+
+# Example UI channel usage (requires HTTP client):
+# POST {baseUrl}/v1/page with Authorization: Bearer {token}
+# Body: {"datasetId":"...","offset":0,"limit":50,"vars":["price","mpg"],"sortBy":["-price"]}
+
+# Create filtered view for price < 5000
+# POST {baseUrl}/v1/views
+# Body: {"datasetId":"...","frame":"default","filterExpr":"price < 5000"}
+
+# Page through filtered view with sorting
+# POST {baseUrl}/v1/views/{viewId}/page
+# Body: {"offset":0,"limit":50,"vars":["price","mpg"],"sortBy":["-price"]}
 ```
