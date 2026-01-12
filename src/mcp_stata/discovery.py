@@ -16,6 +16,7 @@ import logging
 import shutil
 import ntpath
 import time
+import re
 from typing import Tuple, List, Optional
 
 logger = logging.getLogger("mcp_stata.discovery")
@@ -179,6 +180,37 @@ def _dedupe_str_preserve(items: List[str]) -> List[str]:
     return out
 
 
+def _extract_version_number(path: str) -> int:
+    """
+    Extract the highest Stata version number found in path components that
+    mention 'stata'. Returns 0 if no version is found.
+    """
+    version = 0
+    normalized = path.lower().replace("\\", os.sep)
+    for part in normalized.split(os.sep):
+        if "stata" not in part:
+            continue
+        for match in re.findall(r"(\d{1,3})", part):
+            try:
+                version = max(version, int(match))
+            except ValueError:
+                continue
+    return version
+
+
+def _sort_candidates(candidates: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    """Sort candidates by version desc, edition (mp>se>be), then path for stability."""
+    edition_rank = {"mp": 3, "se": 2, "be": 1}
+
+    def sort_key(item: Tuple[str, str]):
+        path, edition = item
+        version = _extract_version_number(path)
+        rank = edition_rank.get((edition or "").lower(), 0)
+        return (-version, -rank, path)
+
+    return sorted(candidates, key=sort_key)
+
+
 def _resolve_windows_host_path(path: str, system: str) -> str:
     """
     On non-Windows hosts running Windows-discovery code, a Windows-style path
@@ -207,13 +239,18 @@ def _detect_system() -> str:
     return platform.system()
 
 
-def find_stata_path() -> Tuple[str, str]:
+def find_stata_candidates() -> List[Tuple[str, str]]:
     """
-    Attempts to automatically locate the Stata installation path.
-    Returns (path_to_executable, edition_string).
+    Locate all viable Stata installations ordered by preference.
+
+    Returns:
+        List of (path_to_executable, edition_string) sorted by:
+        - Newest version number found in path (desc)
+        - Edition preference: mp > se > be
+        - Path name (stable tie-breaker)
 
     Behavior:
-    - If STATA_PATH is set and valid, use it.
+    - If STATA_PATH is set and valid, use it (may yield multiple binaries in dir).
     - If STATA_PATH is set but invalid, provide detailed diagnostics and fall back.
     - If auto-discovery fails, raise an error with helpful suggestions.
     """
@@ -274,15 +311,17 @@ def find_stata_path() -> Tuple[str, str]:
                             candidates_in_dir.append((candidate, edition))
 
                 if candidates_in_dir:
-                    # Found valid binary in the directory
-                    candidate, edition = candidates_in_dir[0]
-                    if _is_executable(candidate, system, use_retry=True):
-                        logger.info(
-                            "Found Stata via STATA_PATH directory: %s (%s)",
-                            candidate,
-                            edition,
-                        )
-                        return candidate, edition
+                    resolved = []
+                    for candidate, edition in _sort_candidates(candidates_in_dir):
+                        if _is_executable(candidate, system, use_retry=True):
+                            logger.info(
+                                "Found Stata via STATA_PATH directory: %s (%s)",
+                                candidate,
+                                edition,
+                            )
+                            resolved.append((candidate, edition))
+                    if resolved:
+                        return resolved
 
                 # Enhanced error with diagnostics
                 exists, diagnostics = _validate_path_with_diagnostics(path, system)
@@ -322,7 +361,7 @@ def find_stata_path() -> Tuple[str, str]:
                 )
 
             logger.info("Using STATA_PATH override: %s (%s)", path, edition)
-            return path, edition
+            return [(path, edition)]
 
         except Exception as exc:
             stata_path_error = exc
@@ -343,6 +382,7 @@ def find_stata_path() -> Tuple[str, str]:
             "/Applications/Stata/StataMP.app",
             "/Applications/Stata/StataSE.app",
             "/Applications/Stata/Stata.app",
+            "/Applications/Stata*.app",
             "/Applications/Stata*/Stata*.app",
         ]
 
@@ -442,10 +482,11 @@ def find_stata_path() -> Tuple[str, str]:
                         if _exists_fast(full_path):
                             candidates.append((full_path, edition))
 
-    candidates = _dedupe_preserve(candidates)
+        candidates = _dedupe_preserve(candidates)
 
     # Final validation of candidates (still using fast checks)
-    for path, edition in candidates:
+    validated: List[Tuple[str, str]] = []
+    for path, edition in _sort_candidates(candidates):
         if not _exists_fast(path):
             logger.warning("Discovered candidate missing on disk: %s", path)
             continue
@@ -453,7 +494,10 @@ def find_stata_path() -> Tuple[str, str]:
             logger.warning("Discovered candidate is not executable: %s", path)
             continue
         logger.info("Auto-discovered Stata at %s (%s)", path, edition)
-        return path, edition
+        validated.append((path, edition))
+
+    if validated:
+        return validated
 
     # Build comprehensive error message
     error_parts = ["Could not automatically locate Stata."]
@@ -476,6 +520,14 @@ def find_stata_path() -> Tuple[str, str]:
         raise FileNotFoundError("\n".join(error_parts)) from stata_path_error
     else:
         raise FileNotFoundError("\n".join(error_parts))
+
+
+def find_stata_path() -> Tuple[str, str]:
+    """
+    Backward-compatible wrapper returning the top-ranked candidate.
+    """
+    candidates = find_stata_candidates()
+    return candidates[0]
 
 
 def main() -> int:

@@ -19,7 +19,7 @@ from typing import Optional
 import anyio
 from anyio import get_cancelled_exc_class
 
-from .discovery import find_stata_path
+from .discovery import find_stata_candidates
 from .models import (
     CommandResponse,
     ErrorEnvelope,
@@ -66,26 +66,30 @@ def _get_polars_available() -> bool:
 # This cache ensures Stata discovery runs exactly once per process lifetime
 _discovery_lock = threading.Lock()
 _discovery_result: Optional[Tuple[str, str]] = None  # (path, edition)
+_discovery_candidates: Optional[List[Tuple[str, str]]] = None
 _discovery_attempted = False
 _discovery_error: Optional[Exception] = None
 
 
-def _get_discovered_stata() -> Tuple[str, str]:
+def _get_discovery_candidates() -> List[Tuple[str, str]]:
     """
-    Get the discovered Stata path and edition, running discovery only once.
+    Get ordered discovery candidates, running discovery only once.
     
     Returns:
-        Tuple of (stata_executable_path, edition)
+        List of (stata_executable_path, edition) ordered by preference.
     
     Raises:
         RuntimeError: If Stata discovery fails
     """
-    global _discovery_result, _discovery_attempted, _discovery_error
+    global _discovery_result, _discovery_candidates, _discovery_attempted, _discovery_error
     
     with _discovery_lock:
         # If we've already successfully discovered Stata, return cached result
         if _discovery_result is not None:
-            return _discovery_result
+            return _discovery_candidates or [_discovery_result]
+        
+        if _discovery_candidates is not None:
+            return _discovery_candidates
         
         # If we've already attempted and failed, re-raise the cached error
         if _discovery_attempted and _discovery_error is not None:
@@ -109,13 +113,17 @@ def _get_discovered_stata() -> Tuple[str, str]:
             logger.info("mcp-stata version: %s", pkg_version)
             
             # Run discovery
-            stata_exec_path, edition = find_stata_path()
+            candidates = find_stata_candidates()
             
             # Cache the successful result
-            _discovery_result = (stata_exec_path, edition)
-            logger.info("Discovery found Stata at: %s (%s)", stata_exec_path, edition)
+            _discovery_candidates = candidates
+            if candidates:
+                _discovery_result = candidates[0]
+                logger.info("Discovery found Stata at: %s (%s)", _discovery_result[0], _discovery_result[1])
+            else:
+                raise FileNotFoundError("No Stata candidates discovered")
             
-            return _discovery_result
+            return candidates
             
         except FileNotFoundError as e:
             _discovery_error = e
@@ -126,6 +134,16 @@ def _get_discovered_stata() -> Tuple[str, str]:
                 f"Stata binary is not executable: {e}. "
                 "Point STATA_PATH directly to the Stata binary (e.g., .../Contents/MacOS/stata-mp)."
             ) from e
+
+
+def _get_discovered_stata() -> Tuple[str, str]:
+    """
+    Preserve existing API: return the highest-priority discovered Stata candidate.
+    """
+    candidates = _get_discovery_candidates()
+    if not candidates:
+        raise RuntimeError("Stata binary not found: no candidates discovered")
+    return candidates[0]
 
 
 class StataClient:
@@ -458,41 +476,8 @@ class StataClient:
         try:
             import stata_setup
             
-            # Get discovered Stata path (cached from first call)
-            stata_exec_path, edition = _get_discovered_stata()
-
-            candidates = []
-            # Prefer the binary directory first (documented input for stata_setup)
-            bin_dir = os.path.dirname(stata_exec_path)
-            
-            # 2. App Bundle: .../StataMP.app (macOS only)
-            curr = bin_dir
-            app_bundle = None
-            while len(curr) > 1:
-                if curr.endswith(".app"):
-                    app_bundle = curr
-                    break
-                parent = os.path.dirname(curr)
-                if parent == curr: 
-                    break
-                curr = parent
-
-            ordered_candidates = []
-            if bin_dir:
-                ordered_candidates.append(bin_dir)
-            if app_bundle:
-                ordered_candidates.append(app_bundle)
-                parent_dir = os.path.dirname(app_bundle)
-                if parent_dir not in ordered_candidates:
-                    ordered_candidates.append(parent_dir)
-            
-            # Deduplicate preserving order
-            seen = set()
-            candidates = []
-            for c in ordered_candidates:
-                if c not in seen:
-                    seen.add(c)
-                    candidates.append(c)
+            # Get discovered Stata paths (cached from first call)
+            discovery_candidates = _get_discovery_candidates()
 
             # Diagnostic: force faulthandler to output to stderr for C crashes
             import faulthandler
@@ -501,13 +486,49 @@ class StataClient:
 
             success = False
             last_error = None
-            for path in candidates:
-                try:
-                    # 1. Pre-flight check in a subprocess to capture hard exits/crashes
-                    sys.stderr.write(f"[mcp_stata] DEBUG: Pre-flight check for path '{path}'\n")
-                    sys.stderr.flush()
-                    
-                    preflight_code = f"""
+            chosen_exec: Optional[Tuple[str, str]] = None
+
+            for stata_exec_path, edition in discovery_candidates:
+                candidates = []
+                # Prefer the binary directory first (documented input for stata_setup)
+                bin_dir = os.path.dirname(stata_exec_path)
+                
+                # 2. App Bundle: .../StataMP.app (macOS only)
+                curr = bin_dir
+                app_bundle = None
+                while len(curr) > 1:
+                    if curr.endswith(".app"):
+                        app_bundle = curr
+                        break
+                    parent = os.path.dirname(curr)
+                    if parent == curr: 
+                        break
+                    curr = parent
+
+                ordered_candidates = []
+                if bin_dir:
+                    ordered_candidates.append(bin_dir)
+                if app_bundle:
+                    ordered_candidates.append(app_bundle)
+                    parent_dir = os.path.dirname(app_bundle)
+                    if parent_dir not in ordered_candidates:
+                        ordered_candidates.append(parent_dir)
+                
+                # Deduplicate preserving order
+                seen = set()
+                candidates = []
+                for c in ordered_candidates:
+                    if c not in seen:
+                        seen.add(c)
+                        candidates.append(c)
+
+                for path in candidates:
+                    try:
+                        # 1. Pre-flight check in a subprocess to capture hard exits/crashes
+                        sys.stderr.write(f"[mcp_stata] DEBUG: Pre-flight check for path '{path}'\n")
+                        sys.stderr.flush()
+                        
+                        preflight_code = f"""
 import sys
 import stata_setup
 from contextlib import redirect_stdout, redirect_stderr
@@ -521,55 +542,63 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         print(f'PREFLIGHT_FAIL: {{e}}', file=sys.stderr)
         sys.exit(1)
 """
-                    
-                    try:
-                        res = subprocess.run(
-                            [sys.executable, "-c", preflight_code],
-                            capture_output=True, text=True, timeout=30
-                        )
-                        if res.returncode != 0:
-                            sys.stderr.write(f"[mcp_stata] Pre-flight failed (rc={res.returncode}) for '{path}'\n")
-                            if res.stdout.strip():
-                                sys.stderr.write(f"--- Pre-flight stdout ---\n{res.stdout.strip()}\n")
-                            if res.stderr.strip():
-                                sys.stderr.write(f"--- Pre-flight stderr ---\n{res.stderr.strip()}\n")
+                        
+                        try:
+                            res = subprocess.run(
+                                [sys.executable, "-c", preflight_code],
+                                capture_output=True, text=True, timeout=30
+                            )
+                            if res.returncode != 0:
+                                sys.stderr.write(f"[mcp_stata] Pre-flight failed (rc={res.returncode}) for '{path}'\n")
+                                if res.stdout.strip():
+                                    sys.stderr.write(f"--- Pre-flight stdout ---\n{res.stdout.strip()}\n")
+                                if res.stderr.strip():
+                                    sys.stderr.write(f"--- Pre-flight stderr ---\n{res.stderr.strip()}\n")
+                                sys.stderr.flush()
+                                last_error = f"Pre-flight failed: {res.stdout.strip()} {res.stderr.strip()}"
+                                continue
+                            else:
+                                sys.stderr.write(f"[mcp_stata] Pre-flight succeeded for '{path}'. Proceeding to in-process init.\n")
+                                sys.stderr.flush()
+                        except Exception as pre_e:
+                            sys.stderr.write(f"[mcp_stata] Pre-flight execution error for '{path}': {repr(pre_e)}\n")
                             sys.stderr.flush()
-                            last_error = f"Pre-flight failed: {res.stdout.strip()} {res.stderr.strip()}"
+                            last_error = pre_e
                             continue
-                        else:
-                            sys.stderr.write(f"[mcp_stata] Pre-flight succeeded for '{path}'. Proceeding to in-process init.\n")
-                            sys.stderr.flush()
-                    except Exception as pre_e:
-                        sys.stderr.write(f"[mcp_stata] Pre-flight execution error for '{path}': {repr(pre_e)}\n")
+
+                        msg = f"[mcp_stata] DEBUG: In-process stata_setup.config('{path}', '{edition}')\n"
+                        sys.stderr.write(msg)
                         sys.stderr.flush()
-                        last_error = pre_e
+                        # Redirect both sys.stdout/err AND the raw fds to our stderr pipe.
+                        with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr), self._safe_redirect_fds():
+                            stata_setup.config(path, edition)
+                        
+                        sys.stderr.write(f"[mcp_stata] DEBUG: stata_setup.config succeeded for path: {path}\n")
+                        sys.stderr.flush()
+                        success = True
+                        chosen_exec = (stata_exec_path, edition)
+                        logger.info("stata_setup.config succeeded with path: %s", path)
+                        break
+                    except BaseException as e:
+                        last_error = e
+                        sys.stderr.write(f"[mcp_stata] WARNING: In-process stata_setup.config caught: {repr(e)}\n")
+                        sys.stderr.flush()
+                        logger.warning("stata_setup.config failed for path '%s': %s", path, e)
+                        if isinstance(e, SystemExit):
+                            break
                         continue
 
-                    msg = f"[mcp_stata] DEBUG: In-process stata_setup.config('{path}', '{edition}')\n"
-                    sys.stderr.write(msg)
-                    sys.stderr.flush()
-                    # Redirect both sys.stdout/err AND the raw fds to our stderr pipe.
-                    with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr), self._safe_redirect_fds():
-                        stata_setup.config(path, edition)
-                    
-                    sys.stderr.write(f"[mcp_stata] DEBUG: stata_setup.config succeeded for path: {path}\n")
-                    sys.stderr.flush()
-                    success = True
-                    logger.info("stata_setup.config succeeded with path: %s", path)
+                if success:
+                    # Cache winning candidate for subsequent lookups
+                    global _discovery_result
+                    if chosen_exec:
+                        _discovery_result = chosen_exec
                     break
-                except BaseException as e:
-                    last_error = e
-                    sys.stderr.write(f"[mcp_stata] WARNING: In-process stata_setup.config caught: {repr(e)}\n")
-                    sys.stderr.flush()
-                    logger.warning("stata_setup.config failed for path '%s': %s", path, e)
-                    if isinstance(e, SystemExit):
-                        break
-                    continue
 
             if not success:
                 error_msg = (
                     f"stata_setup.config failed to initialize Stata. "
-                    f"Tried candidates: {candidates}. "
+                    f"Tried candidates: {discovery_candidates}. "
                     f"Last error: {repr(last_error)}"
                 )
                 sys.stderr.write(f"[mcp_stata] ERROR: {error_msg}\n")
