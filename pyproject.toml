@@ -1,6 +1,6 @@
 [project]
 name = "mcp-stata"
-dynamic = ["version"]
+version = "0.0.0"
 description = " A lightweight Model Context Protocol (MCP) server for Stata. Execute commands, inspect data, retrieve stored results (`r()`/`e()`), and view graphs in your chat interface. Built for economists who want to integrate LLM assistance into their Stata workflow. "
 readme = "README.md"
 requires-python = ">=3.12"
@@ -39,6 +39,7 @@ dev = [
     "ruff>=0.4.0",
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
+    "python-semantic-release>=9.8.0",
 ]
 
 [project.urls]
@@ -50,11 +51,8 @@ Issues = "https://github.com/tmonk/mcp-stata/issues"
 mcp-stata = "mcp_stata.server:main"
 
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-[tool.hatch.version]
-source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_stata"]
@@ -76,3 +74,12 @@ addopts = "-v --cov=mcp_stata --cov-report=term-missing"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "main"
+commit_message = "chore(release): {version} [skip ci]"
+tag_format = "v{version}"
+
+[tool.semantic_release.publish]
+upload_to_vcs_release = true
