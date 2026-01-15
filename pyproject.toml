@@ -76,10 +76,9 @@ markers = [
 ]
 
 [tool.semantic_release]
+assets = ["server.json"]
+build_command = "python scripts/sync_server_version.py"
 version_toml = ["pyproject.toml:project.version"]
 branch = "main"
 commit_message = "chore(release): {version} [skip ci]"
 tag_format = "v{version}"
-
-[tool.semantic_release.publish]
-upload_to_vcs_release = true
