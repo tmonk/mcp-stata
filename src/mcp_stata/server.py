@@ -108,6 +108,22 @@ async def _wait_for_log_path(task_info: BackgroundTask) -> None:
         await anyio.sleep(0.01)
 
 
+async def _notify_task_done(session: object | None, task_info: BackgroundTask, request_id: object | None) -> None:
+    if session is None:
+        return
+    payload = {
+        "event": "task_done",
+        "task_id": task_info.task_id,
+        "status": "done" if task_info.done else "unknown",
+        "log_path": task_info.log_path,
+        "error": task_info.error,
+    }
+    try:
+        await session.send_log_message(level="info", data=json.dumps(payload), related_request_id=request_id)
+    except Exception:
+        return
+
+
 @mcp.tool()
 async def run_do_file_background(
     path: str,
@@ -119,8 +135,14 @@ async def run_do_file_background(
     max_output_lines: int = None,
     cwd: str | None = None,
 ) -> str:
-    """Run a Stata do-file in the background and return a task id immediately."""
+    """Run a Stata do-file in the background and return a task id.
+
+    Notifications:
+      - logMessage: {"event":"log_path","path":"..."}
+      - logMessage: {"event":"task_done","task_id":"...","status":"done","log_path":"...","error":null}
+    """
     session = ctx.request_context.session if ctx is not None else None
+    request_id = ctx.request_id if ctx is not None else None
     task_id = uuid.uuid4().hex
     task_info = BackgroundTask(
         task_id=task_id,
@@ -173,6 +195,7 @@ async def run_do_file_background(
             task_info.error = str(exc)
         finally:
             task_info.done = True
+            await _notify_task_done(session, task_info, request_id)
 
     task_info.task = asyncio.create_task(_run())
     _register_task(task_info)
@@ -182,6 +205,7 @@ async def run_do_file_background(
 
 @mcp.tool()
 def get_task_status(task_id: str) -> str:
+    """Return task status for background executions."""
     task_info = _background_tasks.get(task_id)
     if task_info is None:
         return json.dumps({"task_id": task_id, "status": "not_found"})
@@ -197,6 +221,7 @@ def get_task_status(task_id: str) -> str:
 
 @mcp.tool()
 def get_task_result(task_id: str) -> str:
+    """Return task result for background executions."""
     task_info = _background_tasks.get(task_id)
     if task_info is None:
         return json.dumps({"task_id": task_id, "status": "not_found"})
@@ -213,6 +238,7 @@ def get_task_result(task_id: str) -> str:
 
 @mcp.tool()
 def cancel_task(task_id: str) -> str:
+    """Request cancellation of a background task."""
     task_info = _background_tasks.get(task_id)
     if task_info is None:
         return json.dumps({"task_id": task_id, "status": "not_found"})
@@ -233,8 +259,14 @@ async def run_command_background(
     max_output_lines: int = None,
     cwd: str | None = None,
 ) -> str:
-    """Run a Stata command in the background and return a task id immediately."""
+    """Run a Stata command in the background and return a task id.
+
+    Notifications:
+      - logMessage: {"event":"log_path","path":"..."}
+      - logMessage: {"event":"task_done","task_id":"...","status":"done","log_path":"...","error":null}
+    """
     session = ctx.request_context.session if ctx is not None else None
+    request_id = ctx.request_id if ctx is not None else None
     task_id = uuid.uuid4().hex
     task_info = BackgroundTask(
         task_id=task_id,
@@ -287,6 +319,7 @@ async def run_command_background(
             task_info.error = str(exc)
         finally:
             task_info.done = True
+            await _notify_task_done(session, task_info, request_id)
 
     task_info.task = asyncio.create_task(_run())
     _register_task(task_info)
