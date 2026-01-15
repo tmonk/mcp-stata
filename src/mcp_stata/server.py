@@ -18,6 +18,7 @@ import json
 import os
 import re
 import uuid
+from functools import wraps
 from typing import Optional, Dict
 
 from .ui_http import UIChannelManager
@@ -122,6 +123,77 @@ async def _notify_task_done(session: object | None, task_info: BackgroundTask, r
         await session.send_log_message(level="info", data=json.dumps(payload), related_request_id=request_id)
     except Exception:
         return
+
+
+def _log_tool_call(tool_name: str, ctx: Context | None = None) -> None:
+    request_id = None
+    if ctx is not None:
+        request_id = getattr(ctx, "request_id", None)
+    logger.info("MCP tool call: %s request_id=%s", tool_name, request_id)
+
+
+def _extract_ctx(args: tuple[object, ...], kwargs: dict[str, object]) -> Context | None:
+    ctx = kwargs.get("ctx")
+    if isinstance(ctx, Context):
+        return ctx
+    for arg in args:
+        if isinstance(arg, Context):
+            return arg
+    return None
+
+
+_mcp_tool = mcp.tool
+_mcp_resource = mcp.resource
+
+
+def tool(*tool_args, **tool_kwargs):
+    decorator = _mcp_tool(*tool_args, **tool_kwargs)
+
+    def outer(func):
+        if asyncio.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_inner(*args, **kwargs):
+                _log_tool_call(func.__name__, _extract_ctx(args, kwargs))
+                return await func(*args, **kwargs)
+
+            return decorator(async_inner)
+
+        @wraps(func)
+        def sync_inner(*args, **kwargs):
+            _log_tool_call(func.__name__, _extract_ctx(args, kwargs))
+            return func(*args, **kwargs)
+
+        return decorator(sync_inner)
+
+    return outer
+
+
+mcp.tool = tool
+
+
+def resource(*resource_args, **resource_kwargs):
+    decorator = _mcp_resource(*resource_args, **resource_kwargs)
+
+    def outer(func):
+        if asyncio.iscoroutinefunction(func):
+            @wraps(func)
+            async def async_inner(*args, **kwargs):
+                _log_tool_call(func.__name__, _extract_ctx(args, kwargs))
+                return await func(*args, **kwargs)
+
+            return decorator(async_inner)
+
+        @wraps(func)
+        def sync_inner(*args, **kwargs):
+            _log_tool_call(func.__name__, _extract_ctx(args, kwargs))
+            return func(*args, **kwargs)
+
+        return decorator(sync_inner)
+
+    return outer
+
+
+mcp.resource = resource
 
 
 @mcp.tool()
