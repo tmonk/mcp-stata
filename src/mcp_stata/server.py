@@ -276,11 +276,26 @@ async def run_do_file_background(
 
 
 @mcp.tool()
-def get_task_status(task_id: str) -> str:
-    """Return task status for background executions."""
+def get_task_status(task_id: str, allow_polling: bool = False) -> str:
+    """Return task status for background executions.
+
+    Polling is disabled by default; set allow_polling=True for legacy callers.
+    """
+    notice = "Prefer task_done logMessage notifications over polling get_task_status."
+    if not allow_polling:
+        logger.warning(
+            "get_task_status called without allow_polling; clients must use task_done logMessage notifications"
+        )
+        return json.dumps({
+            "task_id": task_id,
+            "status": "polling_not_allowed",
+            "error": "Polling is disabled; use task_done logMessage notifications.",
+            "notice": notice,
+        })
+    logger.warning("get_task_status called; clients should use task_done logMessage notifications instead of polling")
     task_info = _background_tasks.get(task_id)
     if task_info is None:
-        return json.dumps({"task_id": task_id, "status": "not_found"})
+        return json.dumps({"task_id": task_id, "status": "not_found", "notice": notice})
     return json.dumps({
         "task_id": task_id,
         "status": "done" if task_info.done else "running",
@@ -288,22 +303,44 @@ def get_task_status(task_id: str) -> str:
         "created_at": task_info.created_at.isoformat(),
         "log_path": task_info.log_path,
         "error": task_info.error,
+        "notice": notice,
     })
 
 
 @mcp.tool()
-def get_task_result(task_id: str) -> str:
-    """Return task result for background executions."""
+def get_task_result(task_id: str, allow_polling: bool = False) -> str:
+    """Return task result for background executions.
+
+    Polling is disabled by default; set allow_polling=True for legacy callers.
+    """
+    notice = "Prefer task_done logMessage notifications over polling get_task_result."
+    if not allow_polling:
+        logger.warning(
+            "get_task_result called without allow_polling; clients must use task_done logMessage notifications"
+        )
+        return json.dumps({
+            "task_id": task_id,
+            "status": "polling_not_allowed",
+            "error": "Polling is disabled; use task_done logMessage notifications.",
+            "notice": notice,
+        })
+    logger.warning("get_task_result called; clients should use task_done logMessage notifications instead of polling")
     task_info = _background_tasks.get(task_id)
     if task_info is None:
-        return json.dumps({"task_id": task_id, "status": "not_found"})
+        return json.dumps({"task_id": task_id, "status": "not_found", "notice": notice})
     if not task_info.done:
-        return json.dumps({"task_id": task_id, "status": "running", "log_path": task_info.log_path})
+        return json.dumps({
+            "task_id": task_id,
+            "status": "running",
+            "log_path": task_info.log_path,
+            "notice": notice,
+        })
     return json.dumps({
         "task_id": task_id,
         "status": "done",
         "log_path": task_info.log_path,
         "error": task_info.error,
+        "notice": notice,
         "result": task_info.result,
     })
 

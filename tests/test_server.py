@@ -66,7 +66,7 @@ def _wait_for_task_result_sync(task_id: str, timeout: float = 5.0) -> dict:
     async def _main() -> dict:
         with anyio.fail_after(timeout):
             while True:
-                result = json.loads(get_task_result(task_id))
+                result = json.loads(get_task_result(task_id, allow_polling=True))
                 if result.get("status") == "done":
                     return result
                 await anyio.sleep(0.05)
@@ -249,7 +249,7 @@ def test_server_background_tools(init_server, tmp_path):
     assert cmd_resp["task_id"]
     assert cmd_resp.get("log_path")
 
-    status = json.loads(get_task_status(cmd_resp["task_id"]))
+    status = json.loads(get_task_status(cmd_resp["task_id"], allow_polling=True))
     assert status["status"] in {"running", "done"}
     assert status.get("log_path")
 
