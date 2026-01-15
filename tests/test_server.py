@@ -5,6 +5,7 @@ from pathlib import Path
 from mcp_stata.server import (
     mcp,
     run_command,
+    run_command_background,
     read_log,
     find_in_log,
     get_data,
@@ -22,6 +23,9 @@ from mcp_stata.server import (
     load_data,
     codebook,
     run_do_file,
+    run_do_file_background,
+    get_task_status,
+    get_task_result,
 )
 
 # Mark all tests in this module as requiring Stata
@@ -40,6 +44,32 @@ def _run_command_sync(*args, **kwargs) -> str:
 def _run_do_file_sync(*args, **kwargs) -> str:
     async def _main() -> str:
         return await run_do_file(*args, **kwargs)
+
+    return anyio.run(_main)
+
+
+def _run_command_background_sync(*args, **kwargs) -> str:
+    async def _main() -> str:
+        return await run_command_background(*args, **kwargs)
+
+    return anyio.run(_main)
+
+
+def _run_do_file_background_sync(*args, **kwargs) -> str:
+    async def _main() -> str:
+        return await run_do_file_background(*args, **kwargs)
+
+    return anyio.run(_main)
+
+
+def _wait_for_task_result_sync(task_id: str, timeout: float = 5.0) -> dict:
+    async def _main() -> dict:
+        with anyio.fail_after(timeout):
+            while True:
+                result = json.loads(get_task_result(task_id))
+                if result.get("status") == "done":
+                    return result
+                await anyio.sleep(0.05)
 
     return anyio.run(_main)
 
@@ -65,7 +95,7 @@ def test_server_tools(init_server):
     assert any("10" in "\n".join(m["context"]) for m in find_basic["matches"])
 
     # Test find_in_log tool with regex and context window
-    find_regex = json.loads(find_in_log(res["log_path"], r"\\b10\\b", regex=True, before=1, after=1))
+    find_regex = json.loads(find_in_log(res["log_path"], r"\b10\b", regex=True, before=1, after=1))
     assert find_regex["matches"]
     assert all(len(m["context"]) >= 1 for m in find_regex["matches"])
 
@@ -212,6 +242,30 @@ def test_server_tools_with_cwd(tmp_path, init_server):
     assert cmd_resp.get("log_path")
     text2 = Path(cmd_resp["log_path"]).read_text(encoding="utf-8", errors="replace")
     assert "child-ok" in text2
+
+
+def test_server_background_tools(init_server, tmp_path):
+    cmd_resp = json.loads(_run_command_background_sync("display 7", as_json=True))
+    assert cmd_resp["task_id"]
+    assert cmd_resp.get("log_path")
+
+    status = json.loads(get_task_status(cmd_resp["task_id"]))
+    assert status["status"] in {"running", "done"}
+    assert status.get("log_path")
+
+    cmd_result = _wait_for_task_result_sync(cmd_resp["task_id"])
+    assert cmd_result["status"] == "done"
+    assert cmd_result.get("result")
+
+    dofile = tmp_path / "mcp_background.do"
+    dofile.write_text('display "bg-ok"\n')
+    do_resp = json.loads(_run_do_file_background_sync(str(dofile), as_json=True))
+    assert do_resp["task_id"]
+    assert do_resp.get("log_path")
+
+    do_result = _wait_for_task_result_sync(do_resp["task_id"])
+    assert do_result["status"] == "done"
+    assert do_result.get("result")
 
 
 def test_export_graphs_all_multiple(init_server):

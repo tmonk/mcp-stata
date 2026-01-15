@@ -144,3 +144,142 @@ def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):
             assert progress_events, "Expected to receive at least one progress notification"
 
     anyio.run(main)
+
+
+def test_e2e_background_command_returns_log_path():
+    cli = shutil.which("mcp-stata")
+    if not cli:
+        candidates: list[Path] = []
+
+        scripts_dir = sysconfig.get_path("scripts")
+        if scripts_dir:
+            scripts_path = Path(scripts_dir)
+            if sys.platform == "win32":
+                candidates.append(scripts_path / "mcp-stata.exe")
+            candidates.append(scripts_path / "mcp-stata")
+
+        exe_dir = Path(sys.executable).parent
+        if sys.platform == "win32":
+            candidates.append(exe_dir / "mcp-stata.exe")
+        candidates.append(exe_dir / "mcp-stata")
+
+        for candidate in candidates:
+            if candidate.exists():
+                cli = str(candidate)
+                break
+
+    if not cli:
+        pytest.skip("mcp-stata CLI not found on PATH or next to the active Python interpreter")
+
+    async def main() -> None:
+        server_params = StdioServerParameters(command=cli, args=[], cwd=os.getcwd())
+
+        async with AsyncExitStack() as stack:
+            read_stream, write_stream = await stack.enter_async_context(stdio_client(server_params))
+            session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+            await session.initialize()
+
+            tools = await session.list_tools()
+            tool_names = {t.name for t in tools.tools}
+            if "run_command_background" not in tool_names:
+                pytest.skip("Server does not expose run_command_background")
+
+            result = await session.call_tool(
+                "run_command_background",
+                {
+                    "code": "display 123",
+                    "echo": True,
+                    "as_json": True,
+                    "trace": False,
+                    "raw": False,
+                },
+            )
+
+            payload = json.loads(result.content[0].text)
+            assert payload.get("task_id")
+            assert payload.get("log_path")
+
+            task_id = payload["task_id"]
+
+            with anyio.fail_after(30):
+                while True:
+                    task_result = await session.call_tool("get_task_result", {"task_id": task_id})
+                    parsed = json.loads(task_result.content[0].text)
+                    if parsed.get("status") == "done":
+                        break
+                    await anyio.sleep(0.05)
+
+            assert parsed.get("result")
+
+    anyio.run(main)
+
+
+def test_e2e_background_do_file_returns_log_path(tmp_path):
+    cli = shutil.which("mcp-stata")
+    if not cli:
+        candidates: list[Path] = []
+
+        scripts_dir = sysconfig.get_path("scripts")
+        if scripts_dir:
+            scripts_path = Path(scripts_dir)
+            if sys.platform == "win32":
+                candidates.append(scripts_path / "mcp-stata.exe")
+            candidates.append(scripts_path / "mcp-stata")
+
+        exe_dir = Path(sys.executable).parent
+        if sys.platform == "win32":
+            candidates.append(exe_dir / "mcp-stata.exe")
+        candidates.append(exe_dir / "mcp-stata")
+
+        for candidate in candidates:
+            if candidate.exists():
+                cli = str(candidate)
+                break
+
+    if not cli:
+        pytest.skip("mcp-stata CLI not found on PATH or next to the active Python interpreter")
+
+    dofile = tmp_path / "mcp_background_e2e.do"
+    dofile.write_text('display "bg_start"\n' 'sleep 500\n' 'display "bg_end"\n')
+
+    async def main() -> None:
+        server_params = StdioServerParameters(command=cli, args=[], cwd=os.getcwd())
+
+        async with AsyncExitStack() as stack:
+            read_stream, write_stream = await stack.enter_async_context(stdio_client(server_params))
+            session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+            await session.initialize()
+
+            tools = await session.list_tools()
+            tool_names = {t.name for t in tools.tools}
+            if "run_do_file_background" not in tool_names:
+                pytest.skip("Server does not expose run_do_file_background")
+
+            result = await session.call_tool(
+                "run_do_file_background",
+                {
+                    "path": str(dofile),
+                    "echo": True,
+                    "as_json": True,
+                    "trace": False,
+                    "raw": False,
+                },
+            )
+
+            payload = json.loads(result.content[0].text)
+            assert payload.get("task_id")
+            assert payload.get("log_path")
+
+            task_id = payload["task_id"]
+
+            with anyio.fail_after(30):
+                while True:
+                    task_result = await session.call_tool("get_task_result", {"task_id": task_id})
+                    parsed = json.loads(task_result.content[0].text)
+                    if parsed.get("status") == "done":
+                        break
+                    await anyio.sleep(0.05)
+
+            assert parsed.get("result")
+
+    anyio.run(main)

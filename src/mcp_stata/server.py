@@ -1,4 +1,7 @@
 import anyio
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from mcp.server.fastmcp import Context, FastMCP
 import mcp.types as types
@@ -14,6 +17,8 @@ import sys
 import json
 import os
 import re
+import uuid
+from typing import Optional, Dict
 
 from .ui_http import UIChannelManager
 
@@ -56,6 +61,237 @@ def setup_logging():
 mcp = FastMCP("mcp_stata")
 client = StataClient()
 ui_channel = UIChannelManager(client)
+
+
+@dataclass
+class BackgroundTask:
+    task_id: str
+    kind: str
+    task: asyncio.Task
+    created_at: datetime
+    log_path: Optional[str] = None
+    result: Optional[str] = None
+    error: Optional[str] = None
+    done: bool = False
+
+
+_background_tasks: Dict[str, BackgroundTask] = {}
+
+
+def _register_task(task_info: BackgroundTask, max_tasks: int = 100) -> None:
+    _background_tasks[task_info.task_id] = task_info
+    if len(_background_tasks) <= max_tasks:
+        return
+    completed = [task for task in _background_tasks.values() if task.done]
+    completed.sort(key=lambda item: item.created_at)
+    for task in completed[: max(0, len(_background_tasks) - max_tasks)]:
+        _background_tasks.pop(task.task_id, None)
+
+
+def _format_command_result(result, raw: bool, as_json: bool) -> str:
+    if raw:
+        if result.success:
+            return result.log_path or ""
+        if result.error:
+            msg = result.error.message
+            if result.error.rc is not None:
+                msg = f"{msg}\nrc={result.error.rc}"
+            return msg
+        return result.log_path or ""
+    if as_json:
+        return result.model_dump_json()
+    return result.model_dump_json()
+
+
+async def _wait_for_log_path(task_info: BackgroundTask) -> None:
+    while task_info.log_path is None and not task_info.done:
+        await anyio.sleep(0.01)
+
+
+@mcp.tool()
+async def run_do_file_background(
+    path: str,
+    ctx: Context | None = None,
+    echo: bool = True,
+    as_json: bool = True,
+    trace: bool = False,
+    raw: bool = False,
+    max_output_lines: int = None,
+    cwd: str | None = None,
+) -> str:
+    """Run a Stata do-file in the background and return a task id immediately."""
+    session = ctx.request_context.session if ctx is not None else None
+    task_id = uuid.uuid4().hex
+    task_info = BackgroundTask(
+        task_id=task_id,
+        kind="do_file",
+        task=None,
+        created_at=datetime.utcnow(),
+    )
+
+    async def notify_log(text: str) -> None:
+        if session is not None:
+            await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict) and payload.get("event") == "log_path":
+                task_info.log_path = payload.get("path")
+        except Exception:
+            return
+
+    progress_token = None
+    if ctx is not None and ctx.request_context.meta is not None:
+        progress_token = ctx.request_context.meta.progressToken
+
+    async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
+        if session is None or progress_token is None:
+            return
+        await session.send_progress_notification(
+            progress_token=progress_token,
+            progress=progress,
+            total=total,
+            message=message,
+            related_request_id=ctx.request_id,
+        )
+
+    async def _run() -> None:
+        try:
+            result = await client.run_do_file_streaming(
+                path,
+                notify_log=notify_log,
+                notify_progress=notify_progress if progress_token is not None else None,
+                echo=echo,
+                trace=trace,
+                max_output_lines=max_output_lines,
+                cwd=cwd,
+            )
+            ui_channel.notify_potential_dataset_change()
+            task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
+            if result.error:
+                task_info.error = result.error.message
+        except Exception as exc:  # pragma: no cover - defensive
+            task_info.error = str(exc)
+        finally:
+            task_info.done = True
+
+    task_info.task = asyncio.create_task(_run())
+    _register_task(task_info)
+    await _wait_for_log_path(task_info)
+    return json.dumps({"task_id": task_id, "status": "started", "log_path": task_info.log_path})
+
+
+@mcp.tool()
+def get_task_status(task_id: str) -> str:
+    task_info = _background_tasks.get(task_id)
+    if task_info is None:
+        return json.dumps({"task_id": task_id, "status": "not_found"})
+    return json.dumps({
+        "task_id": task_id,
+        "status": "done" if task_info.done else "running",
+        "kind": task_info.kind,
+        "created_at": task_info.created_at.isoformat(),
+        "log_path": task_info.log_path,
+        "error": task_info.error,
+    })
+
+
+@mcp.tool()
+def get_task_result(task_id: str) -> str:
+    task_info = _background_tasks.get(task_id)
+    if task_info is None:
+        return json.dumps({"task_id": task_id, "status": "not_found"})
+    if not task_info.done:
+        return json.dumps({"task_id": task_id, "status": "running", "log_path": task_info.log_path})
+    return json.dumps({
+        "task_id": task_id,
+        "status": "done",
+        "log_path": task_info.log_path,
+        "error": task_info.error,
+        "result": task_info.result,
+    })
+
+
+@mcp.tool()
+def cancel_task(task_id: str) -> str:
+    task_info = _background_tasks.get(task_id)
+    if task_info is None:
+        return json.dumps({"task_id": task_id, "status": "not_found"})
+    if task_info.task and not task_info.task.done():
+        task_info.task.cancel()
+        return json.dumps({"task_id": task_id, "status": "cancelling"})
+    return json.dumps({"task_id": task_id, "status": "done", "log_path": task_info.log_path})
+
+
+@mcp.tool()
+async def run_command_background(
+    code: str,
+    ctx: Context | None = None,
+    echo: bool = True,
+    as_json: bool = True,
+    trace: bool = False,
+    raw: bool = False,
+    max_output_lines: int = None,
+    cwd: str | None = None,
+) -> str:
+    """Run a Stata command in the background and return a task id immediately."""
+    session = ctx.request_context.session if ctx is not None else None
+    task_id = uuid.uuid4().hex
+    task_info = BackgroundTask(
+        task_id=task_id,
+        kind="command",
+        task=None,
+        created_at=datetime.utcnow(),
+    )
+
+    async def notify_log(text: str) -> None:
+        if session is not None:
+            await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict) and payload.get("event") == "log_path":
+                task_info.log_path = payload.get("path")
+        except Exception:
+            return
+
+    progress_token = None
+    if ctx is not None and ctx.request_context.meta is not None:
+        progress_token = ctx.request_context.meta.progressToken
+
+    async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
+        if session is None or progress_token is None:
+            return
+        await session.send_progress_notification(
+            progress_token=progress_token,
+            progress=progress,
+            total=total,
+            message=message,
+            related_request_id=ctx.request_id,
+        )
+
+    async def _run() -> None:
+        try:
+            result = await client.run_command_streaming(
+                code,
+                notify_log=notify_log,
+                notify_progress=notify_progress if progress_token is not None else None,
+                echo=echo,
+                trace=trace,
+                max_output_lines=max_output_lines,
+                cwd=cwd,
+            )
+            ui_channel.notify_potential_dataset_change()
+            task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
+            if result.error:
+                task_info.error = result.error.message
+        except Exception as exc:  # pragma: no cover - defensive
+            task_info.error = str(exc)
+        finally:
+            task_info.done = True
+
+    task_info.task = asyncio.create_task(_run())
+    _register_task(task_info)
+    await _wait_for_log_path(task_info)
+    return json.dumps({"task_id": task_id, "status": "started", "log_path": task_info.log_path})
 
 @mcp.tool()
 async def run_command(
