@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v1.12.1 (2026-01-15)
+
+### Bug Fixes
+
+- **tools**: Deprecate polling in favor of task_done notifications
+  ([`10ea881`](https://github.com/tmonk/mcp-stata/commit/10ea881dd88408d8fca8d5992980b05e508f1f0c))
+
+### Chores
+
+- **release**: Allow manual PyPI publishes
+  ([`5c0a4ce`](https://github.com/tmonk/mcp-stata/commit/5c0a4cebb418ed59be56bd50beb95b67282584f1))
+
+- **release**: Trigger PyPI publish
+  ([`a57516e`](https://github.com/tmonk/mcp-stata/commit/a57516eac1b1c372376116847f73c13b4a5bb4b8))
+
+
 ## v1.12.0 (2026-01-15)
 
 ### Chores
