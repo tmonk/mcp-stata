@@ -5,6 +5,8 @@ from pathlib import Path
 from mcp_stata.server import (
     mcp,
     run_command,
+    read_log,
+    find_in_log,
     get_data,
     describe,
     list_graphs,
@@ -56,6 +58,20 @@ def test_server_tools(init_server):
     assert res.get("log_path")
     log_text = Path(res["log_path"]).read_text(encoding="utf-8", errors="replace")
     assert "10" in log_text
+
+    # Test find_in_log tool (basic, case-insensitive)
+    find_basic = json.loads(find_in_log(res["log_path"], "10", max_matches=5))
+    assert find_basic["matches"]
+    assert any("10" in "\n".join(m["context"]) for m in find_basic["matches"])
+
+    # Test find_in_log tool with regex and context window
+    find_regex = json.loads(find_in_log(res["log_path"], r"\\b10\\b", regex=True, before=1, after=1))
+    assert find_regex["matches"]
+    assert all(len(m["context"]) >= 1 for m in find_regex["matches"])
+
+    # Test find_in_log tool with case sensitivity (expect no matches)
+    find_case = json.loads(find_in_log(res["log_path"], "DISPLAY", case_sensitive=True))
+    assert find_case["matches"] == []
     res_struct = json.loads(_run_command_sync("display 2+3"))
     assert res_struct["rc"] == 0
     assert res_struct["stdout"] == ""

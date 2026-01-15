@@ -208,6 +208,9 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
   - Always writes output to a temporary log file and emits a single `notifications/logMessage` containing `{"event":"log_path","path":"..."}` so the client can tail it locally.
   - May emit `notifications/progress` when the client provides a progress token/callback.
 * `read_log(path, offset=0, max_bytes=65536)`: Read a slice of a previously-provided log file (JSON: `path`, `offset`, `next_offset`, `data`).
+* `find_in_log(path, query, start_offset=0, max_bytes=5_000_000, before=2, after=2, case_sensitive=False, regex=False, max_matches=50)`: Search a log file for text and return context windows.
+  - Returns JSON with `matches` (context lines, line indices), `next_offset`, and `truncated` if `max_matches` is hit.
+  - Supports literal or regex search with bounded read window for large logs.
 * `load_data(source, clear=True, as_json=True, raw=False, max_output_lines=None)`: Heuristic loader (sysuse/webuse/use/path/URL) with JSON envelope unless `raw=True`. Supports output truncation.
 * `get_data(start=0, count=50)`: View dataset rows (JSON response, capped to 500 rows).
 * `get_ui_channel()`: Return a short-lived localhost HTTP endpoint + bearer token for the UI-only data browser.

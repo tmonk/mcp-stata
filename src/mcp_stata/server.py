@@ -13,6 +13,7 @@ import logging
 import sys
 import json
 import os
+import re
 
 from .ui_http import UIChannelManager
 
@@ -166,6 +167,111 @@ def read_log(path: str, offset: int = 0, max_bytes: int = 65536) -> str:
         return json.dumps({"path": path, "offset": offset, "next_offset": offset, "data": ""})
     except Exception as e:
         return json.dumps({"path": path, "offset": offset, "next_offset": offset, "data": f"ERROR: {e}"})
+
+
+@mcp.tool()
+def find_in_log(
+    path: str,
+    query: str,
+    start_offset: int = 0,
+    max_bytes: int = 5_000_000,
+    before: int = 2,
+    after: int = 2,
+    case_sensitive: bool = False,
+    regex: bool = False,
+    max_matches: int = 50,
+) -> str:
+    """Find text within a log file and return context windows.
+
+    Args:
+        path: Absolute path to the log file previously provided by the server.
+        query: Text or regex pattern to search for.
+        start_offset: Byte offset to start searching from.
+        max_bytes: Maximum bytes to read from the log.
+        before: Number of context lines to include before each match.
+        after: Number of context lines to include after each match.
+        case_sensitive: If True, match case-sensitively.
+        regex: If True, treat query as a regular expression.
+        max_matches: Maximum number of matches to return.
+
+    Returns a JSON string with matches and offsets:
+        {"path":..., "query":..., "start_offset":..., "next_offset":..., "truncated":..., "matches":[...]}.
+    """
+    try:
+        if start_offset < 0:
+            start_offset = 0
+        if max_bytes <= 0:
+            return json.dumps({
+                "path": path,
+                "query": query,
+                "start_offset": start_offset,
+                "next_offset": start_offset,
+                "truncated": False,
+                "matches": [],
+            })
+        with open(path, "rb") as f:
+            f.seek(start_offset)
+            data = f.read(max_bytes)
+            next_offset = f.tell()
+
+        text = data.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+
+        if regex:
+            flags = 0 if case_sensitive else re.IGNORECASE
+            pattern = re.compile(query, flags=flags)
+            def is_match(line: str) -> bool:
+                return pattern.search(line) is not None
+        else:
+            needle = query if case_sensitive else query.lower()
+            def is_match(line: str) -> bool:
+                haystack = line if case_sensitive else line.lower()
+                return needle in haystack
+
+        matches = []
+        for idx, line in enumerate(lines):
+            if not is_match(line):
+                continue
+            start_idx = max(0, idx - max(0, before))
+            end_idx = min(len(lines), idx + max(0, after) + 1)
+            context = lines[start_idx:end_idx]
+            matches.append({
+                "line_index": idx,
+                "context_start": start_idx,
+                "context_end": end_idx,
+                "context": context,
+            })
+            if len(matches) >= max_matches:
+                break
+
+        truncated = len(matches) >= max_matches
+        return json.dumps({
+            "path": path,
+            "query": query,
+            "start_offset": start_offset,
+            "next_offset": next_offset,
+            "truncated": truncated,
+            "matches": matches,
+        })
+    except FileNotFoundError:
+        return json.dumps({
+            "path": path,
+            "query": query,
+            "start_offset": start_offset,
+            "next_offset": start_offset,
+            "truncated": False,
+            "matches": [],
+        })
+    except Exception as e:
+        return json.dumps({
+            "path": path,
+            "query": query,
+            "start_offset": start_offset,
+            "next_offset": start_offset,
+            "truncated": False,
+            "matches": [],
+            "error": f"ERROR: {e}",
+        })
 
 
 @mcp.tool()
