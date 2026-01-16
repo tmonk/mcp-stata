@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.12.2 (2026-01-16)
+
+### Bug Fixes
+
+- **server**: Add graph-ready notifications and streaming improvements
+  ([`6968f4f`](https://github.com/tmonk/mcp-stata/commit/6968f4fabfe5fbf413888d3896b4e165f90b7955))
+
+
 ## v1.12.1 (2026-01-15)
 
 ### Bug Fixes
