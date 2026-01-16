@@ -1,20 +1,19 @@
+import asyncio
 import json
 import logging
 import os
+import platform
 import re
 import subprocess
 import sys
-import threading
-import uuid
-from importlib.metadata import PackageNotFoundError, version
 import tempfile
+import threading
 import time
+import uuid
 from contextlib import contextmanager
-from io import StringIO, BytesIO
-from typing import Any, Awaitable, Callable, Dict, Generator, List, Optional, Tuple, BinaryIO
-import platform
-import sys
-from typing import Optional
+from importlib.metadata import PackageNotFoundError, version
+from io import StringIO
+from typing import Any, Awaitable, Callable, Dict, Generator, List, Optional, Tuple
 
 import anyio
 from anyio import get_cancelled_exc_class
@@ -193,6 +192,338 @@ class StataClient:
         finally:
             sys.stdout, sys.stderr = backup_stdout, backup_stderr
 
+    @staticmethod
+    def _safe_unlink(path: str) -> None:
+        if not path:
+            return
+        try:
+            if os.path.exists(path):
+                os.unlink(path)
+        except Exception:
+            pass
+
+    def _create_smcl_log_path(self, *, prefix: str = "mcp_smcl_", max_hex: Optional[int] = None) -> str:
+        hex_id = uuid.uuid4().hex if max_hex is None else uuid.uuid4().hex[:max_hex]
+        smcl_path = os.path.join(tempfile.gettempdir(), f"{prefix}{hex_id}.smcl")
+        self._safe_unlink(smcl_path)
+        return smcl_path
+
+    @staticmethod
+    def _make_smcl_log_name() -> str:
+        return f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
+
+    def _open_smcl_log(self, smcl_path: str, log_name: str, *, quiet: bool = False) -> bool:
+        cmd = f"{'quietly ' if quiet else ''}log using \"{smcl_path}\", replace smcl name({log_name})"
+        for attempt in range(4):
+            try:
+                self.stata.run(cmd, echo=False)
+                return True
+            except Exception:
+                if attempt < 3:
+                    time.sleep(0.1)
+        return False
+
+    def _close_smcl_log(self, log_name: str) -> None:
+        try:
+            self.stata.run(f"capture log close {log_name}", echo=False)
+        except Exception:
+            pass
+
+    def _restore_results_from_hold(self, hold_attr: str) -> None:
+        if not hasattr(self, hold_attr):
+            return
+        hold_name = getattr(self, hold_attr)
+        try:
+            self.stata.run(f"capture _return restore {hold_name}", echo=False)
+            self._last_results = self.get_stored_results(force_fresh=True)
+        except Exception:
+            pass
+        finally:
+            try:
+                delattr(self, hold_attr)
+            except Exception:
+                pass
+
+    def _create_streaming_log(self, *, trace: bool) -> tuple[tempfile.NamedTemporaryFile, str, TailBuffer, FileTeeIO]:
+        log_file = tempfile.NamedTemporaryFile(
+            prefix="mcp_stata_",
+            suffix=".log",
+            delete=False,
+            mode="w",
+            encoding="utf-8",
+            errors="replace",
+            buffering=1,
+        )
+        log_path = log_file.name
+        tail = TailBuffer(max_chars=200000 if trace else 20000)
+        tee = FileTeeIO(log_file, tail)
+        return log_file, log_path, tail, tee
+
+    def _init_streaming_graph_cache(
+        self,
+        auto_cache_graphs: bool,
+        on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]],
+        notify_log: Callable[[str], Awaitable[None]],
+    ) -> Optional[StreamingGraphCache]:
+        if not auto_cache_graphs:
+            return None
+        graph_cache = StreamingGraphCache(self, auto_cache=True)
+        graph_cache_callback = self._create_graph_cache_callback(on_graph_cached, notify_log)
+        graph_cache.add_cache_callback(graph_cache_callback)
+        return graph_cache
+
+    def _capture_graph_state(
+        self,
+        graph_cache: Optional[StreamingGraphCache],
+        emit_graph_ready: bool,
+    ) -> Optional[set[str]]:
+        # Capture initial graph state BEFORE execution starts
+        if graph_cache:
+            try:
+                graph_cache._initial_graphs = set(self.list_graphs())
+                logger.debug(f"Initial graph state captured: {graph_cache._initial_graphs}")
+            except Exception as e:
+                logger.debug(f"Failed to capture initial graph state: {e}")
+                graph_cache._initial_graphs = set()
+
+        graph_ready_initial = None
+        if emit_graph_ready:
+            try:
+                graph_ready_initial = set(self.list_graphs())
+                logger.debug("Graph-ready initial state captured: %s", graph_ready_initial)
+            except Exception as e:
+                logger.debug("Failed to capture graph-ready state: %s", e)
+                graph_ready_initial = set()
+        return graph_ready_initial
+
+    async def _cache_new_graphs(
+        self,
+        graph_cache: Optional[StreamingGraphCache],
+        *,
+        notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]],
+        total_lines: int,
+        completed_label: str,
+    ) -> None:
+        if not graph_cache or not graph_cache.auto_cache:
+            return
+        try:
+            cached_graphs = []
+            initial_graphs = getattr(graph_cache, "_initial_graphs", set())
+            current_graphs = set(self.list_graphs())
+            new_graphs = current_graphs - initial_graphs - graph_cache._cached_graphs
+
+            if new_graphs:
+                logger.info(f"Detected {len(new_graphs)} new graph(s): {sorted(new_graphs)}")
+
+            for graph_name in new_graphs:
+                try:
+                    cache_result = await anyio.to_thread.run_sync(
+                        self.cache_graph_on_creation,
+                        graph_name,
+                    )
+                    if cache_result:
+                        cached_graphs.append(graph_name)
+                        graph_cache._cached_graphs.add(graph_name)
+
+                    for callback in graph_cache._cache_callbacks:
+                        try:
+                            await anyio.to_thread.run_sync(callback, graph_name, cache_result)
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.error(f"Error caching graph {graph_name}: {e}")
+
+            if cached_graphs and notify_progress:
+                await notify_progress(
+                    float(total_lines) if total_lines > 0 else 1,
+                    float(total_lines) if total_lines > 0 else 1,
+                    f"{completed_label} completed. Cached {len(cached_graphs)} graph(s): {', '.join(cached_graphs)}",
+                )
+        except Exception as e:
+            logger.error(f"Post-execution graph detection failed: {e}")
+
+    def _emit_graph_ready_task(
+        self,
+        *,
+        emit_graph_ready: bool,
+        graph_ready_initial: Optional[set[str]],
+        notify_log: Callable[[str], Awaitable[None]],
+        graph_ready_task_id: Optional[str],
+        graph_ready_format: str,
+    ) -> None:
+        if emit_graph_ready and graph_ready_initial is not None:
+            try:
+                asyncio.create_task(
+                    self._emit_graph_ready_events(
+                        graph_ready_initial,
+                        notify_log,
+                        graph_ready_task_id,
+                        graph_ready_format,
+                    )
+                )
+            except Exception as e:
+                logger.warning("graph_ready emission failed to start: %s", e)
+
+    async def _stream_smcl_log(
+        self,
+        *,
+        smcl_path: str,
+        notify_log: Callable[[str], Awaitable[None]],
+        done: anyio.Event,
+        on_chunk: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> None:
+        last_pos = 0
+        # Wait for Stata to create the SMCL file (placeholder removed to avoid locks)
+        while not done.is_set() and not os.path.exists(smcl_path):
+            await anyio.sleep(0.05)
+
+        try:
+            def _read_content() -> str:
+                try:
+                    with open(smcl_path, "r", encoding="utf-8", errors="replace") as f:
+                        f.seek(last_pos)
+                        return f.read()
+                except PermissionError:
+                    if os.name == "nt":
+                        try:
+                            res = subprocess.run(f'type "{smcl_path}"', shell=True, capture_output=True)
+                            full_content = res.stdout.decode("utf-8", errors="replace")
+                            if len(full_content) > last_pos:
+                                return full_content[last_pos:]
+                            return ""
+                        except Exception:
+                            return ""
+                    raise
+                except FileNotFoundError:
+                    return ""
+
+            while not done.is_set():
+                chunk = await anyio.to_thread.run_sync(_read_content)
+                if chunk:
+                    last_pos += len(chunk)
+                    await notify_log(chunk)
+                    if on_chunk is not None:
+                        await on_chunk(chunk)
+                await anyio.sleep(0.05)
+
+            chunk = await anyio.to_thread.run_sync(_read_content)
+            if chunk:
+                last_pos += len(chunk)
+                await notify_log(chunk)
+                if on_chunk is not None:
+                    await on_chunk(chunk)
+
+        except Exception as e:
+            logger.warning(f"Log streaming failed: {e}")
+
+    def _run_streaming_blocking(
+        self,
+        *,
+        command: str,
+        tee: FileTeeIO,
+        cwd: Optional[str],
+        trace: bool,
+        echo: bool,
+        smcl_path: str,
+        smcl_log_name: str,
+        hold_attr: str,
+        require_smcl_log: bool = False,
+    ) -> tuple[int, Optional[Exception]]:
+        rc = -1
+        exc: Optional[Exception] = None
+        with self._exec_lock:
+            self._is_executing = True
+            try:
+                from sfi import Scalar, SFIToolkit  # Import SFI tools
+                with self._temp_cwd(cwd):
+                    log_opened = self._open_smcl_log(smcl_path, smcl_log_name)
+                    if require_smcl_log and not log_opened:
+                        exc = RuntimeError("Failed to open SMCL log")
+                        rc = 1
+                    if exc is None:
+                        try:
+                            with self._redirect_io_streaming(tee, tee):
+                                try:
+                                    if trace:
+                                        self.stata.run("set trace on")
+                                    ret = self.stata.run(command, echo=echo)
+
+                                    setattr(self, hold_attr, f"mcp_hold_{uuid.uuid4().hex[:8]}")
+                                    self.stata.run(
+                                        f"capture _return hold {getattr(self, hold_attr)}",
+                                        echo=False,
+                                    )
+
+                                    if isinstance(ret, str) and ret:
+                                        try:
+                                            tee.write(ret)
+                                        except Exception:
+                                            pass
+                                    try:
+                                        rc = self._get_rc_from_scalar(Scalar)
+                                    except Exception:
+                                        pass
+                                except Exception as e:
+                                    exc = e
+                                    if rc in (-1, 0):
+                                        rc = 1
+                                finally:
+                                    if trace:
+                                        try:
+                                            self.stata.run("set trace off")
+                                        except Exception:
+                                            pass
+                        finally:
+                            self._close_smcl_log(smcl_log_name)
+                            self._restore_results_from_hold(hold_attr)
+                        return rc, exc
+                    # If we get here, SMCL log failed and we're required to stop.
+                    return rc, exc
+            finally:
+                self._is_executing = False
+        return rc, exc
+
+    def _resolve_do_file_path(
+        self,
+        path: str,
+        cwd: Optional[str],
+    ) -> tuple[Optional[str], Optional[str], Optional[CommandResponse]]:
+        if cwd is not None and not os.path.isdir(cwd):
+            return None, None, CommandResponse(
+                command=f'do "{path}"',
+                rc=601,
+                stdout="",
+                stderr=None,
+                success=False,
+                error=ErrorEnvelope(
+                    message=f"cwd not found: {cwd}",
+                    rc=601,
+                    command=path,
+                ),
+            )
+
+        effective_path = path
+        if cwd is not None and not os.path.isabs(path):
+            effective_path = os.path.abspath(os.path.join(cwd, path))
+
+        if not os.path.exists(effective_path):
+            return None, None, CommandResponse(
+                command=f'do "{effective_path}"',
+                rc=601,
+                stdout="",
+                stderr=None,
+                success=False,
+                error=ErrorEnvelope(
+                    message=f"Do-file not found: {effective_path}",
+                    rc=601,
+                    command=effective_path,
+                ),
+            )
+
+        path_for_stata = effective_path.replace("\\", "/")
+        command = f'do "{path_for_stata}"'
+        return effective_path, command, None
+
     @contextmanager
     def _smcl_log_capture(self) -> "Generator[Tuple[str, str], None, None]":
         """
@@ -207,51 +538,24 @@ class StataClient:
                 self.stata.run(cmd)
             # After context, read smcl_path for raw SMCL output
         """
-        # Create temp file path for SMCL output
-        # Create temp file path for SMCL output
         # Use a unique name but DO NOT join start with mkstemp to avoid existing file locks.
         # Stata will create the file.
-        smcl_path = os.path.join(tempfile.gettempdir(), f"mcp_smcl_{uuid.uuid4().hex}.smcl")
-        
-        # Ensure cleanup in case of pre-existing file (unlikely with UUID)
-        try:
-             if os.path.exists(smcl_path):
-                os.unlink(smcl_path)
-        except Exception:
-             pass
-        
+        smcl_path = self._create_smcl_log_path()
         # Unique log name to avoid collisions with user logs
-        log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
-        
+        log_name = self._make_smcl_log_name()
+
         try:
             # Open named SMCL log (quietly to avoid polluting output)
-            # Add retry logic for Windows file locking flakiness
-            log_opened = False
-            for attempt in range(4):
-                try:
-                    self.stata.run(f'quietly log using "{smcl_path}", replace smcl name({log_name})', echo=False)
-                    log_opened = True
-                    break
-                except Exception:
-                    if attempt < 3:
-                        time.sleep(0.1)
-            
+            log_opened = self._open_smcl_log(smcl_path, log_name, quiet=True)
             if not log_opened:
-                # Still yield, consumer might see empty file or handle error, 
+                # Still yield, consumer might see empty file or handle error,
                 # but we can't do much if Stata refuses to log.
                 pass
-                
+
             yield log_name, smcl_path
         finally:
             # Always close our named log
-            try:
-                self.stata.run(f'capture log close {log_name}', echo=False)
-            except Exception:
-                # Fallback: try capture in case log wasn't opened
-                try:
-                    self.stata.run(f'capture log close {log_name}', echo=False)
-                except Exception:
-                    pass
+            self._close_smcl_log(log_name)
 
     def _read_smcl_file(self, path: str) -> str:
         """Read SMCL file contents, handling encoding issues and Windows file locks."""
@@ -372,6 +676,122 @@ class StataClient:
                 logger.error(f"Failed to notify about graph cache: {e}")
         
         return graph_cache_callback
+
+    def _get_cached_graph_path(self, graph_name: str) -> Optional[str]:
+        if not hasattr(self, "_cache_lock") or not hasattr(self, "_preemptive_cache"):
+            return None
+        try:
+            with self._cache_lock:
+                return self._preemptive_cache.get(graph_name)
+        except Exception:
+            return None
+
+    async def _emit_graph_ready_for_graphs(
+        self,
+        graph_names: List[str],
+        *,
+        notify_log: Callable[[str], Awaitable[None]],
+        task_id: Optional[str],
+        export_format: str,
+        graph_ready_initial: Optional[set[str]],
+    ) -> None:
+        if not graph_names:
+            return
+        fmt = (export_format or "svg").strip().lower()
+        for graph_name in graph_names:
+            if graph_ready_initial is not None and graph_name in graph_ready_initial:
+                continue
+            try:
+                export_path = None
+                if fmt == "svg":
+                    export_path = self._get_cached_graph_path(graph_name)
+                if not export_path:
+                    export_path = await anyio.to_thread.run_sync(
+                        lambda: self.export_graph(graph_name, format=fmt)
+                    )
+                payload = {
+                    "event": "graph_ready",
+                    "task_id": task_id,
+                    "graph": {
+                        "name": graph_name,
+                        "path": export_path,
+                        "label": graph_name,
+                    },
+                }
+                await notify_log(json.dumps(payload))
+                if graph_ready_initial is not None:
+                    graph_ready_initial.add(graph_name)
+            except Exception as e:
+                logger.warning("graph_ready export failed for %s: %s", graph_name, e)
+
+    async def _maybe_cache_graphs_on_chunk(
+        self,
+        *,
+        graph_cache: Optional[StreamingGraphCache],
+        emit_graph_ready: bool,
+        notify_log: Callable[[str], Awaitable[None]],
+        graph_ready_task_id: Optional[str],
+        graph_ready_format: str,
+        graph_ready_initial: Optional[set[str]],
+        last_check: List[float],
+    ) -> None:
+        if not graph_cache or not graph_cache.auto_cache:
+            return
+        if self._is_executing:
+            return
+        now = time.monotonic()
+        if last_check and now - last_check[0] < 0.25:
+            return
+        if last_check:
+            last_check[0] = now
+        try:
+            cached_names = await graph_cache.cache_detected_graphs_with_pystata()
+        except Exception as e:
+            logger.debug("graph_ready polling failed: %s", e)
+            return
+        if emit_graph_ready and cached_names:
+            await self._emit_graph_ready_for_graphs(
+                cached_names,
+                notify_log=notify_log,
+                task_id=graph_ready_task_id,
+                export_format=graph_ready_format,
+                graph_ready_initial=graph_ready_initial,
+            )
+
+    async def _emit_graph_ready_events(
+        self,
+        initial_graphs: set[str],
+        notify_log: Callable[[str], Awaitable[None]],
+        task_id: Optional[str],
+        export_format: str,
+    ) -> None:
+        try:
+            current_graphs = set(self.list_graphs())
+        except Exception as e:
+            logger.warning("graph_ready: list_graphs failed: %s", e)
+            return
+
+        new_graphs = sorted(current_graphs - initial_graphs)
+        if not new_graphs:
+            return
+
+        for graph_name in new_graphs:
+            try:
+                export_path = await anyio.to_thread.run_sync(
+                    lambda: self.export_graph(graph_name, format=export_format)
+                )
+                payload = {
+                    "event": "graph_ready",
+                    "task_id": task_id,
+                    "graph": {
+                        "name": graph_name,
+                        "path": export_path,
+                        "label": graph_name,
+                    },
+                }
+                await notify_log(json.dumps(payload))
+            except Exception as e:
+                logger.warning("graph_ready export failed for %s: %s", graph_name, e)
 
     def _request_break_in(self) -> None:
         """
@@ -846,6 +1266,39 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         except Exception:
             return ""
 
+    def _build_combined_log(
+        self,
+        tail: TailBuffer,
+        path: str,
+        rc: int,
+        trace: bool,
+        exc: Optional[Exception],
+    ) -> str:
+        tail_text = tail.get_value()
+        log_tail = self._read_log_tail_smart(path, rc, trace)
+        if log_tail and len(log_tail) > len(tail_text):
+            tail_text = log_tail
+        return (tail_text or "") + (f"\n{exc}" if exc else "")
+
+    def _truncate_command_output(
+        self,
+        result: CommandResponse,
+        max_output_lines: Optional[int],
+    ) -> CommandResponse:
+        if max_output_lines is None or not result.stdout:
+            return result
+        lines = result.stdout.splitlines()
+        if len(lines) <= max_output_lines:
+            return result
+        truncated_lines = lines[:max_output_lines]
+        truncated_lines.append(
+            f"\n... (output truncated: showing {max_output_lines} of {len(lines)} lines)"
+        )
+        truncated_stdout = "\n".join(truncated_lines)
+        if hasattr(result, "model_copy"):
+            return result.model_copy(update={"stdout": truncated_stdout})
+        return result.copy(update={"stdout": truncated_stdout})
+
     def _run_plain_capture(self, code: str) -> str:
         """
         Run a Stata command while capturing output using a named SMCL log.
@@ -877,10 +1330,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 # Read SMCL content and convert to text
                 content = self._read_smcl_file(smcl_path)
             # Remove the temp file
-            try:
-                os.unlink(smcl_path)
-            except Exception:
-                pass
+            self._safe_unlink(smcl_path)
             
             return self._smcl_to_text(content)
 
@@ -976,33 +1426,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 with self._temp_cwd(cwd):
                     # Create SMCL log for authoritative output capture
                     # Use shorter unique path to avoid Windows path issues
-                    smcl_path = os.path.join(tempfile.gettempdir(), f"mcp_{uuid.uuid4().hex[:16]}.smcl")
-                    
-                    # Ensure cleanup in case of pre-existing file
-                    try:
-                        if os.path.exists(smcl_path):
-                            os.unlink(smcl_path)
-                    except Exception:
-                        pass
-                    
-                    log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
-                    
-                    # Open SMCL log BEFORE output redirection
-                    # Add retry logic for Windows file locking flakiness
-                    log_opened = False
-                    for attempt in range(4):
-                        try:
-                            self.stata.run(f'log using "{smcl_path}", replace smcl name({log_name})', echo=False)
-                            log_opened = True
-                            break
-                        except Exception:
-                            if attempt < 3:
-                                time.sleep(0.1)
-                    
-                    if not log_opened:
-                        # Fallback: try one more time without replace if it was strangely missing, 
-                        # or just proceed (logging will fail but execution might work)
-                        pass
+                    smcl_path = self._create_smcl_log_path(prefix="mcp_", max_hex=16)
+                    log_name = self._make_smcl_log_name()
+                    self._open_smcl_log(smcl_path, log_name)
                     
                     try:
                         with self._redirect_io(output_buffer, error_buffer):
@@ -1025,19 +1451,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                                         pass
                     finally:
                         # Close SMCL log AFTER output redirection
-                        try:
-                            self.stata.run(f'capture log close {log_name}', echo=False)
-                        except Exception:
-                            pass
-
+                        self._close_smcl_log(log_name)
                         # Restore and capture results while still inside the lock
-                        if hasattr(self, '_hold_name'):
-                            try:
-                                self.stata.run(f"capture _return restore {self._hold_name}", echo=False)
-                                self._last_results = self.get_stored_results(force_fresh=True)
-                                delattr(self, '_hold_name')
-                            except Exception:
-                                pass
+                        self._restore_results_from_hold("_hold_name")
 
             except Exception as e:
                 sys_error = str(e)
@@ -1049,10 +1465,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if smcl_path:
             smcl_content = self._read_smcl_file(smcl_path)
             # Clean up SMCL file
-            try:
-                os.unlink(smcl_path)
-            except Exception:
-                pass
+            self._safe_unlink(smcl_path)
 
         stdout_content = output_buffer.getvalue()
         stderr_content = error_buffer.getvalue()
@@ -1206,11 +1619,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
     cwd: Optional[str] = None,
     auto_cache_graphs: bool = False,
     on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]] = None,
+    emit_graph_ready: bool = False,
+    graph_ready_task_id: Optional[str] = None,
+    graph_ready_format: str = "svg",
 ) -> CommandResponse:
         if not self._initialized:
             self.init()
 
         code = self._maybe_rewrite_graph_name_in_command(code)
+        auto_cache_graphs = auto_cache_graphs or emit_graph_ready
         total_lines = 0  # Commands (not do-files) do not have line-based progress
 
         if cwd is not None and not os.path.isdir(cwd):
@@ -1233,39 +1650,13 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         smcl_path = None
 
         # Setup streaming graph cache if enabled
-        graph_cache = None
-        if auto_cache_graphs:
-            graph_cache = StreamingGraphCache(self, auto_cache=True)
-            
-            graph_cache_callback = self._create_graph_cache_callback(on_graph_cached, notify_log)
-            
-            graph_cache.add_cache_callback(graph_cache_callback)
+        graph_cache = self._init_streaming_graph_cache(auto_cache_graphs, on_graph_cached, notify_log)
 
-        log_file = tempfile.NamedTemporaryFile(
-            prefix="mcp_stata_",
-            suffix=".log",
-            delete=False,
-            mode="w",
-            encoding="utf-8",
-            errors="replace",
-            buffering=1,
-        )
-        log_path = log_file.name
-        tail = TailBuffer(max_chars=200000 if trace else 20000)
-        tee = FileTeeIO(log_file, tail)
+        _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
 
         # Create SMCL log path for authoritative output capture
-        # Create SMCL log path for authoritative output capture
-        # Use generated path to avoid locks
-        smcl_path = os.path.join(tempfile.gettempdir(), f"mcp_smcl_{uuid.uuid4().hex}.smcl")
-        
-        # Ensure cleanup in case of pre-existing file
-        try:
-             if os.path.exists(smcl_path):
-                os.unlink(smcl_path)
-        except Exception:
-             pass
-        smcl_log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
+        smcl_path = self._create_smcl_log_path()
+        smcl_log_name = self._make_smcl_log_name()
 
         # Inform the MCP client immediately where to read/tail the output.
         await notify_log(json.dumps({"event": "log_path", "path": smcl_path}))
@@ -1274,148 +1665,32 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         path_for_stata = code.replace("\\", "/")
         command = f'{path_for_stata}'
 
-        # Capture initial graph state BEFORE execution starts
-        if graph_cache:
-            try:
-                graph_cache._initial_graphs = set(self.list_graphs())
-                logger.debug(f"Initial graph state captured: {graph_cache._initial_graphs}")
-            except Exception as e:
-                logger.debug(f"Failed to capture initial graph state: {e}")
-                graph_cache._initial_graphs = set()
+        graph_ready_initial = self._capture_graph_state(graph_cache, emit_graph_ready)
+        graph_poll_state = [0.0]
 
-        def _run_blocking() -> None:
-            nonlocal rc, exc
-            with self._exec_lock:
-                # Set execution flag to prevent recursive Stata calls
-                self._is_executing = True
-                try:
-                    from sfi import Scalar, SFIToolkit # Import SFI tools
-                    with self._temp_cwd(cwd):
-                        # Open SMCL log BEFORE output redirection
-                        # Add retry logic for Windows file locking flakiness
-                        log_opened = False
-                        for attempt in range(4):
-                            try:
-                                self.stata.run(f'log using "{smcl_path}", replace smcl name({smcl_log_name})', echo=False)
-                                log_opened = True
-                                break
-                            except Exception:
-                                if attempt < 3:
-                                    time.sleep(0.1)
-                        
-                        if not log_opened:
-                            # Fallback but allow execution to attempt to proceed
-                            pass
-                        
-                        try:
-                            with self._redirect_io_streaming(tee, tee):
-                                try:
-                                    if trace:
-                                        self.stata.run("set trace on")
-                                    ret = self.stata.run(command, echo=echo)
-                                    
-                                    # Hold results IMMEDIATELY to prevent clobbering by cleanup
-                                    self._hold_name_stream = f"mcp_hold_{uuid.uuid4().hex[:8]}"
-                                    self.stata.run(f"capture _return hold {self._hold_name_stream}", echo=False)
-                                    # Some PyStata builds return output as a string rather than printing.
-                                    if isinstance(ret, str) and ret:
-                                        try:
-                                            tee.write(ret)
-                                        except Exception:
-                                            pass
-                                    try:
-                                        rc = self._get_rc_from_scalar(Scalar)
-                                    except Exception:
-                                        pass
-
-                                except Exception as e:
-                                    exc = e
-                                    if rc in (-1, 0):
-                                        rc = 1
-                                finally:
-                                    if trace:
-                                        try:
-                                            self.stata.run("set trace off")
-                                        except Exception:
-                                            pass
-                        finally:
-                            # Close SMCL log AFTER output redirection
-                            try:
-                                self.stata.run(f'capture log close {smcl_log_name}', echo=False)
-                            except Exception:
-                                pass
-
-                            # Restore and capture results while still inside the lock
-                            if hasattr(self, '_hold_name_stream'):
-                                try:
-                                    self.stata.run(f"capture _return restore {self._hold_name_stream}", echo=False)
-                                    self._last_results = self.get_stored_results(force_fresh=True)
-                                    delattr(self, '_hold_name_stream')
-                                except Exception:
-                                    pass
-                finally:
-                    # Clear execution flag
-                    self._is_executing = False
+        async def on_chunk_for_graphs(_chunk: str) -> None:
+            await self._maybe_cache_graphs_on_chunk(
+                graph_cache=graph_cache,
+                emit_graph_ready=emit_graph_ready,
+                notify_log=notify_log,
+                graph_ready_task_id=graph_ready_task_id,
+                graph_ready_format=graph_ready_format,
+                graph_ready_initial=graph_ready_initial,
+                last_check=graph_poll_state,
+            )
 
         done = anyio.Event()
 
-        async def _monitor_and_stream_log() -> None:
-            """Monitor log file and stream chunks for both display and progress tracking."""
-            last_pos = 0
-            # Wait for Stata to create the SMCL file (we removed the placeholder to avoid locks)
-            while not done.is_set() and not os.path.exists(smcl_path):
-                await anyio.sleep(0.05)
-            
-            try:
-                # Helper to read file content robustly (handling Windows shared read locks)
-                def _read_content():
-                    try:
-                        with open(smcl_path, "r", encoding="utf-8", errors="replace") as f:
-                            f.seek(last_pos)
-                            return f.read()
-                    except PermissionError:
-                        if os.name == "nt":
-                            # Windows Fallback: Use 'type' command to read locked file
-                            try:
-                                # Start a shell process to 'type' the file. This bypasses locking sometimes.
-                                # Note: Reading full file and seeking in-memory is inefficient for massive logs 
-                                # but acceptable for Stata logs to unblock Windows streaming.
-                                res = subprocess.run(f'type "{smcl_path}"', shell=True, capture_output=True)
-                                full_content = res.stdout.decode("utf-8", errors="replace")
-                                if len(full_content) > last_pos:
-                                    return full_content[last_pos:]
-                                return ""
-                            except Exception:
-                                return ""
-                        raise
-                    except FileNotFoundError:
-                        return ""
-
-                while not done.is_set():
-                    chunk = await anyio.to_thread.run_sync(_read_content)
-                    if chunk:
-                        last_pos += len(chunk)
-                        # Stream the actual log content for display
-                        await notify_log(chunk)
-                        # Also track progress if needed
-                        if total_lines > 0 and notify_progress:
-                             await on_chunk_for_progress(chunk)
-                    await anyio.sleep(0.05)
-
-                # Final read
-                chunk = await anyio.to_thread.run_sync(_read_content)
-                if chunk:
-                    last_pos += len(chunk)
-                    await notify_log(chunk)
-                    if total_lines > 0 and notify_progress:
-                        await on_chunk_for_progress(chunk)
-
-            except Exception as e:
-                logger.warning(f"Log streaming failed: {e}")
-                return
-
         async with anyio.create_task_group() as tg:
-            tg.start_soon(_monitor_and_stream_log)
+            async def stream_smcl() -> None:
+                await self._stream_smcl_log(
+                    smcl_path=smcl_path,
+                    notify_log=notify_log,
+                    done=done,
+                    on_chunk=on_chunk_for_graphs if graph_cache else None,
+                )
+
+            tg.start_soon(stream_smcl)
 
             if notify_progress is not None:
                 if total_lines > 0:
@@ -1424,7 +1699,23 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     await notify_progress(0, None, "Running command")
 
             try:
-                await anyio.to_thread.run_sync(_run_blocking, abandon_on_cancel=True)
+                run_blocking = lambda: self._run_streaming_blocking(
+                    command=command,
+                    tee=tee,
+                    cwd=cwd,
+                    trace=trace,
+                    echo=echo,
+                    smcl_path=smcl_path,
+                    smcl_log_name=smcl_log_name,
+                    hold_attr="_hold_name_stream",
+                )
+                try:
+                    rc, exc = await anyio.to_thread.run_sync(
+                        run_blocking,
+                        abandon_on_cancel=True,
+                    )
+                except TypeError:
+                    rc, exc = await anyio.to_thread.run_sync(run_blocking)
             except get_cancelled_exc_class():
                 self._request_break_in()
                 await self._wait_for_stata_stop()
@@ -1436,50 +1727,21 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path)
 
-        # Robust post-execution graph detection and caching
-        if graph_cache and graph_cache.auto_cache:
-            try:
-                cached_graphs = []
-                initial_graphs = getattr(graph_cache, '_initial_graphs', set())
-                current_graphs = set(self.list_graphs())
-                new_graphs = current_graphs - initial_graphs - graph_cache._cached_graphs
+        await self._cache_new_graphs(
+            graph_cache,
+            notify_progress=notify_progress,
+            total_lines=total_lines,
+            completed_label="Command",
+        )
+        self._emit_graph_ready_task(
+            emit_graph_ready=emit_graph_ready,
+            graph_ready_initial=graph_ready_initial,
+            notify_log=notify_log,
+            graph_ready_task_id=graph_ready_task_id,
+            graph_ready_format=graph_ready_format,
+        )
 
-                if new_graphs:
-                    logger.info(f"Detected {len(new_graphs)} new graph(s): {sorted(new_graphs)}")
-
-                for graph_name in new_graphs:
-                    try:
-                        cache_result = await anyio.to_thread.run_sync(
-                            self.cache_graph_on_creation,
-                            graph_name
-                        )
-                        if cache_result:
-                            cached_graphs.append(graph_name)
-                            graph_cache._cached_graphs.add(graph_name)
-                        
-                        for callback in graph_cache._cache_callbacks:
-                            try:
-                                await anyio.to_thread.run_sync(callback, graph_name, cache_result)
-                            except Exception: pass
-                    except Exception as e:
-                        logger.error(f"Error caching graph {graph_name}: {e}")
-
-                # Notify progress if graphs were cached
-                if cached_graphs and notify_progress:
-                    await notify_progress(
-                        float(total_lines) if total_lines > 0 else 1,
-                        float(total_lines) if total_lines > 0 else 1,
-                        f"Command completed. Cached {len(cached_graphs)} graph(s): {', '.join(cached_graphs)}"
-                    )
-            except Exception as e:
-                logger.error(f"Post-execution graph detection failed: {e}")
-
-        tail_text = tail.get_value()
-        # Use smart log tail to find error if it's far up
-        log_tail = self._read_log_tail_smart(smcl_path, rc, trace)
-        if log_tail and len(log_tail) > len(tail_text):
-            tail_text = log_tail
-        combined = (tail_text or "") + (f"\n{exc}" if exc else "")
+        combined = self._build_combined_log(tail, smcl_path, rc, trace, exc)
         
         # Use SMCL content as primary source for RC detection
         if not exc or rc in (1, -1):
@@ -1554,38 +1816,13 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
     cwd: Optional[str] = None,
     auto_cache_graphs: bool = False,
     on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]] = None,
+    emit_graph_ready: bool = False,
+    graph_ready_task_id: Optional[str] = None,
+    graph_ready_format: str = "svg",
 ) -> CommandResponse:
-        if cwd is not None and not os.path.isdir(cwd):
-            return CommandResponse(
-                command=f'do "{path}"',
-                rc=601,
-                stdout="",
-                stderr=None,
-                success=False,
-                error=ErrorEnvelope(
-                    message=f"cwd not found: {cwd}",
-                    rc=601,
-                    command=path,
-                ),
-            )
-
-        effective_path = path
-        if cwd is not None and not os.path.isabs(path):
-            effective_path = os.path.abspath(os.path.join(cwd, path))
-
-        if not os.path.exists(effective_path):
-            return CommandResponse(
-                command=f'do "{effective_path}"',
-                rc=601,
-                stdout="",
-                stderr=None,
-                success=False,
-                error=ErrorEnvelope(
-                    message=f"Do-file not found: {effective_path}",
-                    rc=601,
-                    command=effective_path,
-                ),
-            )
+        effective_path, command, error_response = self._resolve_do_file_path(path, cwd)
+        if error_response is not None:
+            return error_response
 
         total_lines = self._count_do_file_lines(effective_path)
         executed_lines = 0
@@ -1614,196 +1851,55 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if not self._initialized:
             self.init()
 
+        auto_cache_graphs = auto_cache_graphs or emit_graph_ready
+
         start_time = time.time()
         exc: Optional[Exception] = None
         smcl_content = ""
         smcl_path = None
 
-        # Setup streaming graph cache if enabled
-        graph_cache = None
-        if auto_cache_graphs:
-            graph_cache = StreamingGraphCache(self, auto_cache=True)
-            
-            graph_cache_callback = self._create_graph_cache_callback(on_graph_cached, notify_log)
-            
-            graph_cache.add_cache_callback(graph_cache_callback)
+        graph_cache = self._init_streaming_graph_cache(auto_cache_graphs, on_graph_cached, notify_log)
+        _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
 
-        log_file = tempfile.NamedTemporaryFile(
-            prefix="mcp_stata_",
-            suffix=".log",
-            delete=False,
-            mode="w",
-            encoding="utf-8",
-            errors="replace",
-            buffering=1,
-        )
-        log_path = log_file.name
-        tail = TailBuffer(max_chars=200000 if trace else 20000)
-        tee = FileTeeIO(log_file, tail)
-
-        # Create SMCL log path for authoritative output capture (placeholder removed to avoid locks)
-        # Create SMCL log path for authoritative output capture (placeholder removed to avoid locks)
-        # Use generated path to avoid locks
-        smcl_path = os.path.join(tempfile.gettempdir(), f"mcp_smcl_{uuid.uuid4().hex}.smcl")
-        
-        # Ensure cleanup in case of pre-existing file
-        try:
-             if os.path.exists(smcl_path):
-                os.unlink(smcl_path)
-        except Exception:
-             pass
-        smcl_log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
+        smcl_path = self._create_smcl_log_path()
+        smcl_log_name = self._make_smcl_log_name()
 
         # Inform the MCP client immediately where to read/tail the output.
         await notify_log(json.dumps({"event": "log_path", "path": smcl_path}))
 
         rc = -1
-        path_for_stata = effective_path.replace("\\", "/")
-        command = f'do "{path_for_stata}"'
+        graph_ready_initial = self._capture_graph_state(graph_cache, emit_graph_ready)
+        graph_poll_state = [0.0]
 
-        # Capture initial graph state BEFORE execution starts
+        async def on_chunk_for_graphs(_chunk: str) -> None:
+            await self._maybe_cache_graphs_on_chunk(
+                graph_cache=graph_cache,
+                emit_graph_ready=emit_graph_ready,
+                notify_log=notify_log,
+                graph_ready_task_id=graph_ready_task_id,
+                graph_ready_format=graph_ready_format,
+                graph_ready_initial=graph_ready_initial,
+                last_check=graph_poll_state,
+            )
+
+        on_chunk_callback = on_chunk_for_progress
         if graph_cache:
-            try:
-                graph_cache._initial_graphs = set(self.list_graphs())
-                logger.debug(f"Initial graph state captured: {graph_cache._initial_graphs}")
-            except Exception as e:
-                logger.debug(f"Failed to capture initial graph state: {e}")
-                graph_cache._initial_graphs = set()
-
-        def _run_blocking() -> None:
-            nonlocal rc, exc
-            with self._exec_lock:
-                # Set execution flag to prevent recursive Stata calls
-                self._is_executing = True
-                try:
-                    from sfi import Scalar, SFIToolkit # Import SFI tools
-                    with self._temp_cwd(cwd):
-                        # Open SMCL log BEFORE output redirection
-                        # Add retry logic for Windows file locking flakiness
-                        log_opened = False
-                        for attempt in range(4):
-                            try:
-                                self.stata.run(f'log using "{smcl_path}", replace smcl name({smcl_log_name})', echo=False)
-                                log_opened = True
-                                break
-                            except Exception:
-                                if attempt < 3:
-                                    time.sleep(0.1)
-                        
-                        if not log_opened:
-                            # Fallback but allow execution to attempt to proceed
-                            pass
-                        
-                        try:
-                            with self._redirect_io_streaming(tee, tee):
-                                try:
-                                    if trace:
-                                        self.stata.run("set trace on")
-                                    ret = self.stata.run(command, echo=echo)
-                                    
-                                    # Hold results IMMEDIATELY to prevent clobbering by cleanup
-                                    self._hold_name_do = f"mcp_hold_{uuid.uuid4().hex[:8]}"
-                                    self.stata.run(f"capture _return hold {self._hold_name_do}", echo=False)
-                                    # Some PyStata builds return output as a string rather than printing.
-                                    if isinstance(ret, str) and ret:
-                                        try:
-                                            tee.write(ret)
-                                        except Exception:
-                                            pass
-                                    try:
-                                        rc = self._get_rc_from_scalar(Scalar)
-                                    except Exception:
-                                        pass
-
-                                except Exception as e:
-                                    exc = e
-                                    if rc in (-1, 0):
-                                        rc = 1
-                                finally:
-                                    if trace:
-                                        try:
-                                            self.stata.run("set trace off")
-                                        except Exception:
-                                            pass
-                        finally:
-                            # Close SMCL log AFTER output redirection
-                            try:
-                                self.stata.run(f'capture log close {smcl_log_name}', echo=False)
-                            except Exception:
-                                pass
-
-                            # Restore and capture results while still inside the lock
-                            if hasattr(self, '_hold_name_do'):
-                                try:
-                                    self.stata.run(f"capture _return restore {self._hold_name_do}", echo=False)
-                                    self._last_results = self.get_stored_results(force_fresh=True)
-                                    delattr(self, '_hold_name_do')
-                                except Exception:
-                                    pass
-                finally:
-                    # Clear execution flag
-                    self._is_executing = False
+            async def on_chunk_callback(chunk: str) -> None:
+                await on_chunk_for_progress(chunk)
+                await on_chunk_for_graphs(chunk)
 
         done = anyio.Event()
 
-        async def _monitor_and_stream_log() -> None:
-            """Monitor log file and stream chunks for both display and progress tracking."""
-            last_pos = 0
-            # Wait for Stata to create the SMCL file (placeholder removed to avoid locks)
-            while not done.is_set() and not os.path.exists(smcl_path):
-                await anyio.sleep(0.05)
-            
-            try:
-                # Helper to read file content robustly (handling Windows shared read locks)
-                def _read_content():
-                    try:
-                        with open(smcl_path, "r", encoding="utf-8", errors="replace") as f:
-                            f.seek(last_pos)
-                            return f.read()
-                    except PermissionError:
-                        if os.name == "nt":
-                            # Windows Fallback: Use 'type' command to read locked file
-                            try:
-                                # Start a shell process to 'type' the file. This bypasses locking sometimes.
-                                # Note: Reading full file and seeking in-memory is inefficient for massive logs 
-                                # but acceptable for Stata logs to unblock Windows streaming.
-                                import subprocess
-                                res = subprocess.run(f'type "{smcl_path}"', shell=True, capture_output=True)
-                                full_content = res.stdout.decode("utf-8", errors="replace")
-                                if len(full_content) > last_pos:
-                                    return full_content[last_pos:]
-                                return ""
-                            except Exception:
-                                return ""
-                        raise
-                    except FileNotFoundError:
-                        return ""
-
-                while not done.is_set():
-                    chunk = await anyio.to_thread.run_sync(_read_content)
-                    if chunk:
-                        last_pos += len(chunk)
-                        # Stream the actual log content for display
-                        await notify_log(chunk)
-                        # Also track progress if needed
-                        if total_lines > 0 and notify_progress:
-                                await on_chunk_for_progress(chunk)
-                    await anyio.sleep(0.05)
-
-                # Final read
-                chunk = await anyio.to_thread.run_sync(_read_content)
-                if chunk:
-                    last_pos += len(chunk)
-                    await notify_log(chunk)
-                    if total_lines > 0 and notify_progress:
-                        await on_chunk_for_progress(chunk)
-
-            except Exception as e:
-                logger.warning(f"Log streaming failed: {e}")
-                return
-
         async with anyio.create_task_group() as tg:
-            tg.start_soon(_monitor_and_stream_log)
+            async def stream_smcl() -> None:
+                await self._stream_smcl_log(
+                    smcl_path=smcl_path,
+                    notify_log=notify_log,
+                    done=done,
+                    on_chunk=on_chunk_callback,
+                )
+
+            tg.start_soon(stream_smcl)
 
             if notify_progress is not None:
                 if total_lines > 0:
@@ -1812,7 +1908,23 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     await notify_progress(0, None, "Running do-file")
 
             try:
-                await anyio.to_thread.run_sync(_run_blocking, abandon_on_cancel=True)
+                run_blocking = lambda: self._run_streaming_blocking(
+                    command=command,
+                    tee=tee,
+                    cwd=cwd,
+                    trace=trace,
+                    echo=echo,
+                    smcl_path=smcl_path,
+                    smcl_log_name=smcl_log_name,
+                    hold_attr="_hold_name_do",
+                )
+                try:
+                    rc, exc = await anyio.to_thread.run_sync(
+                        run_blocking,
+                        abandon_on_cancel=True,
+                    )
+                except TypeError:
+                    rc, exc = await anyio.to_thread.run_sync(run_blocking)
             except get_cancelled_exc_class():
                 self._request_break_in()
                 await self._wait_for_stata_stop()
@@ -1824,49 +1936,21 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path)
 
-        # Robust post-execution graph detection and caching
-        if graph_cache and graph_cache.auto_cache:
-            try:
-                cached_graphs = []
-                initial_graphs = getattr(graph_cache, '_initial_graphs', set())
-                current_graphs = set(self.list_graphs())
-                new_graphs = current_graphs - initial_graphs - graph_cache._cached_graphs
+        await self._cache_new_graphs(
+            graph_cache,
+            notify_progress=notify_progress,
+            total_lines=total_lines,
+            completed_label="Do-file",
+        )
+        self._emit_graph_ready_task(
+            emit_graph_ready=emit_graph_ready,
+            graph_ready_initial=graph_ready_initial,
+            notify_log=notify_log,
+            graph_ready_task_id=graph_ready_task_id,
+            graph_ready_format=graph_ready_format,
+        )
 
-                if new_graphs:
-                    logger.info(f"Detected {len(new_graphs)} new graph(s): {sorted(new_graphs)}")
-
-                for graph_name in new_graphs:
-                    try:
-                        cache_result = await anyio.to_thread.run_sync(
-                            self.cache_graph_on_creation,
-                            graph_name
-                        )
-                        if cache_result:
-                            cached_graphs.append(graph_name)
-                            graph_cache._cached_graphs.add(graph_name)
-                        
-                        for callback in graph_cache._cache_callbacks:
-                            try:
-                                await anyio.to_thread.run_sync(callback, graph_name, cache_result)
-                            except Exception: pass
-                    except Exception as e:
-                        logger.error(f"Error caching graph {graph_name}: {e}")
-
-                # Notify progress if graphs were cached
-                if cached_graphs and notify_progress:
-                    await notify_progress(
-                        float(total_lines) if total_lines > 0 else 1,
-                        float(total_lines) if total_lines > 0 else 1,
-                        f"Do-file completed. Cached {len(cached_graphs)} graph(s): {', '.join(cached_graphs)}"
-                    )
-            except Exception as e:
-                logger.error(f"Post-execution graph detection failed: {e}")
-
-        tail_text = tail.get_value()
-        log_tail = self._read_log_tail_smart(log_path, rc, trace)
-        if log_tail and len(log_tail) > len(tail_text):
-            tail_text = log_tail
-        combined = (tail_text or "") + (f"\n{exc}" if exc else "")
+        combined = self._build_combined_log(tail, log_path, rc, trace, exc)
         
         # Use SMCL content as primary source for RC detection
         if not exc or rc in (1, -1):
@@ -1943,22 +2027,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         """
         result = self._exec_with_capture(code, echo=echo, trace=trace, cwd=cwd)
 
-        # Truncate stdout if requested
-        if max_output_lines is not None and result.stdout:
-            lines = result.stdout.splitlines()
-            if len(lines) > max_output_lines:
-                truncated_lines = lines[:max_output_lines]
-                truncated_lines.append(f"\n... (output truncated: showing {max_output_lines} of {len(lines)} lines)")
-                result = CommandResponse(
-                    command=result.command,
-                    rc=result.rc,
-                    stdout="\n".join(truncated_lines),
-                    stderr=result.stderr,
-                    success=result.success,
-                    error=result.error,
-                )
-
-        return result
+        return self._truncate_command_output(result, max_output_lines)
 
     def get_data(self, start: int = 0, count: int = 50) -> List[Dict[str, Any]]:
         """Returns valid JSON-serializable data."""
@@ -2515,8 +2584,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         import tempfile
 
         fmt = (format or "pdf").strip().lower()
-        if fmt not in {"pdf", "png"}:
-            raise ValueError(f"Unsupported graph export format: {format}. Allowed: pdf, png.")
+        if fmt not in {"pdf", "png", "svg"}:
+            raise ValueError(f"Unsupported graph export format: {format}. Allowed: pdf, png, svg.")
 
         if not filename:
             suffix = f".{fmt}"
@@ -3189,37 +3258,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         return False
 
     def run_do_file(self, path: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None, cwd: Optional[str] = None) -> CommandResponse:
-        if cwd is not None and not os.path.isdir(cwd):
-            return CommandResponse(
-                command=f'do "{path}"',
-                rc=601,
-                stdout="",
-                stderr=None,
-                success=False,
-                error=ErrorEnvelope(
-                    message=f"cwd not found: {cwd}",
-                    rc=601,
-                    command=path,
-                ),
-            )
-
-        effective_path = path
-        if cwd is not None and not os.path.isabs(path):
-            effective_path = os.path.abspath(os.path.join(cwd, path))
-
-        if not os.path.exists(effective_path):
-            return CommandResponse(
-                command=f'do "{effective_path}"',
-                rc=601,
-                stdout="",
-                stderr=None,
-                success=False,
-                error=ErrorEnvelope(
-                    message=f"Do-file not found: {effective_path}",
-                    rc=601,
-                    command=effective_path,
-                ),
-            )
+        effective_path, command, error_response = self._resolve_do_file_path(path, cwd)
+        if error_response is not None:
+            return error_response
 
         if not self._initialized:
             self.init()
@@ -3228,93 +3269,34 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         exc: Optional[Exception] = None
         smcl_content = ""
         smcl_path = None
-        path_for_stata = effective_path.replace("\\", "/")
-        command = f'do "{path_for_stata}"'
 
-        log_file = tempfile.NamedTemporaryFile(
-            prefix="mcp_stata_",
-            suffix=".log",
-            delete=False,
-            mode="w",
-            encoding="utf-8",
-            errors="replace",
-            buffering=1,
-        )
-        log_path = log_file.name
-        tail = TailBuffer(max_chars=200000 if trace else 20000)
-        tee = FileTeeIO(log_file, tail)
-
-        # Create SMCL log for authoritative output capture
-        smcl_fd, smcl_path = tempfile.mkstemp(prefix="mcp_smcl_", suffix=".smcl")
-        os.close(smcl_fd)
-        # Remove the placeholder file so Stata can create it without replace/lock issues on Windows
-        try:
-            os.unlink(smcl_path)
-        except Exception:
-            pass
-        smcl_log_name = f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
+        _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
+        smcl_path = self._create_smcl_log_path()
+        smcl_log_name = self._make_smcl_log_name()
 
         rc = -1
-
-        with self._exec_lock:
-            try:
-                from sfi import Scalar, SFIToolkit # Import SFI tools
-                with self._temp_cwd(cwd):
-                    # Open SMCL log BEFORE output redirection
-                    self.stata.run(f'log using "{smcl_path}", replace smcl name({smcl_log_name})', echo=False)
-                    
-                    try:
-                        with self._redirect_io_streaming(tee, tee):
-                            try:
-                                if trace:
-                                    self.stata.run("set trace on")
-                                ret = self.stata.run(command, echo=echo)
-                                # Some PyStata builds return output as a string rather than printing.
-                                if isinstance(ret, str) and ret:
-                                    try:
-                                        tee.write(ret)
-                                    except Exception:
-                                        pass
-                                
-                            except Exception as e:
-                                exc = e
-                                rc = 1
-                            finally:
-                                if trace:
-                                    try:
-                                        self.stata.run("set trace off")
-                                    except Exception:
-                                        pass
-                    finally:
-                        # Close SMCL log AFTER output redirection
-                        try:
-                            self.stata.run(f'capture log close {smcl_log_name}', echo=False)
-                        except Exception:
-                            try:
-                                self.stata.run(f'capture log close {smcl_log_name}', echo=False)
-                            except Exception:
-                                pass
-
-                        # Capture results immediately after execution, INSIDE the lock
-                        try:
-                            self._last_results = self.get_stored_results(force_fresh=True)
-                        except Exception:
-                            self._last_results = None
-            except Exception as e:
-                # Outer catch in case imports or locks fail
-                exc = e
-                rc = 1
-
-        tee.close()
+        try:
+            rc, exc = self._run_streaming_blocking(
+                command=command,
+                tee=tee,
+                cwd=cwd,
+                trace=trace,
+                echo=echo,
+                smcl_path=smcl_path,
+                smcl_log_name=smcl_log_name,
+                hold_attr="_hold_name_do_sync",
+                require_smcl_log=True,
+            )
+        except Exception as e:
+            exc = e
+            rc = 1
+        finally:
+            tee.close()
 
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path)
 
-        tail_text = tail.get_value()
-        log_tail = self._read_log_tail_smart(log_path, rc, trace)
-        if log_tail and len(log_tail) > len(tail_text):
-            tail_text = log_tail
-        combined = (tail_text or "") + (f"\n{exc}" if exc else "")
+        combined = self._build_combined_log(tail, log_path, rc, trace, exc)
 
         # Use SMCL content as primary source for RC detection if not already captured
         if rc == -1 and not exc:
@@ -3388,40 +3370,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             cmd = f"sysuse {src}{clear_suffix}"
 
         result = self._exec_with_capture(cmd, echo=True, trace=False)
-
-        # Truncate stdout if requested
-        if max_output_lines is not None and result.stdout:
-            lines = result.stdout.splitlines()
-            if len(lines) > max_output_lines:
-                truncated_lines = lines[:max_output_lines]
-                truncated_lines.append(f"\n... (output truncated: showing {max_output_lines} of {len(lines)} lines)")
-                result = CommandResponse(
-                    command=result.command,
-                    rc=result.rc,
-                    stdout="\n".join(truncated_lines),
-                    stderr=result.stderr,
-                    success=result.success,
-                    error=result.error,
-                )
-
-        return result
+        return self._truncate_command_output(result, max_output_lines)
 
     def codebook(self, varname: str, trace: bool = False, max_output_lines: Optional[int] = None) -> CommandResponse:
         result = self._exec_with_capture(f"codebook {varname}", trace=trace)
-
-        # Truncate stdout if requested
-        if max_output_lines is not None and result.stdout:
-            lines = result.stdout.splitlines()
-            if len(lines) > max_output_lines:
-                truncated_lines = lines[:max_output_lines]
-                truncated_lines.append(f"\n... (output truncated: showing {max_output_lines} of {len(lines)} lines)")
-                result = CommandResponse(
-                    command=result.command,
-                    rc=result.rc,
-                    stdout="\n".join(truncated_lines),
-                    stderr=result.stderr,
-                    success=result.success,
-                    error=result.error,
-                )
-
-        return result
+        return self._truncate_command_output(result, max_output_lines)

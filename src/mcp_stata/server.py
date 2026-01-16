@@ -258,6 +258,9 @@ async def run_do_file_background(
                 trace=trace,
                 max_output_lines=max_output_lines,
                 cwd=cwd,
+                emit_graph_ready=True,
+                graph_ready_task_id=task_id,
+                graph_ready_format="svg",
             )
             ui_channel.notify_potential_dataset_change()
             task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
@@ -419,6 +422,9 @@ async def run_command_background(
                 trace=trace,
                 max_output_lines=max_output_lines,
                 cwd=cwd,
+                emit_graph_ready=True,
+                graph_ready_task_id=task_id,
+                graph_ready_format="svg",
             )
             ui_channel.notify_potential_dataset_change()
             task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
@@ -501,6 +507,9 @@ async def run_command(
         trace=trace,
         max_output_lines=max_output_lines,
         cwd=cwd,
+        emit_graph_ready=True,
+        graph_ready_task_id=ctx.request_id if ctx else None,
+        graph_ready_format="svg",
     )
 
     # Conservative invalidation: arbitrary Stata commands may change data.
