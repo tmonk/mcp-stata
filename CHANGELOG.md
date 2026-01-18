@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.14.0 (2026-01-18)
+
+### Features
+
+- Enhance logging and implement background task handling in MCP Stata
+  ([`38e07a6`](https://github.com/tmonk/mcp-stata/commit/38e07a6e8b798e8d592c2b87e12ac559f5aca6f6))
+
+
 ## v1.13.0 (2026-01-18)
 
 ### Features
