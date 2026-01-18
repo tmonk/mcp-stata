@@ -102,14 +102,14 @@ def test_cache_validation_with_modified_graph(client):
     assert cache_success is True
     
     # Export should use cache
-    result1 = client.export_graphs_all(use_base64=False)
+    result1 = client.export_graphs_all()
     assert len(result1.graphs) == 1
     
     # Modify the graph
     client.run_command_structured("scatter price weight, name(ValidationTest, replace)")
     
     # Export should detect change and not use stale cache
-    result2 = client.export_graphs_all(use_base64=False)
+    result2 = client.export_graphs_all()
     assert len(result2.graphs) == 1
     
     # The file paths should be different (cache was invalidated)
@@ -128,7 +128,7 @@ def test_error_handling_invalid_graph_name(client):
     assert result is False
     
     # Export should handle empty graph list gracefully
-    export_result = client.export_graphs_all(use_base64=False)
+    export_result = client.export_graphs_all()
     assert len(export_result.graphs) == 0
 
 
@@ -147,7 +147,7 @@ def test_error_handling_corrupted_cache_file(client):
         f.write("corrupted data")
     
     # Export should handle corruption gracefully
-    result = client.export_graphs_all(use_base64=False)
+    result = client.export_graphs_all()
     assert len(result.graphs) == 1  # Should still work, just re-export
 
 
@@ -168,7 +168,7 @@ def test_cache_with_special_characters_in_graph_name(client):
     assert cache_success is True
     
     # Should be able to export it
-    result = client.export_graphs_all(use_base64=False)
+    result = client.export_graphs_all()
     assert len(result.graphs) == 1
     assert result.graphs[0].name == special_name
 
@@ -188,7 +188,7 @@ def test_large_number_of_graphs_performance(client):
     
     # Time the export
     start_time = time.time()
-    result = client.export_graphs_all(use_base64=False)
+    result = client.export_graphs_all()
     first_export_time = time.time() - start_time
     
     assert len(result.graphs) == num_graphs
@@ -199,7 +199,7 @@ def test_large_number_of_graphs_performance(client):
     
     # Second export should be faster
     start_time = time.time()
-    result2 = client.export_graphs_all(use_base64=False)
+    result2 = client.export_graphs_all()
     second_export_time = time.time() - start_time
     
     assert len(result2.graphs) == num_graphs
@@ -219,51 +219,18 @@ def test_cache_persistence_across_multiple_exports(client):
     client.run_command_structured("scatter price mpg, name(PersistenceTest, replace)")
     
     # First export should create cache
-    result1 = client.export_graphs_all(use_base64=False)
+    result1 = client.export_graphs_all()
     assert len(result1.graphs) == 1
     
     # Cache should exist after first export
     assert "PersistenceTest" in client._preemptive_cache
     
     # Second export should use cache
-    result2 = client.export_graphs_all(use_base64=False)
+    result2 = client.export_graphs_all()
     assert len(result2.graphs) == 1
     
-    # Third export with base64 should also work
-    result3 = client.export_graphs_all(use_base64=True)
-    assert len(result3.graphs) == 1
-    
-    # All should have the same graph name
-    assert result1.graphs[0].name == result2.graphs[0].name == result3.graphs[0].name
-
-
-def test_mixed_base64_and_file_exports(client):
-    """Test mixing base64 and file path exports."""
-    # Ensure no prior graphs linger from other tests
-    client.run_command_structured("graph drop _all")
-    # Create and cache graphs
-    client.run_command_structured("sysuse auto, clear")
-    client.run_command_structured("scatter price mpg, name(MixedTest1, replace)")
-    client.run_command_structured("histogram price, name(MixedTest2, replace)")
-    
-    # Cache both graphs
-    client.cache_graph_on_creation("MixedTest1")
-    client.cache_graph_on_creation("MixedTest2")
-    
-    # Export with file paths
-    result_files = client.export_graphs_all(use_base64=False)
-    assert len(result_files.graphs) == 2
-    for graph in result_files.graphs:
-        assert graph.file_path is not None
-        assert graph.image_base64 is None
-    
-    # Export with base64
-    result_base64 = client.export_graphs_all(use_base64=True)
-    assert len(result_base64.graphs) == 2
-    for graph in result_base64.graphs:
-        assert graph.file_path is None
-        assert graph.image_base64 is not None
-        assert len(graph.image_base64) > 1000
+    # Both should have the same graph name
+    assert result1.graphs[0].name == result2.graphs[0].name
 
 
 def test_graph_existence_validation(client):

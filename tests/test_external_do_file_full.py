@@ -100,29 +100,6 @@ async def test_external_figure3_do_file(client):
         assert len(exports.graphs) >= 1, f"Expected at least 1 exported graph, found {len(exports.graphs)}"
         assert exports.graphs[0].file_path, "Exported graphs should have file paths"
 
-        # Also test base64 export for backward compatibility
-        exports_b64 = client.export_graphs_all(use_base64=True)
-        assert len(exports_b64.graphs) >= 1, f"Expected at least 1 base64 exported graph, found {len(exports_b64.graphs)}"
-        assert exports_b64.graphs[0].image_base64, "Exported graphs should have base64 data"
-        
-        # Verify cache contains the graphs that were created
-        cached_graphs = cache._cached_graphs
-        print(f"Cached graphs: {cached_graphs}")
-        
-        # Ensure all created graphs are captured and cached
-        for graph_name in graph_names:
-            # Verify the graph exists in Stata
-            assert graph_name in graph_names, f"Graph {graph_name} should be captured in final graph list"
-            
-            # Try to cache the graph if it wasn't already cached during execution
-            if graph_name not in cached_graphs:
-                cache_result = client.cache_graph_on_creation(graph_name)
-                print(f"Manual cache result for {graph_name}: {cache_result}")
-                
-                # Update cache stats after manual caching
-                cache_stats = cache.get_cache_stats()
-                print(f"Updated cache stats after manual caching: {cache_stats}")
-
     finally:
         os.chdir(prev_cwd)
 

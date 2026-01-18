@@ -27,29 +27,32 @@ from .ui_http import UIChannelManager
 
 # Configure logging
 logger = logging.getLogger("mcp_stata")
+_LOGGING_CONFIGURED = False
 
 def setup_logging():
+    global _LOGGING_CONFIGURED
+    if _LOGGING_CONFIGURED:
+        return
+    _LOGGING_CONFIGURED = True
     # Configure logging to stderr with immediate flush for MCP transport
     log_level = os.getenv("MCP_STATA_LOGLEVEL", "DEBUG").upper()
-    configure_root = os.getenv("MCP_STATA_CONFIGURE_LOGGING", "1").lower() not in {"0", "false", "no"}
+    configure_root = os.getenv("MCP_STATA_CONFIGURE_LOGGING", "0").lower() in {"1", "true", "yes"}
     
     # Create a handler that flushes immediately
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(getattr(logging, log_level, logging.DEBUG))
     handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
     
-    # Configure root logger only if requested; avoid clobbering existing handlers.
+    # Configure root logger only if explicitly requested.
     if configure_root:
         root_logger = logging.getLogger()
-        if not root_logger.handlers:
-            root_logger.addHandler(handler)
-            root_logger.setLevel(getattr(logging, log_level, logging.DEBUG))
+        root_logger.handlers = [handler]
+        root_logger.setLevel(getattr(logging, log_level, logging.DEBUG))
 
-    # Also configure the mcp_stata logger explicitly without duplicating handlers.
+    # Configure the mcp_stata logger explicitly without duplicating handlers.
+    logger.handlers = [handler]
     if logger.level == logging.NOTSET:
         logger.setLevel(getattr(logging, log_level, logging.DEBUG))
-    if not logger.handlers:
-        logger.addHandler(handler)
     logger.propagate = False
 
     try:
@@ -1008,19 +1011,14 @@ def get_stored_results_resource() -> str:
     return json.dumps(client.get_stored_results())
 
 @mcp.tool()
-def export_graphs_all(use_base64: bool = False) -> str:
+def export_graphs_all() -> str:
     """
-    Exports all graphs in memory to file paths (default) or base64-encoded SVGs.
+    Exports all graphs in memory to file paths.
 
-    Args:
-        use_base64: If True, returns base64-encoded images (token-intensive).
-                   If False (default), returns file paths to SVG files (token-efficient).
-                   Use file paths unless you need to embed images directly.
-
-    Returns a JSON envelope listing graph names and either file paths or base64 images.
+    Returns a JSON envelope listing graph names and file paths.
     The agent can open SVG files directly to verify visuals (titles/labels/colors/legends).
     """
-    exports = client.export_graphs_all(use_base64=use_base64)
+    exports = client.export_graphs_all()
     return exports.model_dump_json(exclude_none=False)
 
 def main():

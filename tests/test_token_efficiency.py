@@ -26,7 +26,7 @@ pytestmark = pytest.mark.requires_stata
 
 
 class TestGraphExportTokenEfficiency:
-    """Test graph export with file paths (default) vs base64 (optional)."""
+    """Test graph export with file paths."""
 
     def test_export_graphs_default_returns_file_paths(self, client):
         """Default export_graphs_all() returns file paths, not base64."""
@@ -40,46 +40,10 @@ class TestGraphExportTokenEfficiency:
         assert len(result.graphs) >= 1
         graph = result.graphs[0]
 
-        # Default: file_path is set, image_base64 is None
+        # Default: file_path is set
         assert graph.file_path is not None
         assert Path(graph.file_path).exists()
         assert graph.file_path.endswith(".svg")
-        assert graph.image_base64 is None
-
-    def test_export_graphs_with_base64_flag(self, client):
-        """With use_base64=True, returns base64 data."""
-        s = client.run_command_structured("sysuse auto, clear")
-        assert s.success is True
-        g = client.run_command_structured("scatter price mpg, name(TestGraph2, replace)")
-        assert g.success is True
-
-        result = client.export_graphs_all(use_base64=True)
-
-        assert len(result.graphs) >= 1
-        graph = result.graphs[0]
-
-        # With base64: image_base64 is set, file_path is None
-        assert graph.image_base64 is not None
-        assert len(graph.image_base64) > 1000  # Base64 should be large
-        assert graph.file_path is None
-
-    def test_file_path_much_smaller_than_base64(self, client):
-        """File path should be orders of magnitude smaller than base64."""
-        s = client.run_command_structured("sysuse auto, clear")
-        assert s.success is True
-        g = client.run_command_structured("scatter price mpg, name(TestGraph3, replace)")
-        assert g.success is True
-
-        # Get file path version
-        result_path = client.export_graphs_all(use_base64=False)
-        path_size = len(result_path.graphs[0].file_path)
-
-        # Get base64 version
-        result_b64 = client.export_graphs_all(use_base64=True)
-        b64_size = len(result_b64.graphs[0].image_base64)
-
-        # File path should be at least 100x smaller
-        assert b64_size > path_size * 100
 
 
 class TestOutputTruncation:

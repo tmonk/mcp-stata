@@ -167,10 +167,6 @@ def test_server_tools(init_server):
     assert any(g["name"] == "ServerGraph" for g in all_graphs.get("graphs", []))
     assert all_graphs["graphs"][0]["file_path"]
 
-    # Also test base64 export for backward compatibility
-    all_graphs_b64 = json.loads(export_graphs_all(use_base64=True))
-    assert all_graphs_b64["graphs"][0]["image_base64"]
-
     # Test run_do_file success
     tmp = Path("tmp_server_test.do")
     tmp.write_text('display "ok"\n')
@@ -323,16 +319,6 @@ def test_export_graphs_all_multiple(init_server):
     # Ensure we did not overwrite graphs due to cache filename collisions
     assert len(set(paths)) == 3
     
-    # Also test with base64 encoding
-    all_graphs_b64 = json.loads(export_graphs_all(use_base64=True))
-    assert len(all_graphs_b64["graphs"]) == 3
-    
-    # Verify each graph has base64 data
-    for graph in all_graphs_b64["graphs"]:
-        assert graph["image_base64"]
-        # Base64 should be non-empty and valid base64 string
-        assert len(graph["image_base64"]) > 0
-
 # # Cannot pass - a Stata session can only have one active graph at a time.
 # def test_export_graphs_all_unnamed_graphs(init_server):
 #     """Unnamed graph commands should still result in multiple exportable graphs."""

@@ -3019,13 +3019,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         
         return False  # Assume invalid if we can't verify
 
-    def export_graphs_all(self, use_base64: bool = False) -> GraphExportResponse:
-        """Exports all graphs to file paths (default) or base64-encoded strings.
-
-        Args:
-            use_base64: If True, returns base64-encoded images. If False (default),
-                       returns file paths to exported SVG files.
-        """
+    def export_graphs_all(self) -> GraphExportResponse:
+        """Exports all graphs to file paths."""
         exports: List[GraphExport] = []
         graph_names = self.list_graphs(force_refresh=True)
         
@@ -3035,7 +3030,6 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         import tempfile
         import os
         import threading
-        import base64
         import uuid
         import time
         import logging
@@ -3109,12 +3103,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         
         for name, cached_path in cached_graphs.items():
             try:
-                if use_base64:
-                    with open(cached_path, "rb") as f:
-                        svg_b64 = base64.b64encode(f.read()).decode("ascii")
-                    exports.append(GraphExport(name=name, image_base64=svg_b64))
-                else:
-                    exports.append(GraphExport(name=name, file_path=cached_path))
+                exports.append(GraphExport(name=name, file_path=cached_path))
             except Exception as e:
                 cache_errors.append(f"Failed to read cached graph {name}: {e}")
                 # Fall back to uncached processing
@@ -3157,24 +3146,16 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                         self._cache_sizes[name] = item_size
                         self._total_cache_size += item_size
                     
-                    if use_base64:
-                        svg_b64 = base64.b64encode(result).decode("ascii")
-                        exports.append(GraphExport(name=name, image_base64=svg_b64))
-                    else:
-                        exports.append(GraphExport(name=name, file_path=cache_path))
+                    exports.append(GraphExport(name=name, file_path=cache_path))
                 except Exception as e:
                     cache_errors.append(f"Failed to cache graph {name}: {e}")
                     # Still return the result even if caching fails
-                    if use_base64:
-                        svg_b64 = base64.b64encode(result).decode("ascii")
-                        exports.append(GraphExport(name=name, image_base64=svg_b64))
-                    else:
-                        # Create temp file for immediate use
-                        safe_name = self._sanitize_filename(name)
-                        temp_path = os.path.join(tempfile.gettempdir(), f"{safe_name}_{uuid.uuid4().hex[:8]}.svg")
-                        with open(temp_path, 'wb') as f:
-                            f.write(result)
-                        exports.append(GraphExport(name=name, file_path=temp_path))
+                    # Create temp file for immediate use
+                    safe_name = self._sanitize_filename(name)
+                    temp_path = os.path.join(tempfile.gettempdir(), f"{safe_name}_{uuid.uuid4().hex[:8]}.svg")
+                    with open(temp_path, 'wb') as f:
+                        f.write(result)
+                    exports.append(GraphExport(name=name, file_path=temp_path))
         
         # Log errors if any occurred
         if cache_errors:

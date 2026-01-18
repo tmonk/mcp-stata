@@ -80,7 +80,7 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
   - `graph_name`: Name of graph to export (from `list_graphs`); if None, exports active graph.
   - `format`: Output format—"pdf" (default) or "png". Use "png" to view plots directly.
 
-- `export_graphs_all()`: Export all graphs in memory. Returns file paths by default.
+- `export_graphs_all()`: Export all graphs in memory. Returns file paths.
 
 ### Help & Results
 - `get_help(topic, plain_text=False)`: Return Stata help text.

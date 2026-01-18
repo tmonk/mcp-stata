@@ -217,7 +217,7 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 * `describe()`: View dataset structure via Stata `describe`.
 * `list_graphs()`: See available graphs in memory (JSON list with an `active` flag).
 * `export_graph(graph_name=None, format="pdf")`: Export a graph to a file path (default PDF; use `format="png"` for PNG).
-* `export_graphs_all()`: Export all in-memory graphs. Returns file paths by default.
+* `export_graphs_all()`: Export all in-memory graphs. Returns file paths.
 * `get_help(topic, plain_text=False)`: Markdown-rendered Stata help by default; `plain_text=True` strips formatting.
 * `codebook(variable, as_json=True, trace=False, raw=False, max_output_lines=None)`: Variable-level metadata (JSON envelope by default; supports `trace=True` and output truncation).
 * `run_do_file(path, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None)`: Execute a .do file.

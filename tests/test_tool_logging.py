@@ -1,7 +1,9 @@
 import logging
+import os
 
 from mcp_stata.models import GraphListResponse
-from mcp_stata.server import get_task_status, list_graphs_resource, client
+from mcp_stata.server import get_task_status, list_graphs_resource, client, logger, setup_logging
+import mcp_stata.server as server
 
 
 def test_tool_logging_includes_tool_name(caplog):
@@ -22,3 +24,20 @@ def test_resource_logging_includes_resource_name(caplog, monkeypatch):
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("MCP tool call: list_graphs_resource request_id=None" in msg for msg in messages)
+
+
+def test_setup_logging_single_handler(monkeypatch):
+    monkeypatch.delenv("MCP_STATA_CONFIGURE_LOGGING", raising=False)
+
+    server._LOGGING_CONFIGURED = False
+    logger.handlers = []
+
+    root_logger = logging.getLogger()
+    root_handler_count = len(root_logger.handlers)
+
+    setup_logging()
+    setup_logging()
+
+    assert len(logger.handlers) == 1
+    assert logger.propagate is False
+    assert len(root_logger.handlers) == root_handler_count
