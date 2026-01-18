@@ -1,4 +1,5 @@
 import asyncio
+import io
 import inspect
 import json
 import logging
@@ -11,7 +12,7 @@ import tempfile
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from importlib.metadata import PackageNotFoundError, version
 from io import StringIO
 from typing import Any, Awaitable, Callable, Dict, Generator, List, Optional, Tuple
@@ -204,9 +205,16 @@ class StataClient:
         except Exception:
             pass
 
-    def _create_smcl_log_path(self, *, prefix: str = "mcp_smcl_", max_hex: Optional[int] = None) -> str:
+    def _create_smcl_log_path(
+        self,
+        *,
+        prefix: str = "mcp_smcl_",
+        max_hex: Optional[int] = None,
+        base_dir: Optional[str] = None,
+    ) -> str:
         hex_id = uuid.uuid4().hex if max_hex is None else uuid.uuid4().hex[:max_hex]
-        smcl_path = os.path.join(tempfile.gettempdir(), f"{prefix}{hex_id}.smcl")
+        base = os.path.realpath(tempfile.gettempdir())
+        smcl_path = os.path.join(base, f"{prefix}{hex_id}.smcl")
         self._safe_unlink(smcl_path)
         return smcl_path
 
@@ -215,19 +223,110 @@ class StataClient:
         return f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
 
     def _open_smcl_log(self, smcl_path: str, log_name: str, *, quiet: bool = False) -> bool:
-        cmd = f"{'quietly ' if quiet else ''}log using \"{smcl_path}\", replace smcl name({log_name})"
+        path_for_stata = smcl_path.replace("\\", "/")
+        base_cmd = f"log using \"{path_for_stata}\", replace smcl name({log_name})"
+        unnamed_cmd = f"log using \"{path_for_stata}\", replace smcl"
         for attempt in range(4):
             try:
-                self.stata.run(cmd, echo=False)
-                return True
-            except Exception:
+                logger.debug(
+                    "_open_smcl_log attempt=%s log_name=%s path=%s",
+                    attempt + 1,
+                    log_name,
+                    smcl_path,
+                )
+                logger.warning(
+                    "SMCL open attempt %s cwd=%s path=%s",
+                    attempt + 1,
+                    os.getcwd(),
+                    smcl_path,
+                )
+                logger.debug(
+                    "SMCL open attempt=%s cwd=%s path=%s cmd=%s",
+                    attempt + 1,
+                    os.getcwd(),
+                    smcl_path,
+                    base_cmd,
+                )
+                try:
+                    close_ret = self.stata.run("capture log close _all", echo=False)
+                    if close_ret:
+                        logger.warning("SMCL close_all output: %s", close_ret)
+                except Exception:
+                    pass
+                cmd = f"{'quietly ' if quiet else ''}{base_cmd}"
+                try:
+                    output_buf = StringIO()
+                    with redirect_stdout(output_buf), redirect_stderr(output_buf):
+                        self.stata.run(cmd, echo=False)
+                    ret = output_buf.getvalue().strip()
+                    if ret:
+                        logger.warning("SMCL log open output: %s", ret)
+                except Exception as e:
+                    logger.warning("SMCL log open failed (attempt %s): %s", attempt + 1, e)
+                    logger.warning("SMCL log open failed: %r", e)
+                    try:
+                        retry_buf = StringIO()
+                        with redirect_stdout(retry_buf), redirect_stderr(retry_buf):
+                            self.stata.run(base_cmd, echo=False)
+                        ret = retry_buf.getvalue().strip()
+                        if ret:
+                            logger.warning("SMCL log open output (no quiet): %s", ret)
+                    except Exception as inner:
+                        logger.warning("SMCL log open retry failed: %s", inner)
+                query_buf = StringIO()
+                try:
+                    with redirect_stdout(query_buf), redirect_stderr(query_buf):
+                        self.stata.run("log query", echo=False)
+                except Exception as query_err:
+                    query_buf.write(f"log query failed: {query_err!r}")
+                query_ret = query_buf.getvalue().strip()
+                logger.warning("SMCL log query output: %s", query_ret)
+
+                if query_ret:
+                    query_lower = query_ret.lower()
+                    log_confirmed = "log:" in query_lower and "smcl" in query_lower and " on" in query_lower
+                    if log_confirmed:
+                        self._last_smcl_log_named = True
+                        logger.info("SMCL log confirmed: %s", path_for_stata)
+                        return True
+                logger.warning("SMCL log not confirmed after open; query_ret=%s", query_ret)
+                try:
+                    unnamed_output = StringIO()
+                    with redirect_stdout(unnamed_output), redirect_stderr(unnamed_output):
+                        self.stata.run(unnamed_cmd, echo=False)
+                    unnamed_ret = unnamed_output.getvalue().strip()
+                    if unnamed_ret:
+                        logger.warning("SMCL log open output (unnamed): %s", unnamed_ret)
+                except Exception as e:
+                    logger.warning("SMCL log open failed (unnamed, attempt %s): %s", attempt + 1, e)
+                unnamed_query_buf = StringIO()
+                try:
+                    with redirect_stdout(unnamed_query_buf), redirect_stderr(unnamed_query_buf):
+                        self.stata.run("log query", echo=False)
+                except Exception as query_err:
+                    unnamed_query_buf.write(f"log query failed: {query_err!r}")
+                unnamed_query = unnamed_query_buf.getvalue().strip()
+                if unnamed_query:
+                    unnamed_lower = unnamed_query.lower()
+                    unnamed_confirmed = "log:" in unnamed_lower and "smcl" in unnamed_lower and " on" in unnamed_lower
+                    if unnamed_confirmed:
+                        self._last_smcl_log_named = False
+                        logger.info("SMCL log confirmed (unnamed): %s", path_for_stata)
+                        return True
+            except Exception as e:
+                logger.warning("Failed to open SMCL log (attempt %s): %s", attempt + 1, e)
                 if attempt < 3:
                     time.sleep(0.1)
+        logger.warning("Failed to open SMCL log with cmd: %s", cmd)
         return False
 
     def _close_smcl_log(self, log_name: str) -> None:
         try:
-            self.stata.run(f"capture log close {log_name}", echo=False)
+            use_named = getattr(self, "_last_smcl_log_named", None)
+            if use_named is False:
+                self.stata.run("capture log close", echo=False)
+            else:
+                self.stata.run(f"capture log close {log_name}", echo=False)
         except Exception:
             pass
 
@@ -379,7 +478,8 @@ class StataClient:
         on_chunk: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> None:
         last_pos = 0
-        # Wait for Stata to create the SMCL file (placeholder removed to avoid locks)
+        emitted_debug_chunks = 0
+        # Wait for Stata to create the SMCL file
         while not done.is_set() and not os.path.exists(smcl_path):
             await anyio.sleep(0.05)
 
@@ -399,7 +499,7 @@ class StataClient:
                             return ""
                         except Exception:
                             return ""
-                    raise
+                    return ""
                 except FileNotFoundError:
                     return ""
 
@@ -407,17 +507,29 @@ class StataClient:
                 chunk = await anyio.to_thread.run_sync(_read_content)
                 if chunk:
                     last_pos += len(chunk)
-                    await notify_log(chunk)
+                    try:
+                        await notify_log(chunk)
+                    except Exception as exc:
+                        logger.debug("notify_log failed: %s", exc)
                     if on_chunk is not None:
-                        await on_chunk(chunk)
+                        try:
+                            await on_chunk(chunk)
+                        except Exception as exc:
+                            logger.debug("on_chunk callback failed: %s", exc)
                 await anyio.sleep(0.05)
 
             chunk = await anyio.to_thread.run_sync(_read_content)
             if chunk:
                 last_pos += len(chunk)
-                await notify_log(chunk)
+                try:
+                    await notify_log(chunk)
+                except Exception as exc:
+                    logger.debug("notify_log failed: %s", exc)
                 if on_chunk is not None:
-                    await on_chunk(chunk)
+                    try:
+                        await on_chunk(chunk)
+                    except Exception as exc:
+                        logger.debug("on_chunk callback failed: %s", exc)
 
         except Exception as e:
             logger.warning(f"Log streaming failed: {e}")
@@ -442,9 +554,21 @@ class StataClient:
             try:
                 from sfi import Scalar, SFIToolkit  # Import SFI tools
                 with self._temp_cwd(cwd):
-                    log_opened = self._open_smcl_log(smcl_path, smcl_log_name)
+                    logger.debug(
+                        "opening SMCL log name=%s path=%s cwd=%s",
+                        smcl_log_name,
+                        smcl_path,
+                        os.getcwd(),
+                    )
+                    try:
+                        log_opened = self._open_smcl_log(smcl_path, smcl_log_name, quiet=True)
+                    except Exception as e:
+                        log_opened = False
+                        logger.warning("_open_smcl_log raised: %r", e)
+                    logger.info("SMCL log_opened=%s path=%s", log_opened, smcl_path)
                     if require_smcl_log and not log_opened:
                         exc = RuntimeError("Failed to open SMCL log")
+                        logger.error("SMCL log open failed for %s", smcl_path)
                         rc = 1
                     if exc is None:
                         try:
@@ -452,7 +576,10 @@ class StataClient:
                                 try:
                                     if trace:
                                         self.stata.run("set trace on")
+                                    logger.debug("running Stata command echo=%s: %s", echo, command)
                                     ret = self.stata.run(command, echo=echo)
+                                    if ret:
+                                        logger.debug("stata.run output: %s", ret)
 
                                     setattr(self, hold_attr, f"mcp_hold_{uuid.uuid4().hex[:8]}")
                                     self.stata.run(
@@ -471,6 +598,7 @@ class StataClient:
                                         pass
                                 except Exception as e:
                                     exc = e
+                                    logger.error("stata.run failed: %r", e)
                                     if rc in (-1, 0):
                                         rc = 1
                                 finally:
@@ -1452,7 +1580,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 with self._temp_cwd(cwd):
                     # Create SMCL log for authoritative output capture
                     # Use shorter unique path to avoid Windows path issues
-                    smcl_path = self._create_smcl_log_path(prefix="mcp_", max_hex=16)
+                    smcl_path = self._create_smcl_log_path(prefix="mcp_", max_hex=16, base_dir=cwd)
                     log_name = self._make_smcl_log_name()
                     self._open_smcl_log(smcl_path, log_name)
                     
@@ -1598,6 +1726,57 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             error=error,
         )
 
+    def _exec_no_capture_silent(self, code: str, echo: bool = False, trace: bool = False) -> CommandResponse:
+        """Execute Stata code while suppressing stdout/stderr output."""
+        if not self._initialized:
+            self.init()
+
+        exc: Optional[Exception] = None
+        ret_text: Optional[str] = None
+        rc = 0
+
+        with self._exec_lock:
+            try:
+                from sfi import Scalar  # Import SFI tools
+                if trace:
+                    self.stata.run("set trace on")
+                output_buf = StringIO()
+                with redirect_stdout(output_buf), redirect_stderr(output_buf):
+                    ret = self.stata.run(code, echo=echo)
+                if isinstance(ret, str) and ret:
+                    ret_text = ret
+            except Exception as e:
+                exc = e
+                rc = 1
+            finally:
+                if trace:
+                    try:
+                        self.stata.run("set trace off")
+                    except Exception as e:
+                        logger.warning("Failed to turn off Stata trace mode: %s", e)
+
+        stdout = ""
+        stderr = ""
+        success = rc == 0 and exc is None
+        error = None
+        if not success:
+            msg = str(exc) if exc else f"Stata error r({rc})"
+            error = ErrorEnvelope(
+                message=msg,
+                rc=rc,
+                command=code,
+                stdout=ret_text,
+            )
+
+        return CommandResponse(
+            command=code,
+            rc=rc,
+            stdout=stdout,
+            stderr=None,
+            success=success,
+            error=error,
+        )
+
     def exec_lightweight(self, code: str) -> CommandResponse:
         """
         Executes a command using simple stdout redirection (no SMCL logs).
@@ -1682,7 +1861,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
 
         # Create SMCL log path for authoritative output capture
-        smcl_path = self._create_smcl_log_path()
+        smcl_path = self._create_smcl_log_path(base_dir=cwd)
         smcl_log_name = self._make_smcl_log_name()
 
         # Inform the MCP client immediately where to read/tail the output.
@@ -1708,48 +1887,59 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         done = anyio.Event()
 
-        async with anyio.create_task_group() as tg:
-            async def stream_smcl() -> None:
-                await self._stream_smcl_log(
-                    smcl_path=smcl_path,
-                    notify_log=notify_log,
-                    done=done,
-                    on_chunk=on_chunk_for_graphs if graph_cache else None,
-                )
+        try:
+            async with anyio.create_task_group() as tg:
+                async def stream_smcl() -> None:
+                    try:
+                        await self._stream_smcl_log(
+                            smcl_path=smcl_path,
+                            notify_log=notify_log,
+                            done=done,
+                            on_chunk=on_chunk_for_graphs if graph_cache else None,
+                        )
+                    except Exception as exc:
+                        logger.debug("SMCL streaming failed: %s", exc)
 
-            tg.start_soon(stream_smcl)
+                tg.start_soon(stream_smcl)
 
-            if notify_progress is not None:
-                if total_lines > 0:
-                    await notify_progress(0, float(total_lines), f"Executing command: 0/{total_lines}")
-                else:
-                    await notify_progress(0, None, "Running command")
+                if notify_progress is not None:
+                    if total_lines > 0:
+                        await notify_progress(0, float(total_lines), f"Executing command: 0/{total_lines}")
+                    else:
+                        await notify_progress(0, None, "Running command")
 
-            try:
-                run_blocking = lambda: self._run_streaming_blocking(
-                    command=command,
-                    tee=tee,
-                    cwd=cwd,
-                    trace=trace,
-                    echo=echo,
-                    smcl_path=smcl_path,
-                    smcl_log_name=smcl_log_name,
-                    hold_attr="_hold_name_stream",
-                )
                 try:
-                    rc, exc = await anyio.to_thread.run_sync(
-                        run_blocking,
-                        abandon_on_cancel=True,
+                    run_blocking = lambda: self._run_streaming_blocking(
+                        command=command,
+                        tee=tee,
+                        cwd=cwd,
+                        trace=trace,
+                        echo=echo,
+                        smcl_path=smcl_path,
+                        smcl_log_name=smcl_log_name,
+                        hold_attr="_hold_name_stream",
+                        require_smcl_log=True,
                     )
-                except TypeError:
-                    rc, exc = await anyio.to_thread.run_sync(run_blocking)
-            except get_cancelled_exc_class():
-                self._request_break_in()
-                await self._wait_for_stata_stop()
-                raise
-            finally:
-                done.set()
-                tee.close()
+                    try:
+                        rc, exc = await anyio.to_thread.run_sync(
+                            run_blocking,
+                            abandon_on_cancel=True,
+                        )
+                    except TypeError:
+                        rc, exc = await anyio.to_thread.run_sync(run_blocking)
+                except Exception as e:
+                    exc = e
+                    if rc in (-1, 0):
+                        rc = 1
+                except get_cancelled_exc_class():
+                    self._request_break_in()
+                    await self._wait_for_stata_stop()
+                    raise
+                finally:
+                    done.set()
+                    tee.close()
+        except* Exception as exc_group:
+            logger.debug("SMCL streaming task group failed: %s", exc_group)
 
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path)
@@ -1888,7 +2078,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         graph_cache = self._init_streaming_graph_cache(auto_cache_graphs, on_graph_cached, notify_log)
         _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
 
-        smcl_path = self._create_smcl_log_path()
+        base_dir = cwd or os.path.dirname(effective_path)
+        smcl_path = self._create_smcl_log_path(base_dir=base_dir)
         smcl_log_name = self._make_smcl_log_name()
 
         # Inform the MCP client immediately where to read/tail the output.
@@ -1917,48 +2108,59 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         done = anyio.Event()
 
-        async with anyio.create_task_group() as tg:
-            async def stream_smcl() -> None:
-                await self._stream_smcl_log(
-                    smcl_path=smcl_path,
-                    notify_log=notify_log,
-                    done=done,
-                    on_chunk=on_chunk_callback,
-                )
+        try:
+            async with anyio.create_task_group() as tg:
+                async def stream_smcl() -> None:
+                    try:
+                        await self._stream_smcl_log(
+                            smcl_path=smcl_path,
+                            notify_log=notify_log,
+                            done=done,
+                            on_chunk=on_chunk_callback,
+                        )
+                    except Exception as exc:
+                        logger.debug("SMCL streaming failed: %s", exc)
 
-            tg.start_soon(stream_smcl)
+                tg.start_soon(stream_smcl)
 
-            if notify_progress is not None:
-                if total_lines > 0:
-                    await notify_progress(0, float(total_lines), f"Executing do-file: 0/{total_lines}")
-                else:
-                    await notify_progress(0, None, "Running do-file")
+                if notify_progress is not None:
+                    if total_lines > 0:
+                        await notify_progress(0, float(total_lines), f"Executing do-file: 0/{total_lines}")
+                    else:
+                        await notify_progress(0, None, "Running do-file")
 
-            try:
-                run_blocking = lambda: self._run_streaming_blocking(
-                    command=command,
-                    tee=tee,
-                    cwd=cwd,
-                    trace=trace,
-                    echo=echo,
-                    smcl_path=smcl_path,
-                    smcl_log_name=smcl_log_name,
-                    hold_attr="_hold_name_do",
-                )
                 try:
-                    rc, exc = await anyio.to_thread.run_sync(
-                        run_blocking,
-                        abandon_on_cancel=True,
+                    run_blocking = lambda: self._run_streaming_blocking(
+                        command=command,
+                        tee=tee,
+                        cwd=cwd,
+                        trace=trace,
+                        echo=echo,
+                        smcl_path=smcl_path,
+                        smcl_log_name=smcl_log_name,
+                        hold_attr="_hold_name_do",
+                        require_smcl_log=True,
                     )
-                except TypeError:
-                    rc, exc = await anyio.to_thread.run_sync(run_blocking)
-            except get_cancelled_exc_class():
-                self._request_break_in()
-                await self._wait_for_stata_stop()
-                raise
-            finally:
-                done.set()
-                tee.close()
+                    try:
+                        rc, exc = await anyio.to_thread.run_sync(
+                            run_blocking,
+                            abandon_on_cancel=True,
+                        )
+                    except TypeError:
+                        rc, exc = await anyio.to_thread.run_sync(run_blocking)
+                except Exception as e:
+                    exc = e
+                    if rc in (-1, 0):
+                        rc = 1
+                except get_cancelled_exc_class():
+                    self._request_break_in()
+                    await self._wait_for_stata_stop()
+                    raise
+                finally:
+                    done.set()
+                    tee.close()
+        except* Exception as exc_group:
+            logger.debug("SMCL streaming task group failed: %s", exc_group)
 
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path)
@@ -2614,6 +2816,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if fmt not in {"pdf", "png", "svg"}:
             raise ValueError(f"Unsupported graph export format: {format}. Allowed: pdf, png, svg.")
 
+
         if not filename:
             suffix = f".{fmt}"
             with tempfile.NamedTemporaryFile(prefix="mcp_stata_", suffix=suffix, delete=False) as tmp:
@@ -2636,9 +2839,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             gph_path_for_stata = gph_path.replace("\\", "/")
             # Make the target graph current, then save without name() (which isn't accepted there)
             if graph_name:
-                self._exec_no_capture(f'graph display "{graph_name}"', echo=False)
-            save_cmd = f'graph save "{gph_path_for_stata}", replace'
-            save_resp = self._exec_no_capture(save_cmd, echo=False)
+                self._exec_no_capture_silent(f'quietly graph display "{graph_name}"', echo=False)
+            save_cmd = f'quietly graph save "{gph_path_for_stata}", replace'
+            save_resp = self._exec_no_capture_silent(save_cmd, echo=False)
             if not save_resp.success:
                 msg = save_resp.error.message if save_resp.error else f"graph save failed (rc={save_resp.rc})"
                 raise RuntimeError(msg)
@@ -2646,8 +2849,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             # 2) Prepare a do-file to export PNG externally
             user_filename_fwd = user_filename.replace("\\", "/")
             do_lines = [
-                f'graph use "{gph_path_for_stata}"',
-                f'graph export "{user_filename_fwd}", replace as(png)',
+                f'quietly graph use "{gph_path_for_stata}"',
+                f'quietly graph export "{user_filename_fwd}", replace as(png)',
                 "exit",
             ]
             with tempfile.NamedTemporaryFile(prefix="mcp_stata_export_", suffix=".do", delete=False, mode="w", encoding="ascii") as do_tmp:
@@ -2698,7 +2901,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             # Stata prefers forward slashes in its command parser on Windows
             filename_for_stata = user_filename.replace("\\", "/")
 
-            cmd = "graph export"
+            cmd = "quietly graph export"
             if graph_name:
                 resolved = self._resolve_graph_name_for_stata(graph_name)
                 cmd += f' "{filename_for_stata}", name("{resolved}") replace as({fmt})'
@@ -2707,11 +2910,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
             # Avoid stdout/stderr redirection for graph export because PyStata's
             # output thread can crash on Windows when we swap stdio handles.
-            resp = self._exec_no_capture(cmd, echo=False)
+            resp = self._exec_no_capture_silent(cmd, echo=False)
             if not resp.success:
                 # Retry once after a short pause in case Stata had a transient file handle issue
                 time.sleep(0.2)
-                resp_retry = self._exec_no_capture(cmd, echo=False)
+                resp_retry = self._exec_no_capture_silent(cmd, echo=False)
                 if not resp_retry.success:
                     msg = resp_retry.error.message if resp_retry.error else f"graph export failed (rc={resp_retry.rc})"
                     raise RuntimeError(msg)
@@ -2985,8 +3188,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             
             # Additional validation by attempting to display the graph
             resolved = self._resolve_graph_name_for_stata(graph_name)
-            cmd = f'graph display {resolved}'
-            resp = self._exec_no_capture(cmd, echo=False)
+            cmd = f'quietly graph display {resolved}'
+            resp = self._exec_no_capture_silent(cmd, echo=False)
             return resp.success
         except Exception:
             return False
@@ -3002,8 +3205,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             temp_file = os.path.join(temp_dir, f"temp_{graph_name}_{os.getpid()}.svg")
 
             resolved = self._resolve_graph_name_for_stata(graph_name)
-            export_cmd = f'graph export "{temp_file.replace("\\\\", "/")}", name({resolved}) replace as(svg)'
-            resp = self._exec_no_capture(export_cmd, echo=False)
+            export_cmd = f'quietly graph export "{temp_file.replace("\\\\", "/")}", name({resolved}) replace as(svg)'
+            resp = self._exec_no_capture_silent(export_cmd, echo=False)
             
             if resp.success and os.path.exists(temp_file):
                 with open(temp_file, 'rb') as f:
@@ -3053,15 +3256,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             svg_path_for_stata = svg_path.replace("\\", "/")
 
             try:
-                export_cmd = f'graph export "{svg_path_for_stata}", name({resolved}) replace as(svg)'
-                export_resp = self._exec_no_capture(export_cmd, echo=False)
+                export_cmd = f'quietly graph export "{svg_path_for_stata}", name({resolved}) replace as(svg)'
+                export_resp = self._exec_no_capture_silent(export_cmd, echo=False)
 
                 if not export_resp.success:
-                    display_cmd = f'graph display {resolved}'
-                    display_resp = self._exec_no_capture(display_cmd, echo=False)
+                    display_cmd = f'quietly graph display {resolved}'
+                    display_resp = self._exec_no_capture_silent(display_cmd, echo=False)
                     if display_resp.success:
-                        export_cmd2 = f'graph export "{svg_path_for_stata}", replace as(svg)'
-                        export_resp = self._exec_no_capture(export_cmd2, echo=False)
+                        export_cmd2 = f'quietly graph export "{svg_path_for_stata}", replace as(svg)'
+                        export_resp = self._exec_no_capture_silent(export_cmd2, echo=False)
                     else:
                         export_resp = display_resp
 
@@ -3218,19 +3421,20 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             resolved_graph_name = self._resolve_graph_name_for_stata(graph_name)
             graph_name_q = self._stata_quote(resolved_graph_name)
             
-            export_cmd = f'graph export "{cache_path_for_stata}", name({graph_name_q}) replace as(svg)'
-            resp = self._exec_no_capture(export_cmd, echo=False)
+            
+            export_cmd = f'quietly graph export "{cache_path_for_stata}", name({graph_name_q}) replace as(svg)'
+            resp = self._exec_no_capture_silent(export_cmd, echo=False)
 
             # Fallback: some graph names (spaces, slashes, backslashes) can confuse
             # Stata's parser in name() even when the graph exists. In that case,
             # make the graph current, then export without name().
             if not resp.success:
                 try:
-                    display_cmd = f'graph display {graph_name_q}'
-                    display_resp = self._exec_no_capture(display_cmd, echo=False)
+                    display_cmd = f'quietly graph display {graph_name_q}'
+                    display_resp = self._exec_no_capture_silent(display_cmd, echo=False)
                     if display_resp.success:
-                        export_cmd2 = f'graph export "{cache_path_for_stata}", replace as(svg)'
-                        resp = self._exec_no_capture(export_cmd2, echo=False)
+                        export_cmd2 = f'quietly graph export "{cache_path_for_stata}", replace as(svg)'
+                        resp = self._exec_no_capture_silent(export_cmd2, echo=False)
                 except Exception:
                     pass
             
@@ -3279,7 +3483,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         smcl_path = None
 
         _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
-        smcl_path = self._create_smcl_log_path()
+        base_dir = cwd or os.path.dirname(effective_path)
+        smcl_path = self._create_smcl_log_path(base_dir=base_dir)
         smcl_log_name = self._make_smcl_log_name()
 
         rc = -1

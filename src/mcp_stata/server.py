@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp.utilities import logging as fastmcp_logging
 import mcp.types as types
 from .stata_client import StataClient
 from .models import (
@@ -27,6 +28,7 @@ from .ui_http import UIChannelManager
 
 # Configure logging
 logger = logging.getLogger("mcp_stata")
+payload_logger = logging.getLogger("mcp_stata.payloads")
 _LOGGING_CONFIGURED = False
 
 def setup_logging():
@@ -34,26 +36,53 @@ def setup_logging():
     if _LOGGING_CONFIGURED:
         return
     _LOGGING_CONFIGURED = True
-    # Configure logging to stderr with immediate flush for MCP transport
     log_level = os.getenv("MCP_STATA_LOGLEVEL", "DEBUG").upper()
-    configure_root = os.getenv("MCP_STATA_CONFIGURE_LOGGING", "0").lower() in {"1", "true", "yes"}
-    
-    # Create a handler that flushes immediately
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setLevel(getattr(logging, log_level, logging.DEBUG))
-    handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
-    
-    # Configure root logger only if explicitly requested.
-    if configure_root:
-        root_logger = logging.getLogger()
-        root_logger.handlers = [handler]
-        root_logger.setLevel(getattr(logging, log_level, logging.DEBUG))
+    app_handler = logging.StreamHandler(sys.stderr)
+    app_handler.setLevel(getattr(logging, log_level, logging.DEBUG))
+    app_handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
 
-    # Configure the mcp_stata logger explicitly without duplicating handlers.
-    logger.handlers = [handler]
+    mcp_handler = logging.StreamHandler(sys.stderr)
+    mcp_handler.setLevel(getattr(logging, log_level, logging.DEBUG))
+    mcp_handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
+
+    payload_handler = logging.StreamHandler(sys.stderr)
+    payload_handler.setLevel(getattr(logging, log_level, logging.DEBUG))
+    payload_handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
+
+    root_logger = logging.getLogger()
+    root_logger.handlers = []
+    root_logger.setLevel(logging.WARNING)
+
+    for name, item in logging.root.manager.loggerDict.items():
+        if not isinstance(item, logging.Logger):
+            continue
+        item.handlers = []
+        item.propagate = False
+        if item.level == logging.NOTSET:
+            item.setLevel(getattr(logging, log_level, logging.DEBUG))
+
+    logger.handlers = [app_handler]
+    logger.propagate = False
+
+    payload_logger.handlers = [payload_handler]
+    payload_logger.propagate = False
+
+    mcp_logger = logging.getLogger("mcp.server")
+    mcp_logger.handlers = [mcp_handler]
+    mcp_logger.propagate = False
+    mcp_logger.setLevel(getattr(logging, log_level, logging.DEBUG))
+
+    mcp_lowlevel = logging.getLogger("mcp.server.lowlevel.server")
+    mcp_lowlevel.handlers = [mcp_handler]
+    mcp_lowlevel.propagate = False
+    mcp_lowlevel.setLevel(getattr(logging, log_level, logging.DEBUG))
+
+    mcp_root = logging.getLogger("mcp")
+    mcp_root.handlers = [mcp_handler]
+    mcp_root.propagate = False
+    mcp_root.setLevel(getattr(logging, log_level, logging.DEBUG))
     if logger.level == logging.NOTSET:
         logger.setLevel(getattr(logging, log_level, logging.DEBUG))
-    logger.propagate = False
 
     try:
         _mcp_stata_version = version("mcp-stata")
@@ -64,6 +93,8 @@ def setup_logging():
     logger.info("mcp-stata version: %s", _mcp_stata_version)
     logger.info("STATA_PATH env at startup: %s", os.getenv("STATA_PATH", "<not set>"))
     logger.info("LOG_LEVEL: %s", log_level)
+
+
 
 # Initialize FastMCP
 mcp = FastMCP("mcp_stata")
@@ -84,6 +115,9 @@ class BackgroundTask:
 
 
 _background_tasks: Dict[str, BackgroundTask] = {}
+_request_log_paths: Dict[str, str] = {}
+_read_log_paths: set[str] = set()
+_read_log_offsets: Dict[str, int] = {}
 
 
 def _register_task(task_info: BackgroundTask, max_tasks: int = 100) -> None:
@@ -127,7 +161,6 @@ async def _notify_task_done(session: object | None, task_info: BackgroundTask, r
         "error": task_info.error,
     }
     try:
-        _debug_notification("logMessage", payload, request_id)
         await session.send_log_message(level="info", data=json.dumps(payload), related_request_id=request_id)
     except Exception:
         return
@@ -138,7 +171,7 @@ def _debug_notification(kind: str, payload: object, request_id: object | None = 
         serialized = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
     except Exception:
         serialized = str(payload)
-    logger.debug("MCP notify %s request_id=%s payload=%s", kind, request_id, serialized)
+    payload_logger.info("MCP notify %s request_id=%s payload=%s", kind, request_id, serialized)
 
 
 async def _notify_tool_error(ctx: Context | None, tool_name: str, exc: Exception) -> None:
@@ -160,7 +193,6 @@ async def _notify_tool_error(ctx: Context | None, tool_name: str, exc: Exception
     if task_id is not None:
         payload["task_id"] = task_id
     try:
-        _debug_notification("logMessage", payload, ctx.request_id)
         await session.send_log_message(
             level="error",
             data=json.dumps(payload),
@@ -175,6 +207,20 @@ def _log_tool_call(tool_name: str, ctx: Context | None = None) -> None:
     if ctx is not None:
         request_id = getattr(ctx, "request_id", None)
     logger.info("MCP tool call: %s request_id=%s", tool_name, request_id)
+
+def _should_stream_smcl_chunk(text: str, request_id: object | None) -> bool:
+    if request_id is None:
+        return True
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict) and payload.get("event"):
+            return True
+    except Exception:
+        pass
+    log_path = _request_log_paths.get(str(request_id))
+    if log_path and log_path in _read_log_paths:
+        return False
+    return True
 
 
 def _attach_task_id(ctx: Context | None, task_id: str) -> None:
@@ -294,12 +340,21 @@ async def run_do_file_background(
 
     async def notify_log(text: str) -> None:
         if session is not None:
+            if not _should_stream_smcl_chunk(text, ctx.request_id):
+                return
             _debug_notification("logMessage", text, ctx.request_id)
-            await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
+            try:
+                await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
+            except Exception as e:
+                logger.warning("Failed to send logMessage notification: %s", e)
+                sys.stderr.write(f"[mcp_stata] ERROR: logMessage send failed: {e!r}\n")
+                sys.stderr.flush()
         try:
             payload = json.loads(text)
             if isinstance(payload, dict) and payload.get("event") == "log_path":
                 task_info.log_path = payload.get("path")
+                if ctx.request_id is not None and task_info.log_path:
+                    _request_log_paths[str(ctx.request_id)] = task_info.log_path
         except Exception:
             return
 
@@ -465,12 +520,16 @@ async def run_command_background(
 
     async def notify_log(text: str) -> None:
         if session is not None:
+            if not _should_stream_smcl_chunk(text, ctx.request_id):
+                return
             _debug_notification("logMessage", text, ctx.request_id)
             await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
         try:
             payload = json.loads(text)
             if isinstance(payload, dict) and payload.get("event") == "log_path":
                 task_info.log_path = payload.get("path")
+                if ctx.request_id is not None and task_info.log_path:
+                    _request_log_paths[str(ctx.request_id)] = task_info.log_path
         except Exception:
             return
 
@@ -481,11 +540,6 @@ async def run_command_background(
     async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
         if session is None or progress_token is None:
             return
-        _debug_notification(
-            "progress",
-            {"progress": progress, "total": total, "message": message},
-            ctx.request_id,
-        )
         await session.send_progress_notification(
             progress_token=progress_token,
             progress=progress,
@@ -561,8 +615,17 @@ async def run_command(
     async def notify_log(text: str) -> None:
         if session is None:
             return
+        if not _should_stream_smcl_chunk(text, ctx.request_id):
+            return
         _debug_notification("logMessage", text, ctx.request_id)
         await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict) and payload.get("event") == "log_path":
+                if ctx.request_id is not None:
+                    _request_log_paths[str(ctx.request_id)] = payload.get("path")
+        except Exception:
+            return
 
     progress_token = None
     if ctx is not None and ctx.request_context.meta is not None:
@@ -571,11 +634,6 @@ async def run_command(
     async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
         if session is None or progress_token is None:
             return
-        _debug_notification(
-            "progress",
-            {"progress": progress, "total": total, "message": message},
-            ctx.request_id,
-        )
         await session.send_progress_notification(
             progress_token=progress_token,
             progress=progress,
@@ -630,12 +688,20 @@ def read_log(path: str, offset: int = 0, max_bytes: int = 65536) -> str:
     Returns a compact JSON string: {"path":..., "offset":..., "next_offset":..., "data":...}
     """
     try:
+        if path:
+            _read_log_paths.add(path)
         if offset < 0:
             offset = 0
+        if path:
+            last_offset = _read_log_offsets.get(path, 0)
+            if offset < last_offset:
+                offset = last_offset
         with open(path, "rb") as f:
             f.seek(offset)
             data = f.read(max_bytes)
             next_offset = f.tell()
+        if path:
+            _read_log_offsets[path] = next_offset
         text = data.decode("utf-8", errors="replace")
         return json.dumps({"path": path, "offset": offset, "next_offset": next_offset, "data": text})
     except FileNotFoundError:
@@ -913,8 +979,16 @@ async def run_do_file(
     async def notify_log(text: str) -> None:
         if session is None:
             return
-        _debug_notification("logMessage", text, ctx.request_id)
+        if not _should_stream_smcl_chunk(text, ctx.request_id):
+            return
         await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict) and payload.get("event") == "log_path":
+                if ctx.request_id is not None:
+                    _request_log_paths[str(ctx.request_id)] = payload.get("path")
+        except Exception:
+            return
 
     progress_token = None
     if ctx is not None and ctx.request_context.meta is not None:
@@ -923,11 +997,6 @@ async def run_do_file(
     async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
         if session is None or progress_token is None:
             return
-        _debug_notification(
-            "progress",
-            {"progress": progress, "total": total, "message": message},
-            ctx.request_id,
-        )
         await session.send_progress_notification(
             progress_token=progress_token,
             progress=progress,

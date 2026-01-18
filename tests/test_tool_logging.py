@@ -1,8 +1,10 @@
 import logging
 import os
 
+from mcp.server.fastmcp.utilities import logging as fastmcp_logging
+
 from mcp_stata.models import GraphListResponse
-from mcp_stata.server import get_task_status, list_graphs_resource, client, logger, setup_logging
+from mcp_stata.server import get_task_status, list_graphs_resource, client, logger, setup_logging, payload_logger
 import mcp_stata.server as server
 
 
@@ -31,13 +33,35 @@ def test_setup_logging_single_handler(monkeypatch):
 
     server._LOGGING_CONFIGURED = False
     logger.handlers = []
+    payload_logger.handlers = []
 
     root_logger = logging.getLogger()
-    root_handler_count = len(root_logger.handlers)
+    mcp_logger = logging.getLogger("mcp.server.lowlevel.server")
 
     setup_logging()
     setup_logging()
 
     assert len(logger.handlers) == 1
     assert logger.propagate is False
-    assert len(root_logger.handlers) == root_handler_count
+    assert len(payload_logger.handlers) == 1
+    assert payload_logger.propagate is False
+    assert len(mcp_logger.handlers) == 1
+    assert mcp_logger.propagate is False
+    assert len(root_logger.handlers) == 0
+
+
+def test_logging_uses_fastmcp_root_handlers(monkeypatch):
+    monkeypatch.delenv("MCP_STATA_CONFIGURE_LOGGING", raising=False)
+    server._LOGGING_CONFIGURED = False
+
+    root_logger = logging.getLogger()
+    root_logger.handlers = []
+
+    fastmcp_logging.configure_logging("DEBUG")
+    setup_logging()
+
+    assert len(root_logger.handlers) == 0
+    assert len(logger.handlers) == 1
+    assert logger.propagate is False
+    assert len(payload_logger.handlers) == 1
+    assert payload_logger.propagate is False
