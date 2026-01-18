@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.13.0 (2026-01-18)
+
+### Features
+
+- **server**: Add async callback support and improve error handling
+  ([`3cd0341`](https://github.com/tmonk/mcp-stata/commit/3cd03413ff642c89c36bd53651601c27666f7152))
+
+
 ## v1.12.2 (2026-01-16)
 
 ### Bug Fixes
