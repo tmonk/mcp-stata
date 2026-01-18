@@ -232,6 +232,7 @@ def test_success_paths(client, tmp_path):
     assert ok_cmd.success is True
     assert ok_cmd.rc == 0
     assert "2" in ok_cmd.stdout
+    assert ok_cmd.smcl_output is not None
 
     # load_data success via sysuse heuristic
     load_ok = client.load_data("auto", clear=True)

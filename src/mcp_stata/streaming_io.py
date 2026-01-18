@@ -2,11 +2,13 @@ import queue
 import threading
 import time
 from typing import Any, Awaitable, Callable, Optional
+import logging
 
 import anyio
 
 
 _SENTINEL = object()
+logger = logging.getLogger("mcp_stata")
 
 
 class StreamBuffer:
@@ -92,7 +94,7 @@ class StreamingTeeIO:
                 self._on_chunk_callback(text)
             except Exception:
                 # Don't let callback errors break streaming
-                pass
+                logger.debug("Streaming chunk callback failed", exc_info=True)
 
         with self._lock:
             if self._closed:

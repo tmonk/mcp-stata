@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ import anyio
 from anyio import get_cancelled_exc_class
 
 from .discovery import find_stata_candidates
+from .config import MAX_LIMIT
 from .models import (
     CommandResponse,
     ErrorEnvelope,
@@ -150,7 +152,7 @@ class StataClient:
     _exec_lock: threading.Lock
     _cache_init_lock = threading.Lock()  # Class-level lock for cache initialization
     _is_executing = False  # Flag to prevent recursive Stata calls
-    MAX_DATA_ROWS = 500
+    MAX_DATA_ROWS = MAX_LIMIT
     MAX_GRAPH_BYTES = 50 * 1024 * 1024  # Maximum graph exports (~50MB)
     MAX_CACHE_SIZE = 100  # Maximum number of graphs to cache
     MAX_CACHE_BYTES = 500 * 1024 * 1024  # Maximum cache size in bytes (~500MB)
@@ -276,11 +278,11 @@ class StataClient:
         self,
         graph_cache: Optional[StreamingGraphCache],
         emit_graph_ready: bool,
-    ) -> Optional[set[str]]:
+    ) -> Optional[dict[str, str]]:
         # Capture initial graph state BEFORE execution starts
         if graph_cache:
             try:
-                graph_cache._initial_graphs = set(self.list_graphs())
+                graph_cache._initial_graphs = set(self.list_graphs(force_refresh=True))
                 logger.debug(f"Initial graph state captured: {graph_cache._initial_graphs}")
             except Exception as e:
                 logger.debug(f"Failed to capture initial graph state: {e}")
@@ -289,11 +291,13 @@ class StataClient:
         graph_ready_initial = None
         if emit_graph_ready:
             try:
-                graph_ready_initial = set(self.list_graphs())
-                logger.debug("Graph-ready initial state captured: %s", graph_ready_initial)
+                graph_ready_initial = {}
+                for graph_name in self.list_graphs(force_refresh=True):
+                    graph_ready_initial[graph_name] = self._get_graph_signature(graph_name)
+                logger.debug("Graph-ready initial state captured: %s", set(graph_ready_initial))
             except Exception as e:
                 logger.debug("Failed to capture graph-ready state: %s", e)
-                graph_ready_initial = set()
+                graph_ready_initial = {}
         return graph_ready_initial
 
     async def _cache_new_graphs(
@@ -309,7 +313,7 @@ class StataClient:
         try:
             cached_graphs = []
             initial_graphs = getattr(graph_cache, "_initial_graphs", set())
-            current_graphs = set(self.list_graphs())
+            current_graphs = set(self.list_graphs(force_refresh=True))
             new_graphs = current_graphs - initial_graphs - graph_cache._cached_graphs
 
             if new_graphs:
@@ -327,7 +331,9 @@ class StataClient:
 
                     for callback in graph_cache._cache_callbacks:
                         try:
-                            await anyio.to_thread.run_sync(callback, graph_name, cache_result)
+                            result = callback(graph_name, cache_result)
+                            if inspect.isawaitable(result):
+                                await result
                         except Exception:
                             pass
                 except Exception as e:
@@ -346,7 +352,7 @@ class StataClient:
         self,
         *,
         emit_graph_ready: bool,
-        graph_ready_initial: Optional[set[str]],
+        graph_ready_initial: Optional[dict[str, str]],
         notify_log: Callable[[str], Awaitable[None]],
         graph_ready_task_id: Optional[str],
         graph_ready_format: str,
@@ -693,14 +699,17 @@ class StataClient:
         notify_log: Callable[[str], Awaitable[None]],
         task_id: Optional[str],
         export_format: str,
-        graph_ready_initial: Optional[set[str]],
+        graph_ready_initial: Optional[dict[str, str]],
     ) -> None:
         if not graph_names:
             return
         fmt = (export_format or "svg").strip().lower()
         for graph_name in graph_names:
-            if graph_ready_initial is not None and graph_name in graph_ready_initial:
-                continue
+            signature = self._get_graph_signature(graph_name)
+            if graph_ready_initial is not None:
+                previous = graph_ready_initial.get(graph_name)
+                if previous is not None and previous == signature:
+                    continue
             try:
                 export_path = None
                 if fmt == "svg":
@@ -720,7 +729,7 @@ class StataClient:
                 }
                 await notify_log(json.dumps(payload))
                 if graph_ready_initial is not None:
-                    graph_ready_initial.add(graph_name)
+                    graph_ready_initial[graph_name] = signature
             except Exception as e:
                 logger.warning("graph_ready export failed for %s: %s", graph_name, e)
 
@@ -732,7 +741,7 @@ class StataClient:
         notify_log: Callable[[str], Awaitable[None]],
         graph_ready_task_id: Optional[str],
         graph_ready_format: str,
-        graph_ready_initial: Optional[set[str]],
+        graph_ready_initial: Optional[dict[str, str]],
         last_check: List[float],
     ) -> None:
         if not graph_cache or not graph_cache.auto_cache:
@@ -760,22 +769,25 @@ class StataClient:
 
     async def _emit_graph_ready_events(
         self,
-        initial_graphs: set[str],
+        initial_graphs: dict[str, str],
         notify_log: Callable[[str], Awaitable[None]],
         task_id: Optional[str],
         export_format: str,
     ) -> None:
         try:
-            current_graphs = set(self.list_graphs())
+            current_graphs = list(self.list_graphs(force_refresh=True))
         except Exception as e:
             logger.warning("graph_ready: list_graphs failed: %s", e)
             return
 
-        new_graphs = sorted(current_graphs - initial_graphs)
-        if not new_graphs:
+        if not current_graphs:
             return
 
-        for graph_name in new_graphs:
+        for graph_name in current_graphs:
+            signature = self._get_graph_signature(graph_name)
+            previous = initial_graphs.get(graph_name)
+            if previous is not None and previous == signature:
+                continue
             try:
                 export_path = await anyio.to_thread.run_sync(
                     lambda: self.export_graph(graph_name, format=export_format)
@@ -790,8 +802,22 @@ class StataClient:
                     },
                 }
                 await notify_log(json.dumps(payload))
+                initial_graphs[graph_name] = signature
             except Exception as e:
                 logger.warning("graph_ready export failed for %s: %s", graph_name, e)
+
+    def _get_graph_signature(self, graph_name: str) -> str:
+        if not graph_name:
+            return ""
+        try:
+            response = self.exec_lightweight(f"graph describe {graph_name}")
+            if response.success and response.stdout:
+                return response.stdout
+            if response.stderr:
+                return response.stderr
+        except Exception:
+            return ""
+        return ""
 
     def _request_break_in(self) -> None:
         """
@@ -1509,7 +1535,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             stderr=stderr_content,
             success=(rc == 0),
             error=error_envelope,
-            log_path=smcl_path if smcl_path else None
+            log_path=smcl_path if smcl_path else None,
+            smcl_output=smcl_content,
         )
 
         # Capture results immediately after execution, INSIDE the lock

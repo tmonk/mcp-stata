@@ -6,6 +6,7 @@ during Stata command execution and automatically cache them.
 """
 
 import asyncio
+import inspect
 import re
 import threading
 import time
@@ -268,6 +269,15 @@ class StreamingGraphCache:
         with self._lock:
             self._cache_callbacks.append(callback)
 
+    async def _notify_cache_callbacks(self, graph_name: str, success: bool) -> None:
+        for callback in self._cache_callbacks:
+            try:
+                result = callback(graph_name, success)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as e:
+                logger.warning(f"Cache callback failed for {graph_name}: {e}")
+
     
     async def cache_detected_graphs_with_pystata(self) -> List[str]:
         """Enhanced caching method that uses pystata for real-time graph detection."""
@@ -313,20 +323,12 @@ class StreamingGraphCache:
                             self._cached_graphs.add(graph_name)
                     
                     # Notify callbacks
-                    for callback in self._cache_callbacks:
-                        try:
-                            callback(graph_name, success)
-                        except Exception as e:
-                            logger.warning(f"Cache callback failed for {graph_name}: {e}")
+                    await self._notify_cache_callbacks(graph_name, success)
                 
                 except Exception as e:
                     logger.warning(f"Failed to cache graph {graph_name}: {e}")
                     # Still notify callbacks of failure
-                    for callback in self._cache_callbacks:
-                        try:
-                            callback(graph_name, False)
-                        except Exception:
-                            pass
+                    await self._notify_cache_callbacks(graph_name, False)
         
         return cached_names
     
@@ -358,20 +360,12 @@ class StreamingGraphCache:
                             self._cached_graphs.add(graph_name)
                     
                     # Notify callbacks
-                    for callback in self._cache_callbacks:
-                        try:
-                            callback(graph_name, success)
-                        except Exception as e:
-                            logger.warning(f"Cache callback failed for {graph_name}: {e}")
+                    await self._notify_cache_callbacks(graph_name, success)
                 
                 except Exception as e:
                     logger.warning(f"Failed to cache graph {graph_name}: {e}")
                     # Still notify callbacks of failure
-                    for callback in self._cache_callbacks:
-                        try:
-                            callback(graph_name, False)
-                        except Exception:
-                            pass
+                    await self._notify_cache_callbacks(graph_name, False)
         
         return cached_names
     

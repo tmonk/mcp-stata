@@ -4,6 +4,7 @@ import secrets
 import threading
 import time
 import uuid
+import logging
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Optional
@@ -20,6 +21,9 @@ from .config import (
     TOKEN_TTL_S,
     VIEW_TTL_S,
 )
+
+
+logger = logging.getLogger("mcp_stata")
 
 
 def _stable_hash(payload: dict[str, Any]) -> str:
@@ -223,6 +227,9 @@ class UIChannelManager:
                     self.wfile.write(data)
 
                 def _error(self, status: int, code: str, message: str, *, stata_rc: int | None = None) -> None:
+                    if status >= 500 or code == "internal_error":
+                        logger.error("UI HTTP error %s: %s", code, message)
+                        message = "Internal server error"
                     body: dict[str, Any] = {"error": {"code": code, "message": message}}
                     if stata_rc is not None:
                         body["error"]["stataRc"] = stata_rc

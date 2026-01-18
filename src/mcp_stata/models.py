@@ -13,6 +13,7 @@ class ErrorEnvelope(BaseModel):
     stderr: Optional[str] = None
     snippet: Optional[str] = None
     trace: Optional[bool] = None
+    smcl_output: Optional[str] = None
 
 
 class CommandResponse(BaseModel):
@@ -23,6 +24,7 @@ class CommandResponse(BaseModel):
     log_path: Optional[str] = None
     success: bool
     error: Optional[ErrorEnvelope] = None
+    smcl_output: Optional[str] = None
 
 
 class DataResponse(BaseModel):

@@ -17,6 +17,7 @@ import sys
 import json
 import os
 import re
+import traceback
 import uuid
 from functools import wraps
 from typing import Optional, Dict
@@ -30,22 +31,25 @@ logger = logging.getLogger("mcp_stata")
 def setup_logging():
     # Configure logging to stderr with immediate flush for MCP transport
     log_level = os.getenv("MCP_STATA_LOGLEVEL", "DEBUG").upper()
+    configure_root = os.getenv("MCP_STATA_CONFIGURE_LOGGING", "1").lower() not in {"0", "false", "no"}
     
     # Create a handler that flushes immediately
     handler = logging.StreamHandler(sys.stderr)
     handler.setLevel(getattr(logging, log_level, logging.DEBUG))
     handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
     
-    # Configure root logger
-    root_logger = logging.getLogger()
-    root_logger.handlers = []
-    root_logger.addHandler(handler)
-    root_logger.setLevel(getattr(logging, log_level, logging.DEBUG))
-    
-    # Also configure the mcp_stata logger explicitly
-    logger.setLevel(getattr(logging, log_level, logging.DEBUG))
-    logger.handlers = []
-    logger.addHandler(handler)
+    # Configure root logger only if requested; avoid clobbering existing handlers.
+    if configure_root:
+        root_logger = logging.getLogger()
+        if not root_logger.handlers:
+            root_logger.addHandler(handler)
+            root_logger.setLevel(getattr(logging, log_level, logging.DEBUG))
+
+    # Also configure the mcp_stata logger explicitly without duplicating handlers.
+    if logger.level == logging.NOTSET:
+        logger.setLevel(getattr(logging, log_level, logging.DEBUG))
+    if not logger.handlers:
+        logger.addHandler(handler)
     logger.propagate = False
 
     try:
@@ -120,9 +124,47 @@ async def _notify_task_done(session: object | None, task_info: BackgroundTask, r
         "error": task_info.error,
     }
     try:
+        _debug_notification("logMessage", payload, request_id)
         await session.send_log_message(level="info", data=json.dumps(payload), related_request_id=request_id)
     except Exception:
         return
+
+
+def _debug_notification(kind: str, payload: object, request_id: object | None = None) -> None:
+    try:
+        serialized = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        serialized = str(payload)
+    logger.debug("MCP notify %s request_id=%s payload=%s", kind, request_id, serialized)
+
+
+async def _notify_tool_error(ctx: Context | None, tool_name: str, exc: Exception) -> None:
+    if ctx is None:
+        return
+    session = ctx.request_context.session
+    if session is None:
+        return
+    task_id = None
+    meta = ctx.request_context.meta
+    if meta is not None:
+        task_id = getattr(meta, "task_id", None) or getattr(meta, "taskId", None)
+    payload = {
+        "event": "tool_error",
+        "tool": tool_name,
+        "error": str(exc),
+        "traceback": traceback.format_exc(),
+    }
+    if task_id is not None:
+        payload["task_id"] = task_id
+    try:
+        _debug_notification("logMessage", payload, ctx.request_id)
+        await session.send_log_message(
+            level="error",
+            data=json.dumps(payload),
+            related_request_id=ctx.request_id,
+        )
+    except Exception:
+        logger.exception("Failed to emit tool_error notification for %s", tool_name)
 
 
 def _log_tool_call(tool_name: str, ctx: Context | None = None) -> None:
@@ -130,6 +172,19 @@ def _log_tool_call(tool_name: str, ctx: Context | None = None) -> None:
     if ctx is not None:
         request_id = getattr(ctx, "request_id", None)
     logger.info("MCP tool call: %s request_id=%s", tool_name, request_id)
+
+
+def _attach_task_id(ctx: Context | None, task_id: str) -> None:
+    if ctx is None:
+        return
+    meta = ctx.request_context.meta
+    if meta is None:
+        meta = types.RequestParams.Meta()
+        ctx.request_context.meta = meta
+    try:
+        setattr(meta, "task_id", task_id)
+    except Exception:
+        logger.debug("Unable to attach task_id to request meta", exc_info=True)
 
 
 def _extract_ctx(args: tuple[object, ...], kwargs: dict[str, object]) -> Context | None:
@@ -153,15 +208,25 @@ def tool(*tool_args, **tool_kwargs):
         if asyncio.iscoroutinefunction(func):
             @wraps(func)
             async def async_inner(*args, **kwargs):
-                _log_tool_call(func.__name__, _extract_ctx(args, kwargs))
-                return await func(*args, **kwargs)
+                ctx = _extract_ctx(args, kwargs)
+                _log_tool_call(func.__name__, ctx)
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as exc:
+                    await _notify_tool_error(ctx, func.__name__, exc)
+                    raise
 
             return decorator(async_inner)
 
         @wraps(func)
         def sync_inner(*args, **kwargs):
-            _log_tool_call(func.__name__, _extract_ctx(args, kwargs))
-            return func(*args, **kwargs)
+            ctx = _extract_ctx(args, kwargs)
+            _log_tool_call(func.__name__, ctx)
+            try:
+                return func(*args, **kwargs)
+            except Exception:
+                logger.exception("Tool %s failed", func.__name__)
+                raise
 
         return decorator(sync_inner)
 
@@ -216,6 +281,7 @@ async def run_do_file_background(
     session = ctx.request_context.session if ctx is not None else None
     request_id = ctx.request_id if ctx is not None else None
     task_id = uuid.uuid4().hex
+    _attach_task_id(ctx, task_id)
     task_info = BackgroundTask(
         task_id=task_id,
         kind="do_file",
@@ -225,6 +291,7 @@ async def run_do_file_background(
 
     async def notify_log(text: str) -> None:
         if session is not None:
+            _debug_notification("logMessage", text, ctx.request_id)
             await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
         try:
             payload = json.loads(text)
@@ -240,6 +307,11 @@ async def run_do_file_background(
     async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
         if session is None or progress_token is None:
             return
+        _debug_notification(
+            "progress",
+            {"progress": progress, "total": total, "message": message},
+            ctx.request_id,
+        )
         await session.send_progress_notification(
             progress_token=progress_token,
             progress=progress,
@@ -380,6 +452,7 @@ async def run_command_background(
     session = ctx.request_context.session if ctx is not None else None
     request_id = ctx.request_id if ctx is not None else None
     task_id = uuid.uuid4().hex
+    _attach_task_id(ctx, task_id)
     task_info = BackgroundTask(
         task_id=task_id,
         kind="command",
@@ -389,6 +462,7 @@ async def run_command_background(
 
     async def notify_log(text: str) -> None:
         if session is not None:
+            _debug_notification("logMessage", text, ctx.request_id)
             await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
         try:
             payload = json.loads(text)
@@ -404,6 +478,11 @@ async def run_command_background(
     async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
         if session is None or progress_token is None:
             return
+        _debug_notification(
+            "progress",
+            {"progress": progress, "total": total, "message": message},
+            ctx.request_id,
+        )
         await session.send_progress_notification(
             progress_token=progress_token,
             progress=progress,
@@ -479,6 +558,7 @@ async def run_command(
     async def notify_log(text: str) -> None:
         if session is None:
             return
+        _debug_notification("logMessage", text, ctx.request_id)
         await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
 
     progress_token = None
@@ -488,6 +568,11 @@ async def run_command(
     async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
         if session is None or progress_token is None:
             return
+        _debug_notification(
+            "progress",
+            {"progress": progress, "total": total, "message": message},
+            ctx.request_id,
+        )
         await session.send_progress_notification(
             progress_token=progress_token,
             progress=progress,
@@ -825,6 +910,7 @@ async def run_do_file(
     async def notify_log(text: str) -> None:
         if session is None:
             return
+        _debug_notification("logMessage", text, ctx.request_id)
         await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
 
     progress_token = None
@@ -834,6 +920,11 @@ async def run_do_file(
     async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
         if session is None or progress_token is None:
             return
+        _debug_notification(
+            "progress",
+            {"progress": progress, "total": total, "message": message},
+            ctx.request_id,
+        )
         await session.send_progress_notification(
             progress_token=progress_token,
             progress=progress,
@@ -853,6 +944,9 @@ async def run_do_file(
         trace=trace,
         max_output_lines=max_output_lines,
         cwd=cwd,
+        emit_graph_ready=True,
+        graph_ready_task_id=ctx.request_id if ctx else None,
+        graph_ready_format="svg",
     )
 
     ui_channel.notify_potential_dataset_change()
