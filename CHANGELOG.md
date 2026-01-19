@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.15.0 (2026-01-19)
+
+### Features
+
+- Improve task completion notifications and background graph caching in StataClient
+  ([`79b87b1`](https://github.com/tmonk/mcp-stata/commit/79b87b12fd74a5332fcd0dedac6240c0f85de51f))
+
+
 ## v1.14.0 (2026-01-18)
 
 ### Features
