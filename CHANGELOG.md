@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.16.1 (2026-01-19)
+
+### Bug Fixes
+
+- Improve graph name handling and add logging for export failures in StataClient
+  ([`ffdc8f2`](https://github.com/tmonk/mcp-stata/commit/ffdc8f265e77ac70166178b6ddc78b9b4d4d11af))
+
+
 ## v1.16.0 (2026-01-19)
 
 ### Features
