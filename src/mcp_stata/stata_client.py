@@ -159,11 +159,27 @@ class StataClient:
     MAX_CACHE_BYTES = 500 * 1024 * 1024  # Maximum cache size in bytes (~500MB)
     LIST_GRAPHS_TTL = 0.075  # TTL for list_graphs cache (75ms)
 
+    def __init__(self):
+        self._exec_lock = threading.RLock()
+        self._is_executing = False
+        self._command_idx = 0  # Counter for user-initiated commands
+        self._initialized = False
+        from .graph_detector import GraphCreationDetector
+        self._graph_detector = GraphCreationDetector(self)
+
     def __new__(cls):
         inst = super(StataClient, cls).__new__(cls)
         inst._exec_lock = threading.RLock()
         inst._is_executing = False
+        inst._command_idx = 0
+        from .graph_detector import GraphCreationDetector
+        inst._graph_detector = GraphCreationDetector(inst)
         return inst
+
+    def _increment_command_idx(self) -> int:
+        """Increment and return the command counter."""
+        self._command_idx += 1
+        return self._command_idx
 
     @contextmanager
     def _redirect_io(self, out_buf, err_buf):
@@ -380,6 +396,9 @@ class StataClient:
     ) -> Optional[dict[str, str]]:
         # Capture initial graph state BEFORE execution starts
         if graph_cache:
+            # Clear detection state for the new command (detected/removed sets)
+            # but preserve _last_graph_state signatures for modification detection.
+            graph_cache.detector.clear_detection_state()
             try:
                 graph_cache._initial_graphs = set(self.list_graphs(force_refresh=True))
                 logger.debug(f"Initial graph state captured: {graph_cache._initial_graphs}")
@@ -411,14 +430,21 @@ class StataClient:
             return
         try:
             cached_graphs = []
-            initial_graphs = getattr(graph_cache, "_initial_graphs", set())
-            current_graphs = set(self.list_graphs(force_refresh=True))
-            new_graphs = current_graphs - initial_graphs - graph_cache._cached_graphs
+            # Use detector to find new OR modified graphs
+            pystata_detected = await anyio.to_thread.run_sync(graph_cache.detector._detect_graphs_via_pystata)
+            
+            # Combine with any pending graphs in queue
+            with graph_cache._lock:
+                to_process = set(pystata_detected) | set(graph_cache._graphs_to_cache)
+                graph_cache._graphs_to_cache.clear()
+            
+            if to_process:
+                logger.info(f"Detected {len(to_process)} new or modified graph(s): {sorted(to_process)}")
 
-            if new_graphs:
-                logger.info(f"Detected {len(new_graphs)} new graph(s): {sorted(new_graphs)}")
-
-            for graph_name in new_graphs:
+            for graph_name in to_process:
+                if graph_name in graph_cache._cached_graphs:
+                    continue
+                    
                 try:
                     cache_result = await anyio.to_thread.run_sync(
                         self.cache_graph_on_creation,
@@ -816,7 +842,15 @@ class StataClient:
             return None
         try:
             with self._cache_lock:
-                return self._preemptive_cache.get(graph_name)
+                cache_path = self._preemptive_cache.get(graph_name)
+                if not cache_path:
+                    return None
+                
+                # Double-check validity (e.g. signature match for current command)
+                if not self._is_cache_valid(graph_name, cache_path):
+                    return None
+                    
+                return cache_path
         except Exception:
             return None
 
@@ -874,8 +908,7 @@ class StataClient:
     ) -> None:
         if not graph_cache or not graph_cache.auto_cache:
             return
-        if self._is_executing:
-            return
+        # Removed execution check to allow polling during run
         now = time.monotonic()
         if last_check and now - last_check[0] < 0.25:
             return
@@ -940,17 +973,14 @@ class StataClient:
                 logger.warning("graph_ready export failed for %s: %s", graph_name, e)
 
     def _get_graph_signature(self, graph_name: str) -> str:
+        """
+        Get a stable signature for a graph without calling Stata.
+        Consistent with GraphCreationDetector implementation.
+        """
         if not graph_name:
             return ""
-        try:
-            response = self.exec_lightweight(f"graph describe {graph_name}")
-            if response.success and response.stdout:
-                return response.stdout
-            if response.stderr:
-                return response.stderr
-        except Exception:
-            return ""
-        return ""
+        cmd_idx = getattr(self, "_command_idx", 0)
+        return f"{graph_name}_{cmd_idx}"
 
     def _request_break_in(self) -> None:
         """
@@ -1568,6 +1598,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if not self._initialized:
             self.init()
 
+        self._increment_command_idx()
         # Rewrite graph names with special characters to internal aliases
         code = self._maybe_rewrite_graph_name_in_command(code)
 
@@ -1877,6 +1908,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         command = f'{path_for_stata}'
 
         graph_ready_initial = self._capture_graph_state(graph_cache, emit_graph_ready)
+        
+        # Increment AFTER capture so detected modifications are based on state BEFORE this command
+        self._increment_command_idx()
+
         graph_poll_state = [0.0]
 
         async def on_chunk_for_graphs(_chunk: str) -> None:
@@ -2098,6 +2133,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         rc = -1
         graph_ready_initial = self._capture_graph_state(graph_cache, emit_graph_ready)
+        
+        # Increment AFTER capture
+        self._increment_command_idx()
+        
         graph_poll_state = [0.0]
 
         async def on_chunk_for_graphs(_chunk: str) -> None:
@@ -3212,32 +3251,22 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             return False
     
     def _is_cache_valid(self, graph_name: str, cache_path: str) -> bool:
-        """Check if cached content is still valid."""
+        """Check if cached content is still valid using internal signatures."""
         try:
-            # Get current graph content hash
-            import tempfile
-            import os
-            
-            temp_dir = tempfile.gettempdir()
-            temp_file = os.path.join(temp_dir, f"temp_{graph_name}_{os.getpid()}.svg")
-
-            resolved = self._resolve_graph_name_for_stata(graph_name)
-            export_cmd = f'quietly graph export "{temp_file.replace("\\\\", "/")}", name({resolved}) replace as(svg)'
-            resp = self._exec_no_capture_silent(export_cmd, echo=False)
-            
-            if resp.success and os.path.exists(temp_file):
-                with open(temp_file, 'rb') as f:
-                    current_data = f.read()
-                os.remove(temp_file)
+            if not os.path.exists(cache_path) or os.path.getsize(cache_path) == 0:
+                return False
                 
-                current_hash = self._get_content_hash(current_data)
-                cached_hash = self._preemptive_cache.get(f"{graph_name}_hash")
+            current_sig = self._get_graph_signature(graph_name)
+            cached_sig = self._preemptive_cache.get(f"{graph_name}_sig")
+            
+            # If we have a signature match, it's valid for the current command session
+            if cached_sig and cached_sig == current_sig:
+                return True
                 
-                return cached_hash == current_hash
+            # Otherwise it's invalid (needs refresh for new command)
+            return False
         except Exception:
-            pass
-        
-        return False  # Assume invalid if we can't verify
+            return False
 
     def export_graphs_all(self) -> GraphExportResponse:
         """Exports all graphs to file paths."""
@@ -3430,8 +3459,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                             del self._preemptive_cache[hash_key]
         
         try:
-            # Sanitize graph name for file system
-            safe_name = self._sanitize_filename(graph_name)
+            # Include signature in filename to force client-side refresh
+            sig = self._get_graph_signature(graph_name)
+            safe_name = self._sanitize_filename(sig)
             cache_path = os.path.join(self._preemptive_cache_dir, f"{safe_name}.svg")
             cache_path_for_stata = cache_path.replace("\\", "/")
 
@@ -3466,9 +3496,20 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 self._evict_cache_if_needed(item_size)
                 
                 with self._cache_lock:
+                    # Clear any old versions of this graph from the path cache
+                    # (Optional but keeps it clean)
+                    old_path = self._preemptive_cache.get(graph_name)
+                    if old_path and old_path != cache_path:
+                         try:
+                             os.remove(old_path)
+                         except Exception:
+                             pass
+
                     self._preemptive_cache[graph_name] = cache_path
                     # Store content hash for validation
                     self._preemptive_cache[f"{graph_name}_hash"] = self._get_content_hash(data)
+                    # Store signature for fast validation
+                    self._preemptive_cache[f"{graph_name}_sig"] = self._get_graph_signature(graph_name)
                     # Update tracking
                     self._cache_access_times[graph_name] = time.time()
                     self._cache_sizes[graph_name] = item_size

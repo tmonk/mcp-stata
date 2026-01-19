@@ -34,24 +34,21 @@ class GraphCreationDetector:
     def _describe_graph_signature(self, graph_name: str) -> str:
         """Return a stable signature for a graph.
 
-        We intentionally avoid using timestamps as the signature, since that makes
-        every poll look like a modification.
+        We avoid using Stata calls like 'graph describe' here because they are slow 
+        (each call takes ~35ms) and would be called for every graph on every poll,
+        bottlenecking the streaming output.
+        
+        Instead, we use name-based tracking tied to the Stata command execution 
+        context. The signature is stable within a single command execution but 
+        changes when a new command starts, allowing us to detect modifications 
+        between commands without any Stata overhead.
         """
-        if not self._stata_client or not hasattr(self._stata_client, "stata"):
+        if not self._stata_client:
             return ""
-        try:
-            # Use lightweight execution to avoid heavy FS I/O for high-frequency polling
-            resp = self._stata_client.exec_lightweight(f"graph describe {graph_name}")
-                
-            if resp.success and resp.stdout:
-                return resp.stdout
-            if resp.error and resp.error.snippet:
-                # If using lightweight, error might be None or just string in stderr, 
-                # but run_command_structured returns proper error envelope.
-                return resp.error.snippet
-        except Exception:
-            return ""
-        return ""
+        
+        # Access command_idx from stata_client if available
+        cmd_idx = getattr(self._stata_client, "_command_idx", 0)
+        return f"{graph_name}_{cmd_idx}"
     
     def _detect_graphs_via_pystata(self) -> List[str]:
         """Detect newly created graphs using direct pystata state access."""
@@ -256,7 +253,11 @@ class StreamingGraphCache:
     def __init__(self, stata_client, auto_cache: bool = False):
         self.stata_client = stata_client
         self.auto_cache = auto_cache
-        self.detector = GraphCreationDetector(stata_client)
+        # Use persistent detector from client if available, else create local one
+        if hasattr(stata_client, "_graph_detector"):
+            self.detector = stata_client._graph_detector
+        else:
+            self.detector = GraphCreationDetector(stata_client)
         self._lock = threading.Lock()
         self._cache_callbacks: List[Callable[[str, bool], None]] = []
         self._graphs_to_cache: List[str] = []
