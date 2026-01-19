@@ -3466,8 +3466,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             cache_path_for_stata = cache_path.replace("\\", "/")
 
             resolved_graph_name = self._resolve_graph_name_for_stata(graph_name)
-            graph_name_q = self._stata_quote(resolved_graph_name)
-            
+            # Graph names in memory cannot have spaces.
+            # Using bare names for display/export to avoid name() parser quirks in some versions.
+            graph_name_q = resolved_graph_name
             
             export_cmd = f'quietly graph export "{cache_path_for_stata}", name({graph_name_q}) replace as(svg)'
             resp = self._exec_no_capture_silent(export_cmd, echo=False)
@@ -3482,8 +3483,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     if display_resp.success:
                         export_cmd2 = f'quietly graph export "{cache_path_for_stata}", replace as(svg)'
                         resp = self._exec_no_capture_silent(export_cmd2, echo=False)
-                except Exception:
-                    pass
+                    else:
+                        logger = logging.getLogger(__name__)
+                        logger.warning(f"Fallback display failed for {graph_name}: {getattr(display_resp, 'error', 'Unknown error')}")
+                except Exception as e:
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Fallback exception for {graph_name}: {e}")
             
             if resp.success and os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
                 # Read the data to compute hash
