@@ -6,6 +6,7 @@ during Stata command execution and automatically cache them.
 """
 
 import asyncio
+import contextlib
 import inspect
 import re
 import threading
@@ -47,8 +48,14 @@ class GraphCreationDetector:
             return ""
         
         # Access command_idx from stata_client if available
+        # NOTE: We only use command_idx for the default 'Graph' name to detect
+        # modifications. For named graphs, we only detect creation (name change)
+        # to avoid triggering redundant notifications for all existing graphs 
+        # on every command (since command_idx changes globally).
         cmd_idx = getattr(self._stata_client, "_command_idx", 0)
-        return f"{graph_name}_{cmd_idx}"
+        if graph_name.lower() == "graph":
+            return f"{graph_name}_{cmd_idx}"
+        return graph_name
     
     def _detect_graphs_via_pystata(self) -> List[str]:
         """Detect newly created graphs using direct pystata state access."""
@@ -100,21 +107,26 @@ class GraphCreationDetector:
             else:
                 # Fallback to sfi Macro interface - only if stata is available
                 if self._stata_client and hasattr(self._stata_client, 'stata'):
-                    try:
-                        from sfi import Macro
-                        hold_name = f"_mcp_detector_hold_{int(time.time() * 1000 % 1000000)}"
-                        self._stata_client.stata.run(f"capture _return hold {hold_name}", echo=False)
+                    # Access the lock from client to prevent concurrency issues with pystata
+                    exec_lock = getattr(self._stata_client, "_exec_lock", None)
+                    ctx = exec_lock if exec_lock else contextlib.nullcontext()
+                    
+                    with ctx:
                         try:
-                            self._stata_client.stata.run("macro define mcp_graph_list \"\"", echo=False)
-                            self._stata_client.stata.run("quietly graph dir, memory", echo=False)
-                            self._stata_client.stata.run("macro define mcp_graph_list `r(list)'", echo=False)
-                            graph_list_str = Macro.getGlobal("mcp_graph_list")
-                        finally:
-                            self._stata_client.stata.run(f"capture _return restore {hold_name}", echo=False)
-                        return graph_list_str.split() if graph_list_str else []
-                    except ImportError:
-                        logger.warning("sfi.Macro not available for fallback graph detection")
-                        return []
+                            from sfi import Macro
+                            hold_name = f"_mcp_detector_hold_{int(time.time() * 1000 % 1000000)}"
+                            self._stata_client.stata.run(f"capture _return hold {hold_name}", echo=False)
+                            try:
+                                self._stata_client.stata.run("macro define mcp_graph_list \"\"", echo=False)
+                                self._stata_client.stata.run("quietly graph dir, memory", echo=False)
+                                self._stata_client.stata.run("macro define mcp_graph_list `r(list)'", echo=False)
+                                graph_list_str = Macro.getGlobal("mcp_graph_list")
+                            finally:
+                                self._stata_client.stata.run(f"capture _return restore {hold_name}", echo=False)
+                            return graph_list_str.split() if graph_list_str else []
+                        except ImportError:
+                            logger.warning("sfi.Macro not available for fallback graph detection")
+                            return []
                 else:
                     return []
         except Exception as e:

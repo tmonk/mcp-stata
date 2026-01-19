@@ -545,17 +545,20 @@ class StataClient:
                 await anyio.sleep(0.05)
 
             chunk = await anyio.to_thread.run_sync(_read_content)
+            if on_chunk is not None:
+                # Final check even if last chunk is empty, to ensure 
+                # graphs created at the very end are detected.
+                try:
+                    await on_chunk(chunk or "")
+                except Exception as exc:
+                    logger.debug("final on_chunk check failed: %s", exc)
+            
             if chunk:
                 last_pos += len(chunk)
                 try:
                     await notify_log(chunk)
                 except Exception as exc:
                     logger.debug("notify_log failed: %s", exc)
-                if on_chunk is not None:
-                    try:
-                        await on_chunk(chunk)
-                    except Exception as exc:
-                        logger.debug("on_chunk callback failed: %s", exc)
 
         except Exception as e:
             logger.warning(f"Log streaming failed: {e}")
@@ -905,12 +908,16 @@ class StataClient:
         graph_ready_format: str,
         graph_ready_initial: Optional[dict[str, str]],
         last_check: List[float],
+        force: bool = False,
     ) -> None:
         if not graph_cache or not graph_cache.auto_cache:
             return
-        # Removed execution check to allow polling during run
+        if self._is_executing and not force:
+            # Skip polling if Stata is busy; it will block on _exec_lock anyway.
+            # During final check (force=True), we know it's safe because _run_streaming_blocking has finished.
+            return
         now = time.monotonic()
-        if last_check and now - last_check[0] < 0.25:
+        if not force and last_check and now - last_check[0] < 0.25:
             return
         if last_check:
             last_check[0] = now
@@ -980,7 +987,11 @@ class StataClient:
         if not graph_name:
             return ""
         cmd_idx = getattr(self, "_command_idx", 0)
-        return f"{graph_name}_{cmd_idx}"
+        # Only include command index for default 'Graph' to detect modifications.
+        # For named graphs, we only want to detect them when they are new or renamed.
+        if graph_name.lower() == "graph":
+            return f"{graph_name}_{cmd_idx}"
+        return graph_name
 
     def _request_break_in(self) -> None:
         """
@@ -1996,13 +2007,6 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     completed_label="Command",
                 )
             )
-        self._emit_graph_ready_task(
-            emit_graph_ready=emit_graph_ready,
-            graph_ready_initial=graph_ready_initial,
-            notify_log=notify_log,
-            graph_ready_task_id=graph_ready_task_id,
-            graph_ready_format=graph_ready_format,
-        )
 
         combined = self._build_combined_log(tail, smcl_path, rc, trace, exc)
         
@@ -2227,13 +2231,6 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     completed_label="Do-file",
                 )
             )
-        self._emit_graph_ready_task(
-            emit_graph_ready=emit_graph_ready,
-            graph_ready_initial=graph_ready_initial,
-            notify_log=notify_log,
-            graph_ready_task_id=graph_ready_task_id,
-            graph_ready_format=graph_ready_format,
-        )
 
         combined = self._build_combined_log(tail, log_path, rc, trace, exc)
         
@@ -2322,17 +2319,18 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if count > self.MAX_DATA_ROWS:
             count = self.MAX_DATA_ROWS
 
-        try:
-            # Use pystata integration to retrieve data
-            df = self.stata.pdataframe_from_data()
+        with self._exec_lock:
+            try:
+                # Use pystata integration to retrieve data
+                df = self.stata.pdataframe_from_data()
 
-            # Slice
-            sliced = df.iloc[start : start + count]
+                # Slice
+                sliced = df.iloc[start : start + count]
 
-            # Convert to dict
-            return sliced.to_dict(orient="records")
-        except Exception as e:
-            return [{"error": f"Failed to retrieve data: {e}"}]
+                # Convert to dict
+                return sliced.to_dict(orient="records")
+            except Exception as e:
+                return [{"error": f"Failed to retrieve data: {e}"}]
 
     def list_variables(self) -> List[Dict[str, str]]:
         """Returns list of variables with labels."""
@@ -2342,17 +2340,18 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # We can use sfi to be efficient
         from sfi import Data  # type: ignore[import-not-found]
         vars_info = []
-        for i in range(Data.getVarCount()):
-            var_index = i # 0-based
-            name = Data.getVarName(var_index)
-            label = Data.getVarLabel(var_index)
-            type_str = Data.getVarType(var_index) # Returns int
+        with self._exec_lock:
+            for i in range(Data.getVarCount()):
+                var_index = i # 0-based
+                name = Data.getVarName(var_index)
+                label = Data.getVarLabel(var_index)
+                type_str = Data.getVarType(var_index) # Returns int
 
-            vars_info.append({
-                "name": name,
-                "label": label,
-                "type": str(type_str),
-            })
+                vars_info.append({
+                    "name": name,
+                    "label": label,
+                    "type": str(type_str),
+                })
         return vars_info
 
     def get_dataset_state(self) -> Dict[str, Any]:
@@ -2362,27 +2361,28 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         from sfi import Data, Macro  # type: ignore[import-not-found]
 
-        n = int(Data.getObsTotal())
-        k = int(Data.getVarCount())
+        with self._exec_lock:
+            n = int(Data.getObsTotal())
+            k = int(Data.getVarCount())
 
-        frame = "default"
-        sortlist = ""
-        changed = False
-        try:
-            frame = str(Macro.getGlobal("frame") or "default")
-        except Exception:
-            logger.debug("Failed to get 'frame' macro", exc_info=True)
             frame = "default"
-        try:
-            sortlist = str(Macro.getGlobal("sortlist") or "")
-        except Exception:
-            logger.debug("Failed to get 'sortlist' macro", exc_info=True)
             sortlist = ""
-        try:
-            changed = bool(int(float(Macro.getGlobal("changed") or "0")))
-        except Exception:
-            logger.debug("Failed to get 'changed' macro", exc_info=True)
             changed = False
+            try:
+                frame = str(Macro.getGlobal("frame") or "default")
+            except Exception:
+                logger.debug("Failed to get 'frame' macro", exc_info=True)
+                frame = "default"
+            try:
+                sortlist = str(Macro.getGlobal("sortlist") or "")
+            except Exception:
+                logger.debug("Failed to get 'sortlist' macro", exc_info=True)
+                sortlist = ""
+            try:
+                changed = bool(int(float(Macro.getGlobal("changed") or "0")))
+            except Exception:
+                logger.debug("Failed to get 'changed' macro", exc_info=True)
+                changed = False
 
         return {"frame": frame, "n": n, "k": k, "sortlist": sortlist, "changed": changed}
 
@@ -2396,11 +2396,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         from sfi import Data  # type: ignore[import-not-found]
 
         out: Dict[str, int] = {}
-        for i in range(int(Data.getVarCount())):
-            try:
-                out[str(Data.getVarName(i))] = i
-            except Exception:
-                continue
+        with self._exec_lock:
+            for i in range(int(Data.getVarCount())):
+                try:
+                    out[str(Data.getVarName(i))] = i
+                except Exception:
+                    continue
         return out
 
     def list_variables_rich(self) -> List[Dict[str, Any]]:
@@ -2807,45 +2808,46 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 return self._list_graphs_cache
 
         # Cache miss or expired, fetch fresh data
-        try:
-            # Preservation of r() results is critical because this can be called
-            # automatically after every user command (e.g., during streaming).
-            import time
-            hold_name = f"_mcp_ghold_{int(time.time() * 1000 % 1000000)}"
-            self.stata.run(f"capture _return hold {hold_name}", echo=False)
-            
+        with self._exec_lock:
             try:
-                self.stata.run("macro define mcp_graph_list \"\"", echo=False)
-                self.stata.run("quietly graph dir, memory", echo=False)
-                from sfi import Macro  # type: ignore[import-not-found]
-                self.stata.run("macro define mcp_graph_list `r(list)'", echo=False)
-                graph_list_str = Macro.getGlobal("mcp_graph_list")
-            finally:
-                self.stata.run(f"capture _return restore {hold_name}", echo=False)
+                # Preservation of r() results is critical because this can be called
+                # automatically after every user command (e.g., during streaming).
+                import time
+                hold_name = f"_mcp_ghold_{int(time.time() * 1000 % 1000000)}"
+                self.stata.run(f"capture _return hold {hold_name}", echo=False)
+                
+                try:
+                    self.stata.run("macro define mcp_graph_list \"\"", echo=False)
+                    self.stata.run("quietly graph dir, memory", echo=False)
+                    from sfi import Macro  # type: ignore[import-not-found]
+                    self.stata.run("macro define mcp_graph_list `r(list)'", echo=False)
+                    graph_list_str = Macro.getGlobal("mcp_graph_list")
+                finally:
+                    self.stata.run(f"capture _return restore {hold_name}", echo=False)
 
-            raw_list = graph_list_str.split() if graph_list_str else []
+                raw_list = graph_list_str.split() if graph_list_str else []
 
-            # Map internal Stata names back to user-facing names when we have an alias.
-            reverse = getattr(self, "_graph_name_reverse", {})
-            graph_list = [reverse.get(n, n) for n in raw_list]
+                # Map internal Stata names back to user-facing names when we have an alias.
+                reverse = getattr(self, "_graph_name_reverse", {})
+                graph_list = [reverse.get(n, n) for n in raw_list]
 
-            result = graph_list
+                result = graph_list
 
-            # Update cache
-            with self._list_graphs_cache_lock:
-                self._list_graphs_cache = result
-                self._list_graphs_cache_time = time.time()
-            
-            return result
-            
-        except Exception as e:
-            # On error, return cached result if available, otherwise empty list
-            with self._list_graphs_cache_lock:
-                if self._list_graphs_cache is not None:
-                    logger.warning(f"list_graphs failed, returning cached result: {e}")
-                    return self._list_graphs_cache
-            logger.warning(f"list_graphs failed, no cache available: {e}")
-            return []
+                # Update cache
+                with self._list_graphs_cache_lock:
+                    self._list_graphs_cache = result
+                    self._list_graphs_cache_time = time.time()
+                
+                return result
+                
+            except Exception as e:
+                # On error, return cached result if available, otherwise empty list
+                with self._list_graphs_cache_lock:
+                    if self._list_graphs_cache is not None:
+                        logger.warning(f"list_graphs failed, returning cached result: {e}")
+                        return self._list_graphs_cache
+                logger.warning(f"list_graphs failed, no cache available: {e}")
+                return []
 
     def list_graphs_structured(self) -> GraphListResponse:
         names = self.list_graphs()
@@ -2957,12 +2959,13 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             # Stata prefers forward slashes in its command parser on Windows
             filename_for_stata = user_filename.replace("\\", "/")
 
-            cmd = "quietly graph export"
             if graph_name:
                 resolved = self._resolve_graph_name_for_stata(graph_name)
-                cmd += f' "{filename_for_stata}", name("{resolved}") replace as({fmt})'
-            else:
-                cmd += f' "{filename_for_stata}", replace as({fmt})'
+                # Use display + export without name() for maximum compatibility.
+                # name(NAME) often fails in PyStata for non-active graphs (r(693)).
+                self._exec_no_capture_silent(f'quietly graph display "{resolved}"', echo=False)
+            
+            cmd = f'quietly graph export "{filename_for_stata}", replace as({fmt})'
 
             # Avoid stdout/stderr redirection for graph export because PyStata's
             # output thread can crash on Windows when we swap stdio handles.
@@ -3003,14 +3006,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if not self._initialized:
             self.init()
 
-        # Try to locate the .sthlp help file
-        # We use 'capture' to avoid crashing if not found
-        self.stata.run(f"capture findfile {topic}.sthlp")
+        with self._exec_lock:
+            # Try to locate the .sthlp help file
+            # We use 'capture' to avoid crashing if not found
+            self.stata.run(f"capture findfile {topic}.sthlp")
 
-        # Retrieve the found path from r(fn)
-        from sfi import Macro  # type: ignore[import-not-found]
-        self.stata.run("global mcp_help_file `r(fn)'")
-        fn = Macro.getGlobal("mcp_help_file")
+            # Retrieve the found path from r(fn)
+            from sfi import Macro  # type: ignore[import-not-found]
+            self.stata.run("global mcp_help_file `r(fn)'")
+            fn = Macro.getGlobal("mcp_help_file")
 
         if fn and os.path.exists(fn):
             try:
@@ -3466,29 +3470,14 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             cache_path_for_stata = cache_path.replace("\\", "/")
 
             resolved_graph_name = self._resolve_graph_name_for_stata(graph_name)
-            # Graph names in memory cannot have spaces.
-            # Using bare names for display/export to avoid name() parser quirks in some versions.
-            graph_name_q = resolved_graph_name
+            # Use display + export without name() for maximum compatibility.
+            # name(NAME) often fails in PyStata for non-active graphs (r(693)).
+            # Quoting the name helps with spaces/special characters.
+            display_cmd = f'quietly graph display "{resolved_graph_name}"'
+            self._exec_no_capture_silent(display_cmd, echo=False)
             
-            export_cmd = f'quietly graph export "{cache_path_for_stata}", name({graph_name_q}) replace as(svg)'
+            export_cmd = f'quietly graph export "{cache_path_for_stata}", replace as(svg)'
             resp = self._exec_no_capture_silent(export_cmd, echo=False)
-
-            # Fallback: some graph names (spaces, slashes, backslashes) can confuse
-            # Stata's parser in name() even when the graph exists. In that case,
-            # make the graph current, then export without name().
-            if not resp.success:
-                try:
-                    display_cmd = f'quietly graph display {graph_name_q}'
-                    display_resp = self._exec_no_capture_silent(display_cmd, echo=False)
-                    if display_resp.success:
-                        export_cmd2 = f'quietly graph export "{cache_path_for_stata}", replace as(svg)'
-                        resp = self._exec_no_capture_silent(export_cmd2, echo=False)
-                    else:
-                        logger = logging.getLogger(__name__)
-                        logger.warning(f"Fallback display failed for {graph_name}: {getattr(display_resp, 'error', 'Unknown error')}")
-                except Exception as e:
-                    logger = logging.getLogger(__name__)
-                    logger.warning(f"Fallback exception for {graph_name}: {e}")
             
             if resp.success and os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
                 # Read the data to compute hash
