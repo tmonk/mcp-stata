@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.16.0 (2026-01-19)
+
+### Features
+
+- Optimize graph signature detection and enhance command tracking in StataClient
+  ([`1f28b8c`](https://github.com/tmonk/mcp-stata/commit/1f28b8c9a13541fcfad76032e820dd5d96070fe9))
+
+
 ## v1.15.0 (2026-01-19)
 
 ### Features
