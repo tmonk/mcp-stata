@@ -917,9 +917,14 @@ class StataClient:
             if previous is not None and previous == signature:
                 continue
             try:
-                export_path = await anyio.to_thread.run_sync(
-                    lambda: self.export_graph(graph_name, format=export_format)
-                )
+                export_path = None
+                if export_format == "svg":
+                    export_path = self._get_cached_graph_path(graph_name)
+                
+                if not export_path:
+                    export_path = await anyio.to_thread.run_sync(
+                        lambda: self.export_graph(graph_name, format=export_format)
+                    )
                 payload = {
                     "event": "graph_ready",
                     "task_id": task_id,
@@ -1875,14 +1880,17 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         graph_poll_state = [0.0]
 
         async def on_chunk_for_graphs(_chunk: str) -> None:
-            await self._maybe_cache_graphs_on_chunk(
-                graph_cache=graph_cache,
-                emit_graph_ready=emit_graph_ready,
-                notify_log=notify_log,
-                graph_ready_task_id=graph_ready_task_id,
-                graph_ready_format=graph_ready_format,
-                graph_ready_initial=graph_ready_initial,
-                last_check=graph_poll_state,
+            # Background the graph check so we don't block SMCL streaming or task completion
+            asyncio.create_task(
+                self._maybe_cache_graphs_on_chunk(
+                    graph_cache=graph_cache,
+                    emit_graph_ready=emit_graph_ready,
+                    notify_log=notify_log,
+                    graph_ready_task_id=graph_ready_task_id,
+                    graph_ready_format=graph_ready_format,
+                    graph_ready_initial=graph_ready_initial,
+                    last_check=graph_poll_state,
+                )
             )
 
         done = anyio.Event()
@@ -1944,12 +1952,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path)
 
-        await self._cache_new_graphs(
-            graph_cache,
-            notify_progress=notify_progress,
-            total_lines=total_lines,
-            completed_label="Command",
-        )
+        if graph_cache:
+            asyncio.create_task(
+                self._cache_new_graphs(
+                    graph_cache,
+                    notify_progress=notify_progress,
+                    total_lines=total_lines,
+                    completed_label="Command",
+                )
+            )
         self._emit_graph_ready_task(
             emit_graph_ready=emit_graph_ready,
             graph_ready_initial=graph_ready_initial,
@@ -2090,14 +2101,17 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         graph_poll_state = [0.0]
 
         async def on_chunk_for_graphs(_chunk: str) -> None:
-            await self._maybe_cache_graphs_on_chunk(
-                graph_cache=graph_cache,
-                emit_graph_ready=emit_graph_ready,
-                notify_log=notify_log,
-                graph_ready_task_id=graph_ready_task_id,
-                graph_ready_format=graph_ready_format,
-                graph_ready_initial=graph_ready_initial,
-                last_check=graph_poll_state,
+            # Background the graph check so we don't block SMCL streaming or task completion
+            asyncio.create_task(
+                self._maybe_cache_graphs_on_chunk(
+                    graph_cache=graph_cache,
+                    emit_graph_ready=emit_graph_ready,
+                    notify_log=notify_log,
+                    graph_ready_task_id=graph_ready_task_id,
+                    graph_ready_format=graph_ready_format,
+                    graph_ready_initial=graph_ready_initial,
+                    last_check=graph_poll_state,
+                )
             )
 
         on_chunk_callback = on_chunk_for_progress
@@ -2165,12 +2179,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path)
 
-        await self._cache_new_graphs(
-            graph_cache,
-            notify_progress=notify_progress,
-            total_lines=total_lines,
-            completed_label="Do-file",
-        )
+        if graph_cache:
+            asyncio.create_task(
+                self._cache_new_graphs(
+                    graph_cache,
+                    notify_progress=notify_progress,
+                    total_lines=total_lines,
+                    completed_label="Do-file",
+                )
+            )
         self._emit_graph_ready_task(
             emit_graph_ready=emit_graph_ready,
             graph_ready_initial=graph_ready_initial,

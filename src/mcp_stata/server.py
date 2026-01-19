@@ -392,14 +392,17 @@ async def run_do_file_background(
                 graph_ready_task_id=task_id,
                 graph_ready_format="svg",
             )
-            ui_channel.notify_potential_dataset_change()
-            task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
+            # Notify task completion as soon as the core operation is finished
+            task_info.done = True
             if result.error:
                 task_info.error = result.error.message
+            await _notify_task_done(session, task_info, request_id)
+
+            ui_channel.notify_potential_dataset_change()
+            task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
         except Exception as exc:  # pragma: no cover - defensive
-            task_info.error = str(exc)
-        finally:
             task_info.done = True
+            task_info.error = str(exc)
             await _notify_task_done(session, task_info, request_id)
 
     task_info.task = asyncio.create_task(_run())
@@ -562,14 +565,17 @@ async def run_command_background(
                 graph_ready_task_id=task_id,
                 graph_ready_format="svg",
             )
-            ui_channel.notify_potential_dataset_change()
-            task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
+            # Notify task completion as soon as the core operation is finished
+            task_info.done = True
             if result.error:
                 task_info.error = result.error.message
+            await _notify_task_done(session, task_info, request_id)
+
+            ui_channel.notify_potential_dataset_change()
+            task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
         except Exception as exc:  # pragma: no cover - defensive
-            task_info.error = str(exc)
-        finally:
             task_info.done = True
+            task_info.error = str(exc)
             await _notify_task_done(session, task_info, request_id)
 
     task_info.task = asyncio.create_task(_run())
