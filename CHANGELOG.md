@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.16.7 (2026-01-20)
+
+### Bug Fixes
+
+- Update installation commands to use --refresh-package instead of --reinstall-package
+  ([`15cd09f`](https://github.com/tmonk/mcp-stata/commit/15cd09f876202c05d4288b05fbc7f8e74b77c400))
+
+
 ## v1.16.6 (2026-01-20)
 
 ### Bug Fixes
