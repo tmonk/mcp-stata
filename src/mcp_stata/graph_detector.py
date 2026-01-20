@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Graph creation detection for streaming Stata output.
 

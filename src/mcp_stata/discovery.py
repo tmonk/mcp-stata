@@ -1,11 +1,6 @@
+from __future__ import annotations
 """
 Optimized discovery.py with fast auto-discovery and targeted retry logic.
-Key improvements:
-1. Fast path checking during discovery (no retries)
-2. Retry logic only for validation of user-provided paths
-3. Better diagnostic logging
-4. Fuzzy path matching for common typos
-5. Case-insensitive path resolution on Windows
 """
 
 import os
