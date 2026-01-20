@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.18.2 (2026-01-20)
+
+### Bug Fixes
+
+- Remove x86
+  ([`b643a48`](https://github.com/tmonk/mcp-stata/commit/b643a4859dca5288c897758a958138176bca611d))
+
+
 ## v1.18.1 (2026-01-20)
 
 ### Bug Fixes
