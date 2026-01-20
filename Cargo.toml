@@ -17,7 +17,7 @@ crate-type = ["cdylib"]
 [dependencies]
 regex = "1.10"
 pyo3 = { version = "0.27.2", features = ["extension-module", "abi3-py312"] }
-numpy = { version = "0.27", features = ["abi3"] }
+numpy = "0.27"
 rayon = "1.10"
 fasteval = "0.2"  # Zero-allocation expression evaluator
 
