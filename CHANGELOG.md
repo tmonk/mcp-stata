@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.19.1 (2026-01-20)
+
+### Bug Fixes
+
+- Fix graph timestamp retrieval and deduplication logic in GraphCreationDetector
+  ([`cdf0b47`](https://github.com/tmonk/mcp-stata/commit/cdf0b47a9a75b7a8c5278eeb3a4807fcd9ddcb78))
+
+
 ## v1.19.0 (2026-01-20)
 
 ### Features
