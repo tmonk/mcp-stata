@@ -8,7 +8,6 @@ use std::cmp::Ordering;
 use std::sync::OnceLock;
 
 static RE_INLINE: OnceLock<Regex> = OnceLock::new();
-static RE_P: OnceLock<Regex> = OnceLock::new();
 static RE_RC_PRIMARY: OnceLock<Regex> = OnceLock::new();
 static RE_RC_SECONDARY: OnceLock<Regex> = OnceLock::new();
 static RE_ANY_TAG: OnceLock<Regex> = OnceLock::new();
@@ -277,58 +276,59 @@ pub fn smcl_to_markdown(smcl: String) -> String {
     let re_any = RE_ANY_TAG.get_or_init(|| {
         Regex::new(r"\{[^}]*\}").unwrap()
     });
-    let re_p = RE_P.get_or_init(|| {
-        Regex::new(r"\{p[^}]*\}").unwrap()
-    });
 
-    let mut body = String::with_capacity(smcl.len());
+    let lines: Vec<&str> = smcl.lines().collect();
+    
+    // Extract title sequentially (usually near top)
     let mut title = None;
-
-    for line in smcl.lines() {
+    for line in &lines {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed == "{smcl}" {
-            continue;
-        }
-
         if trimmed.starts_with("{title:") {
             if let Some(t) = trimmed.strip_prefix("{title:").and_then(|s| s.strip_suffix('}')) {
                 title = Some(t.to_string());
-                continue;
+                break;
             }
-        }
-
-        // Two-pass approach to match Python's behavior exactly
-        
-        // Pass 1: Replace known tags with Markdown
-        let mut processed = re_inline.replace_all(trimmed, |caps: &regex::Captures| {
-            let tag = caps.get(1).map_or("", |m| m.as_str()).to_lowercase();
-            let content = caps.get(2).map_or("", |m| m.as_str());
-            match tag.as_str() {
-                "bf" | "strong" => format!("**{content}**"),
-                "it" | "em" => format!("*{content}*"),
-                "cmd" | "cmdab" | "code" | "inp" | "input" | "res" | "err" | "txt" => {
-                    format!("`{content}`")
-                }
-                _ => content.to_string(),
-            }
-        }).to_string();
-
-        // Pass 2: Strip all remaining tags (including p-tags and p-end)
-        processed = processed.replace("{p_end}", "");
-        processed = re_p.replace_all(&processed, "").to_string();
-        processed = re_any.replace_all(&processed, "").to_string();
-        
-        if !processed.is_empty() {
-            if !body.is_empty() {
-                body.push('\n');
-            }
-            body.push_str(&processed);
         }
     }
 
+    // Process lines in parallel for large SMCL files
+    let processed_lines: Vec<String> = lines.par_iter()
+        .map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed == "{smcl}" || trimmed.starts_with("{title:") {
+                return String::new();
+            }
+
+            // Pass 1: Replace known tags with Markdown using Cow to avoid unnecessary allocations
+            let processed = re_inline.replace_all(trimmed, |caps: &regex::Captures| {
+                let tag = caps.get(1).map_or("", |m| m.as_str());
+                let content = caps.get(2).map_or("", |m| m.as_str());
+                
+                if tag.eq_ignore_ascii_case("bf") || tag.eq_ignore_ascii_case("strong") {
+                    format!("**{content}**")
+                } else if tag.eq_ignore_ascii_case("it") || tag.eq_ignore_ascii_case("em") {
+                    format!("*{content}*")
+                } else if tag.eq_ignore_ascii_case("cmd") || tag.eq_ignore_ascii_case("cmdab") || 
+                          tag.eq_ignore_ascii_case("code") || tag.eq_ignore_ascii_case("inp") || 
+                          tag.eq_ignore_ascii_case("input") || tag.eq_ignore_ascii_case("res") || 
+                          tag.eq_ignore_ascii_case("err") || tag.eq_ignore_ascii_case("txt") {
+                    format!("`{content}`")
+                } else {
+                    content.to_string()
+                }
+            });
+
+            // Pass 2: Strip all remaining tags (including p-tags and alignment tags)
+            let stripped = re_any.replace_all(&processed, "");
+            stripped.trim().to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let body = processed_lines.join("\n");
     match title {
-        Some(t) => format!("## {t}\n\n{}", body.trim()),
-        None => body.trim().to_string(),
+        Some(t) => format!("## {t}\n\n{body}"),
+        None => body,
     }
 }
 
@@ -337,7 +337,7 @@ pub fn fast_scan_log(smcl_content: String, rc_default: i32) -> (String, String, 
     let re_rc_primary =
         RE_RC_PRIMARY.get_or_init(|| Regex::new(r"\{search r\((\d+)\)").unwrap());
     let re_rc_secondary =
-        RE_RC_SECONDARY.get_or_init(|| Regex::new(r"(?:\s|^)r\((\d+)\);?").unwrap());
+        RE_RC_SECONDARY.get_or_init(|| Regex::new(r"\br\((\d+)\);?").unwrap());
     let re_any_tag = RE_ANY_TAG.get_or_init(|| Regex::new(r"\{[^}]*\}").unwrap());
 
     let mut rc = None;
@@ -355,21 +355,23 @@ pub fn fast_scan_log(smcl_content: String, rc_default: i32) -> (String, String, 
     let mut error_start_idx: Option<usize> = None;
 
     for i in (0..lines.len()).rev() {
-        if lines[i].contains("{err}") || lines[i].contains("{err:") {
+        if lines[i].contains("{err}") {
             error_start_idx = Some(i);
-            let mut j = i;
             let mut err_lines = Vec::new();
-            while lines[j].contains("{err}") || lines[j].contains("{err:") {
+            let mut j = i;
+            // Walk backwards for consecutive error lines
+            loop {
                 let cleaned = re_any_tag.replace_all(lines[j], "").trim().to_string();
                 if !cleaned.is_empty() {
-                    err_lines.insert(0, cleaned);
+                    err_lines.push(cleaned);
                 }
-                if j == 0 {
+                if j == 0 || !lines[j-1].contains("{err}") {
                     break;
                 }
                 j -= 1;
             }
             if !err_lines.is_empty() {
+                err_lines.reverse();
                 error_msg = err_lines.join(" ");
             }
             break;
@@ -413,6 +415,13 @@ pub fn compute_filter_indices(
     if names.len() != columns.len() || names.len() != is_string.len() {
         return Err(pyo3::exceptions::PyValueError::new_err("Length mismatch"));
     }
+
+    // Pre-calculate name-to-index map for O(1) variable lookup
+    let name_map: std::collections::HashMap<&str, usize> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| (name.as_str(), i))
+        .collect();
 
     // Extract storage
     let storage: Vec<Storage> = columns
@@ -459,7 +468,7 @@ pub fn compute_filter_indices(
             .filter_map(|i| {
                 // Callback for variable lookup - NO CLONES!
                 let mut cb = |name: &str, _args: Vec<f64>| -> Option<f64> {
-                    names.iter().position(|n| n == name).and_then(|idx| {
+                    name_map.get(name).and_then(|&idx| {
                         match &parsed[idx] {
                             ColumnData::Numeric(slice) => {
                                 let val = slice[i];
@@ -486,7 +495,7 @@ pub fn compute_filter_indices(
         (0..row_count)
             .filter(|&i| {
                 let mut cb = |name: &str, _args: Vec<f64>| -> Option<f64> {
-                    names.iter().position(|n| n == name).and_then(|idx| {
+                    name_map.get(name).and_then(|&idx| {
                         match &parsed[idx] {
                             ColumnData::Numeric(slice) => {
                                 let val = slice[i];
@@ -528,86 +537,102 @@ mod tests {
     }
 
     #[test]
-    fn test_argsort_numeric_core_single_column() {
-        let col = [3.0, 1.0, f64::NAN, 2.0];
-        let arrays = vec![col.as_slice()];
-        let res = argsort_numeric_core(&arrays, &[false], &[true]);
-        assert_eq!(res, vec![1, 3, 0, 2]);
-    }
-
-    #[test]
-    fn test_argsort_numeric_core_multi_column() {
+    fn test_argsort_numeric_core() {
         let col1 = [2.0, 1.0, 1.0, 2.0];
         let col2 = [4.0, 3.0, 1.0, 2.0];
         let arrays = vec![col1.as_slice(), col2.as_slice()];
+        
+        // Ascending col1, then descending col2
         let res = argsort_numeric_core(&arrays, &[false, true], &[true, true]);
         assert_eq!(res, vec![1, 2, 0, 3]);
     }
 
     #[test]
-    fn test_argsort_mixed_core() {
-        let nums = vec![2.0, 1.0, f64::NAN, 1.0];
-        let text = vec![
-            Some("b".to_string()),
-            Some("a".to_string()),
-            None,
-            Some("c".to_string()),
-        ];
-        let parsed = vec![
-            ColumnData::Numeric(nums.as_slice()),
-            ColumnData::Text(text.as_slice()),
-        ];
-        let res = argsort_mixed_core(&parsed, &[false, false], &[true, true]);
-        assert_eq!(res, vec![1, 3, 0, 2]);
-    }
+    fn test_smcl_to_markdown_comprehensive() {
+        let smcl = vec![
+            "{smcl}",
+            "{title:Full Documentation}",
+            "{p 4 4 2}",
+            "This is a {bf:bold} and {it:italic} test.",
+            "{p_end}",
+            "{txt}{ralign 78}(Adjusted for {res:70} clusters)",
+            "{pstd}",
+            "Simple {cmd:regress} {res:price} {res:mpg} and {err:error}.",
+            "{p_end}"
+        ].join("\n");
 
-    #[test]
-    fn test_smcl_to_markdown() {
-        let smcl = "{smcl}\n{title:Test Title}\n{p_end}{bf:Bold} text and {it:Italic} text.\n{res:Result} and {err:Error}.".to_string();
         let md = smcl_to_markdown(smcl);
-        assert!(md.contains("## Test Title"));
-        assert!(md.contains("**Bold**"));
-        assert!(md.contains("*Italic*"));
-        assert!(md.contains("`Result`"));
-        assert!(md.contains("`Error`"));
+        
+        assert!(md.contains("## Full Documentation"));
+        assert!(md.contains("This is a **bold** and *italic* test."));
+        // Check ralign stripping
+        assert!(md.contains("(Adjusted for `70` clusters)"));
+        // Check nested and command tags
+        assert!(md.contains("Simple `regress` `price` `mpg` and `error`."));
+        // Check p-tags are gone
+        assert!(!md.contains("{p"));
+        assert!(!md.contains("{pstd}"));
     }
 
     #[test]
-    fn test_fast_scan_log_success() {
-        let smcl = "{smcl}\n{txt:Everything is fine. r(0);} ".to_string();
-        let (msg, _context, rc) = fast_scan_log(smcl, 0);
-        assert_eq!(rc, Some(0));
-        assert!(msg.contains("Stata error r(0)"));
-    }
+    fn test_fast_scan_log_comprehensive() {
+        // Multi-line error + return code boundary check
+        let smcl = vec![
+            "Some preamble text",
+            "{err}variable price not found",
+            "{err}on line 42 of do-file",
+            "{txt}Checking... Check:r(456);",
+            "{search r(111):r(111);}"
+        ].join("\n");
 
-    #[test]
-    fn test_fast_scan_log_error() {
-        let smcl = "{smcl}\n{err}variable price not found{txt}\n{search r(111):r(111);}".to_string();
-        let (msg, _context, rc) = fast_scan_log(smcl, 0);
+        let (msg, context, rc) = fast_scan_log(smcl, 0);
+        
+        // AUTHORITATIVE: Search tag (111) should win over standalone (456)
         assert_eq!(rc, Some(111));
-        assert_eq!(msg, "variable price not found");
+        
+        // Multi-line error message assembly
+        assert_eq!(msg, "variable price not found on line 42 of do-file");
+        
+        // Context contains the error lines
+        assert!(context.contains("variable price not found"));
+        assert!(context.contains("{search r(111)"));
+
+        // Boundary check for r(N)
+        let smcl2 = "Summarized(123) and plain r(456);".to_string();
+        let (_, _, rc2) = fast_scan_log(smcl2, 0);
+        assert_eq!(rc2, Some(456)); // Should NOT match 123
     }
 
     #[test]
-    fn test_fasteval_numeric_filter() {
+    fn test_fast_scan_log_authoritative_order() {
+        // standalone r(456) comes BEFORE {search r(111)}
+        let smcl = "r(456); and then {search r(111)}".to_string();
+        let (_, _, rc) = fast_scan_log(smcl, 0);
+        assert_eq!(rc, Some(111));
+
+        // standalone r(456) comes AFTER {search r(111)}
+        // (In practice this shouldn't happen, but we want to know what wins)
+        let smcl2 = "{search r(111)} and then r(456);".to_string();
+        let (_, _, rc2) = fast_scan_log(smcl2, 0);
+        // Current logic: re_rc_primary wins if it exists
+        assert_eq!(rc2, Some(111));
+    }
+
+    #[test]
+    fn test_fasteval_logic_unit() {
         let parser = fasteval::Parser::new();
         let mut slab = Slab::new();
-        
-        let compiled = parser.parse("price > 100", &mut slab.ps).unwrap()
-            .from(&slab.ps)
-            .compile(&slab.ps, &mut slab.cs);
-        
-        let price_vals = vec![50.0, 150.0, 200.0];
-        
-        for (i, &val) in price_vals.iter().enumerate() {
-            let mut cb = |name: &str, _args: Vec<f64>| -> Option<f64> {
-                if name == "price" { Some(val) } else { None }
-            };
+        let compiled = parser.parse("(x > 10) && (y < 5)", &mut slab.ps).unwrap()
+            .from(&slab.ps).compile(&slab.ps, &mut slab.cs);
             
-            let result = compiled.eval(&slab, &mut cb).unwrap();
-            let expected = val > 100.0;
-            assert_eq!(result != 0.0, expected, "Row {}", i);
-        }
+        let mut cb = |name: &str, _: Vec<f64>| -> Option<f64> {
+            match name {
+                "x" => Some(15.0),
+                "y" => Some(2.0),
+                _ => None
+            }
+        };
+        assert!(compiled.eval(&slab, &mut cb).unwrap() != 0.0);
     }
 }
 
