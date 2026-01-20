@@ -3,7 +3,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 use rayon::prelude::*;
 use std::cmp::Ordering;
-use std::sync::Arc;
+
+const PAR_SORT_THRESHOLD: usize = 2_500;
 
 fn cmp_with_nulls(
     a: f64,
@@ -52,7 +53,7 @@ fn argsort_numeric_core(
     let len = arrays[0].len();
     let mut indices: Vec<usize> = (0..len).collect();
 
-    indices.par_sort_unstable_by(|&i, &j| {
+    let sort_fn = |&i: &usize, &j: &usize| {
         for (col_idx, col) in arrays.iter().enumerate() {
             let desc = descending[col_idx];
             let null_last = nulls_last[col_idx];
@@ -62,7 +63,13 @@ fn argsort_numeric_core(
             }
         }
         Ordering::Equal
-    });
+    };
+
+    if len < PAR_SORT_THRESHOLD {
+        indices.sort_unstable_by(sort_fn);
+    } else {
+        indices.par_sort_unstable_by(sort_fn);
+    }
 
     indices
 }
@@ -83,7 +90,7 @@ fn argsort_mixed_core(
 
     let mut indices: Vec<usize> = (0..row_count).collect();
 
-    indices.par_sort_unstable_by(|&i, &j| {
+    let sort_fn = |&i: &usize, &j: &usize| {
         for (col_idx, col) in parsed.iter().enumerate() {
             let desc = descending[col_idx];
             let null_last = nulls_last[col_idx];
@@ -122,9 +129,25 @@ fn argsort_mixed_core(
             }
         }
         Ordering::Equal
-    });
+    };
+
+    if row_count < PAR_SORT_THRESHOLD {
+        indices.sort_unstable_by(sort_fn);
+    } else {
+        indices.par_sort_unstable_by(sort_fn);
+    }
 
     indices
+}
+
+enum Storage<'a> {
+    Num(PyReadonlyArray1<'a, f64>),
+    Txt(Vec<Option<String>>),
+}
+
+enum ColumnData<'a> {
+    Numeric(&'a [f64]),
+    Text(&'a [Option<String>]),
 }
 
 #[pyfunction]
@@ -152,7 +175,7 @@ fn argsort_numeric(
         }
     }
 
-    // SAFETY: we only read the arrays during the sort.
+    // No copies here: as_slice() provides references to the Python-owned data.
     let arrays: Vec<_> = columns
         .iter()
         .map(|c| c.as_slice())
@@ -160,11 +183,6 @@ fn argsort_numeric(
         .map_err(|_| pyo3::exceptions::PyValueError::new_err("non-contiguous array"))?;
 
     Ok(argsort_numeric_core(&arrays, &descending, &nulls_last))
-}
-
-enum ColumnData {
-    Numeric(Arc<Vec<f64>>),
-    Text(Arc<Vec<Option<String>>>),
 }
 
 #[pyfunction]
@@ -178,54 +196,65 @@ fn argsort_mixed(
     if columns.is_empty() {
         return Ok(Vec::new());
     }
-    if is_string.len() != columns.len()
-        || descending.len() != columns.len()
-        || nulls_last.len() != columns.len()
+    let count = columns.len();
+    if is_string.len() != count
+        || descending.len() != count
+        || nulls_last.len() != count
     {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "length mismatch",
-        ));
+        return Err(pyo3::exceptions::PyValueError::new_err("length mismatch"));
     }
 
-    let mut parsed: Vec<ColumnData> = Vec::with_capacity(columns.len());
-    let mut len: Option<usize> = None;
-
-    for (idx, obj) in columns.iter().enumerate() {
-        if is_string[idx] {
-            let seq: Vec<Option<String>> = obj.extract(py)?;
-            if let Some(l) = len {
-                if l != seq.len() {
-                    return Err(pyo3::exceptions::PyValueError::new_err(
-                        "column length mismatch",
-                    ));
-                }
+    // Extract all data first (prevents moves during iteration)
+    let storage: Vec<Storage> = columns
+        .iter()
+        .zip(&is_string)
+        .map(|(obj, &is_str)| {
+            if is_str {
+                Ok(Storage::Txt(obj.extract(py)?))
             } else {
-                len = Some(seq.len());
+                Ok(Storage::Num(obj.extract(py)?))
             }
-            parsed.push(ColumnData::Text(Arc::new(seq)));
-        } else {
-            let arr: PyReadonlyArray1<f64> = obj.extract(py)?;
-            let slice = arr
-                .as_slice()
-                .map_err(|_| pyo3::exceptions::PyValueError::new_err("non-contiguous array"))?;
-            let vec = slice.to_vec();
-            if let Some(l) = len {
-                if l != vec.len() {
-                    return Err(pyo3::exceptions::PyValueError::new_err(
-                        "column length mismatch",
-                    ));
-                }
-            } else {
-                len = Some(vec.len());
-            }
-            parsed.push(ColumnData::Numeric(Arc::new(vec)));
-        }
-    }
+        })
+        .collect::<PyResult<_>>()?;
 
-    let row_count = len.unwrap_or(0);
-    if row_count == 0 {
+    // Verify lengths and create references
+    let mut row_count: Option<usize> = None;
+    let parsed: Vec<ColumnData> = storage
+        .iter()
+        .map(|s| match s {
+            Storage::Num(arr) => {
+                let slice = arr
+                    .as_slice()
+                    .map_err(|_| pyo3::exceptions::PyValueError::new_err("non-contiguous"))?;
+                let len = slice.len();
+                if let Some(n) = row_count {
+                    if n != len {
+                        return Err(pyo3::exceptions::PyValueError::new_err("length mismatch"));
+                    }
+                } else {
+                    row_count = Some(len);
+                }
+                Ok(ColumnData::Numeric(slice))
+            }
+            Storage::Txt(vec) => {
+                let len = vec.len();
+                if let Some(n) = row_count {
+                    if n != len {
+                        return Err(pyo3::exceptions::PyValueError::new_err("length mismatch"));
+                    }
+                } else {
+                    row_count = Some(len);
+                }
+                Ok(ColumnData::Text(vec.as_slice()))
+            }
+        })
+        .collect::<PyResult<_>>()?;
+
+    let rows = row_count.unwrap_or(0);
+    if rows == 0 {
         return Ok(Vec::new());
     }
+
     Ok(argsort_mixed_core(&parsed, &descending, &nulls_last))
 }
 
@@ -261,9 +290,12 @@ mod tests {
 
     #[test]
     fn test_argsort_mixed_core() {
-        let nums = Arc::new(vec![2.0, 1.0, f64::NAN, 1.0]);
-        let text = Arc::new(vec![Some("b".to_string()), Some("a".to_string()), None, Some("c".to_string())]);
-        let parsed = vec![ColumnData::Numeric(nums), ColumnData::Text(text)];
+        let nums = vec![2.0, 1.0, f64::NAN, 1.0];
+        let text = vec![Some("b".to_string()), Some("a".to_string()), None, Some("c".to_string())];
+        let parsed = vec![
+            ColumnData::Numeric(nums.as_slice()),
+            ColumnData::Text(text.as_slice())
+        ];
         let res = argsort_mixed_core(&parsed, &[false, false], &[true, true]);
         assert_eq!(res, vec![1, 3, 0, 2]);
     }

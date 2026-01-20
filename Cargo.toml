@@ -18,3 +18,7 @@ crate-type = ["cdylib"]
 pyo3 = { version = "0.27.2", features = ["extension-module"] }
 numpy = "0.27"
 rayon = "1.10"
+
+[profile.release]
+lto = true           # Link-time optimization
+codegen-units = 1    # Single codegen unit for better optimization
