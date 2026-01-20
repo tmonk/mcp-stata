@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.16.5 (2026-01-20)
+
+### Bug Fixes
+
+- Release patch
+  ([`a8b1d09`](https://github.com/tmonk/mcp-stata/commit/a8b1d092f2d7570775887a6b96f73f3c3e5e3772))
+
+
 ## v1.16.4 (2026-01-20)
 
 
