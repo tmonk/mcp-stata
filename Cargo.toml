@@ -1,6 +1,6 @@
 [package]
 name = "mcp_stata_native_sorter"
-version = "1.18.3"  # Sync with project version
+version = "1.18.4"  # Sync with project version
 edition = "2024"
 authors = ["Thomas Monk <t.d.monk@lse.ac.uk>"]
 description = "High-performance native sorting extension for mcp-stata using PyO3 and Rayon."
