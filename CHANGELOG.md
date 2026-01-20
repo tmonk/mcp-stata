@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.19.0 (2026-01-20)
+
+### Features
+
+- Expand Python versions supported to 3.10+
+  ([`38ce3bd`](https://github.com/tmonk/mcp-stata/commit/38ce3bdb2b1bb158fce7e88d826ca398b9db8105))
+
+
 ## v1.18.7 (2026-01-20)
 
 
