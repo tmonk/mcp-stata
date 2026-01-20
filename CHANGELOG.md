@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v1.18.4 (2026-01-20)
+
+### Bug Fixes
+
+- Update release
+  ([`cf745a8`](https://github.com/tmonk/mcp-stata/commit/cf745a86fb6f83efc564b46f35b7d8e8b1578e62))
+
+### Refactoring
+
+- Modified to exactly match python output
+  ([`666d66b`](https://github.com/tmonk/mcp-stata/commit/666d66bd4e8674cee2705b0fd191c299e7b49976))
+
+- Smcl_to_markdown and fast_scan_log functions to match Python behaviour, added unit tests.
+  ([`5f04b5f`](https://github.com/tmonk/mcp-stata/commit/5f04b5fa7ef8ba70e268a9afc89bd08066b1cd6f))
+
+
 ## v1.18.3 (2026-01-20)
 
 
