@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.16.3 (2026-01-20)
+
+### Bug Fixes
+
+- Improve Stata installation path detection on macOS
+  ([`9c72787`](https://github.com/tmonk/mcp-stata/commit/9c72787461f0e38f778ef2bc7e387191eb6facab))
+
+
 ## v1.16.2 (2026-01-19)
 
 
