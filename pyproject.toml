@@ -22,6 +22,7 @@ classifiers = [
 dependencies = [
     "mcp[cli]>=1.0.0",
     "pandas>=2.0.0",
+    "numpy>=1.26.0",
     "pydantic>=2.0.0",
     "pystata>=0.0.1",
     "stata_setup>=0.1.0",
@@ -51,8 +52,13 @@ Issues = "https://github.com/tmonk/mcp-stata/issues"
 mcp-stata = "mcp_stata.server:main"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+python-source = "src"
+module-name = "mcp_stata._native_sorter"
+manifest-path = "native_sorter/Cargo.toml"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_stata"]

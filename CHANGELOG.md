@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v1.16.8 (2026-01-20)
+
+### Features
+
+- Use the Rust native sorter for UI sorting with a Polars fallback, and document the decision.
+
+### Tests
+
+- Add unit coverage for Polars fallback sorting and update Arrow handler expectations.
+
+
 ## v1.16.7 (2026-01-20)
 
 ### Bug Fixes

@@ -357,11 +357,11 @@ curl -sS \
 - No prefix or `+` prefix = ascending order (e.g., `"price"` or `"+price"`)
 - `-` prefix = descending order (e.g., `"-price"`)
 - Multiple variables are supported for multi-level sorting
-- Uses Stata's `gsort` command internally
+- Uses the native Rust sorter when available, with a Polars fallback
 
 **Sorting with filtered views:**
 - Sorting is fully supported with filtered views
-- The sort is applied to the entire dataset, then filtered indices are re-computed
+- The sort is computed in-memory over the sort columns, then filtered indices are re-applied
 - Example: Filter for `price < 5000`, then sort descending by price
 
 ```bash
@@ -385,7 +385,8 @@ Notes:
 
 - `datasetId` is used for cache invalidation. If the dataset changes due to running Stata commands, the server will report a new dataset id and view handles become invalid.
 - Filter expressions are evaluated in Python using values read from Stata via `sfi.Data.get`. Use boolean operators like `==`, `!=`, `<`, `>`, and `and`/`or` (Stata-style `&`/`|` are also accepted).
-- Sorting modifies the dataset order in memory using `gsort`. When combined with views, the filtered indices are automatically re-computed after sorting.
+- Sorting does **not** mutate the dataset order in Stata; it computes sorted indices for the response and caches them for subsequent requests.
+- The Rust sorter is the primary implementation; Polars is used only as a fallback when the native extension is unavailable.
 
 ## License
 

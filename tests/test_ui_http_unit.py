@@ -3,6 +3,8 @@
 import pytest
 from unittest.mock import MagicMock
 
+import pyarrow as pa
+
 from mcp_stata.ui_http import UIChannelManager, handle_page_request, HTTPError
 
 
@@ -246,3 +248,59 @@ def test_handle_page_request_valid_parameters():
     assert call_kwargs["offset"] == 5
     assert call_kwargs["limit"] == 10
     assert call_kwargs["vars"] == ["var1"]
+
+
+def test_handle_page_request_sort_polars_fallback(monkeypatch):
+    """Test that sorting falls back to Polars when native sorter is unavailable."""
+    try:
+        import polars  # noqa: F401
+    except ImportError:
+        pytest.skip("polars not available")
+
+    import mcp_stata.ui_http as ui_http
+
+    manager = MagicMock(spec=UIChannelManager)
+    manager.limits.return_value = (500, 200, 500, 1_000_000)
+    manager.current_dataset_id.return_value = "test_id"
+    manager._normalize_sort_spec.return_value = ("+price",)
+    manager._get_cached_sort_indices.return_value = None
+    manager._set_cached_sort_indices = MagicMock()
+    manager._client = MagicMock()
+    manager._client.get_dataset_state.return_value = {
+        "frame": "default",
+        "n": 3,
+        "k": 2,
+    }
+    manager._client.get_page.return_value = {
+        "returned": 3,
+        "vars": ["price"],
+        "rows": [[1], [2], [3]],
+        "truncated_cells": [],
+    }
+
+    table = pa.table(
+        {
+            "_n": [1, 2, 3],
+            "price": [3.0, 1.0, 2.0],
+            "make": ["c", "a", "b"],
+        }
+    )
+    manager._get_sort_table.return_value = table
+
+    monkeypatch.setattr(ui_http, "_native_argsort_numeric", None)
+    monkeypatch.setattr(ui_http, "_native_argsort_mixed", None)
+
+    body = {
+        "datasetId": "test_id",
+        "frame": "default",
+        "offset": 0,
+        "limit": 3,
+        "vars": ["price"],
+        "sortBy": ["price"],
+    }
+
+    handle_page_request(manager, body, view_id=None)
+
+    call_kwargs = manager._client.get_page.call_args[1]
+    assert call_kwargs["obs_indices"] == [1, 2, 0]
+    manager._set_cached_sort_indices.assert_called_once()
