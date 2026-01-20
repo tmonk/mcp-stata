@@ -54,6 +54,50 @@ class GraphCreationDetector:
         # detected when a new command starts. Within a single command, the 
         # detected_graphs set in the cache will prevent duplicates.
         return f"{graph_name}_{cmd_idx}"
+
+    def _get_graph_timestamp(self, graph_name: str) -> str:
+        """Get the creation/modification timestamp of a graph using graph describe.
+        
+        The result is cached per command to optimize performance during streaming.
+        """
+        results = self._get_graph_timestamps([graph_name])
+        return results.get(graph_name, "")
+
+    def _get_graph_timestamps(self, graph_names: List[str]) -> Dict[str, str]:
+        """Get timestamps for multiple graphs in a single Stata call to minimize overhead."""
+        if not graph_names or not self._stata_client or not hasattr(self._stata_client, "stata"):
+            return {}
+        
+        try:
+            # Use the lock from client to prevent concurrency issues with pystata
+            exec_lock = getattr(self._stata_client, "_exec_lock", None)
+            ctx = exec_lock if exec_lock else contextlib.nullcontext()
+            
+            with ctx:
+                hold_name = f"_mcp_detector_thold_{int(time.time() * 1000 % 1000000)}"
+                self._stata_client.stata.run(f"capture _return hold {hold_name}", echo=False)
+                try:
+                    # Build a single Stata command to fetch all timestamps
+                    stata_cmd = ""
+                    for i, name in enumerate(graph_names):
+                        resolved = self._stata_client._resolve_graph_name_for_stata(name)
+                        stata_cmd += f"quietly graph describe {resolved}\n"
+                        stata_cmd += f"macro define mcp_ts_{i} \"`r(command_date)'_`r(command_time)'\"\n"
+                    
+                    self._stata_client.stata.run(stata_cmd, echo=False)
+                    
+                    from sfi import Macro
+                    results = {}
+                    for i, name in enumerate(graph_names):
+                        ts = Macro.getGlobal(f"mcp_ts_{i}")
+                        if ts:
+                            results[name] = ts
+                    return results
+                finally:
+                    self._stata_client.stata.run(f"capture _return restore {hold_name}", echo=False)
+        except Exception as e:
+            logger.debug(f"Failed to get timestamps: {e}")
+            return {}
     
     def _detect_graphs_via_pystata(self) -> List[str]:
         """Detect newly created graphs using direct pystata state access."""
@@ -138,20 +182,53 @@ class GraphCreationDetector:
         
         try:
             current_graphs = self._get_current_graphs_from_pystata()
+            cmd_idx = getattr(self._stata_client, "_command_idx", 0)
+            
+            # PRE-FETCH: Get timestamps for all current graphs in a single batch
+            # to minimize Stata-Python boundary crossings.
+            timestamps = self._get_graph_timestamps(current_graphs)
             
             for graph_name in current_graphs:
                 try:
-                    signature = self._describe_graph_signature(graph_name)
+                    # Signature logic: 
+                    # 1. Start with name+cmd_idx (fast)
+                    fast_sig = self._describe_graph_signature(graph_name)
+                    
+                    # 2. If it's a new command for this graph, verify with timestamp
+                    prev = self._last_graph_state.get(graph_name)
+                    timestamp = timestamps.get(graph_name)
+                    sig = fast_sig
+                    
+                    if prev and prev.get("cmd_idx") == cmd_idx:
+                        # Already processed in this command. Keep the signature we decided on.
+                        sig = prev.get("signature")
+                    elif prev and prev.get("cmd_idx") != cmd_idx:
+                        # Command jumped. We need to know if it's a REAL modification.
+                        # We use the timestamp from graph describe.
+                        if timestamp:
+                            prev_ts = prev.get("timestamp_val")
+                            if prev_ts and prev_ts == timestamp:
+                                # Timestamp match! Reuse the OLD signature to avoid 
+                                # reporting a modification just because cmd_idx jumped.
+                                sig = prev.get("signature")
+                            else:
+                                # Timestamp changed or was missing. Use new fast_sig.
+                                sig = fast_sig
+                        else:
+                            # Failed to get timestamp, fall back to fast_sig (safe default)
+                            sig = fast_sig
+                    
                     state_info = {
                         "name": graph_name,
                         "exists": True,
-                        "valid": bool(signature),
-                        "signature": signature,
+                        "valid": bool(sig),
+                        "signature": sig,
+                        "cmd_idx": cmd_idx,
+                        "timestamp_val": timestamp,
                     }
 
-                    # Only update timestamps when the signature changes.
-                    prev = self._last_graph_state.get(graph_name)
-                    if prev is None or prev.get("signature") != signature:
+                    # Only update visual timestamps when the signature changes.
+                    if prev is None or prev.get("signature") != sig:
                         state_info["timestamp"] = time.time()
                     else:
                         state_info["timestamp"] = prev.get("timestamp", time.time())
@@ -160,7 +237,7 @@ class GraphCreationDetector:
                     
                 except Exception as e:
                     logger.warning(f"Failed to get state for graph {graph_name}: {e}")
-                    graph_state[graph_name] = {"name": graph_name, "timestamp": time.time(), "exists": False, "signature": ""}
+                    graph_state[graph_name] = {"name": graph_name, "timestamp": time.time(), "exists": False, "signature": "", "cmd_idx": cmd_idx}
             
         except Exception as e:
             logger.warning(f"Failed to get graph state from pystata: {e}")
@@ -177,8 +254,9 @@ class GraphCreationDetector:
             return modifications
         
         try:
-            # Get current graph state via SFI
-            current_graphs = set(self._get_current_graphs_from_pystata())
+            # Use the more sophisticated state retrieval that handles timestamp verification
+            new_state = self._get_graph_state_from_pystata()
+            current_graphs = set(new_state.keys())
             
             # Compare with last known state to detect modifications
             if self._last_graph_state:
@@ -192,17 +270,7 @@ class GraphCreationDetector:
                 if last_graphs and not current_graphs:
                     modifications["cleared"] = True
             
-            # Update last known state for next comparison (stable signatures)
-            new_state: Dict[str, Any] = {}
-            for graph in current_graphs:
-                sig = self._describe_graph_signature(graph)
-                new_state[graph] = {
-                    "name": graph,
-                    "exists": True,
-                    "valid": bool(sig),
-                    "signature": sig,
-                    "timestamp": time.time(),
-                }
+            # Update last known state
             self._last_graph_state = new_state
             
         except Exception as e:
