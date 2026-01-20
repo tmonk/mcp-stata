@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v1.17.0 (2026-01-20)
+
+### Bug Fixes
+
+- Fallback Polars-based sorting
+  ([`3cc111d`](https://github.com/tmonk/mcp-stata/commit/3cc111d02950cb689250a403cecf2f498e82b5f5))
+
+### Features
+
+- Add native sorting extension using Rust and PyO3
+  ([`0b5a693`](https://github.com/tmonk/mcp-stata/commit/0b5a69365955bc78cd5d95d3999d6d8771f589d4))
+
+- Move to maturin, include in project root
+  ([`f1caed9`](https://github.com/tmonk/mcp-stata/commit/f1caed9da2612c1f363deb4f23e7846710653be4))
+
+
 ## v1.16.8 (2026-01-20)
 
 ### Features
