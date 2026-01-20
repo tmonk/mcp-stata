@@ -59,6 +59,7 @@ build-backend = "maturin"
 [tool.maturin]
 python-source = "src"
 module-name = "mcp_stata._native_ops"
+features = ["pyo3/abi3-py312"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_stata"]
