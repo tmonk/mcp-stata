@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.18.0 (2026-01-20)
+
+### Features
+
+- Refactor native sorting and logging operations, add Rust optimizations for SMCL and filtering
+  ([`ea74b42`](https://github.com/tmonk/mcp-stata/commit/ea74b428687bfbad8b5a98fb553fd4942ebf36f1))
+
+
 ## v1.17.1 (2026-01-20)
 
 ### Bug Fixes
