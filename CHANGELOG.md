@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.16.6 (2026-01-20)
+
+### Bug Fixes
+
+- Update installation commands in README and run_inspector script to always reinstall latest version
+  ([`f6d4417`](https://github.com/tmonk/mcp-stata/commit/f6d4417fae0033e7f6b7afb09c30381657cce45b))
+
+
 ## v1.16.5 (2026-01-20)
 
 ### Bug Fixes
