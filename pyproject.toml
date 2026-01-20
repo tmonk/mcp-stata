@@ -41,6 +41,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "python-semantic-release>=9.8.0",
+    "maturin>=1.11.5",
 ]
 
 [project.urls]
@@ -58,7 +59,6 @@ build-backend = "maturin"
 [tool.maturin]
 python-source = "src"
 module-name = "mcp_stata._native_sorter"
-manifest-path = "native_sorter/Cargo.toml"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_stata"]
@@ -84,7 +84,10 @@ markers = [
 [tool.semantic_release]
 assets = ["server.json"]
 build_command = "python scripts/sync_server_version.py"
-version_toml = ["pyproject.toml:project.version"]
+version_toml = [
+    "pyproject.toml:project.version",
+    "Cargo.toml:package.version"
+]
 branch = "main"
 commit_message = "chore(release): {version} [skip ci]"
 tag_format = "v{version}"

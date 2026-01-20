@@ -39,9 +39,7 @@ jobs:
           pip install -e .[dev]
 
       - name: Run Rust tests
-        run: |
-          cd native_sorter
-          cargo test
+        run: cargo test
 
       - name: Run Python tests (no Stata)
         run: pytest -v -m "not requires_stata"
