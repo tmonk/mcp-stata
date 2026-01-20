@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v1.18.1 (2026-01-20)
+
+### Bug Fixes
+
+- Expand target architecture support in CI and update dependencies for compatibility
+  ([`a09495a`](https://github.com/tmonk/mcp-stata/commit/a09495ae0e43ccebd57e4ea84d8cd7968a876392))
+
+- Remove unnecessary features from numpy dependency
+  ([`c81a45c`](https://github.com/tmonk/mcp-stata/commit/c81a45cffd82f4b4f8f4f2dbcb92f64a6a0edaac))
+
+
 ## v1.18.0 (2026-01-20)
 
 ### Features
