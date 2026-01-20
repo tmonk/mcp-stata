@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.17.1 (2026-01-20)
+
+### Bug Fixes
+
+- Optimize sorting performance with conditional parallelization and add release profile settings
+  ([`fc2c408`](https://github.com/tmonk/mcp-stata/commit/fc2c40873dcef021403315de7a3f2f986a5b6441))
+
+
 ## v1.17.0 (2026-01-20)
 
 ### Bug Fixes
