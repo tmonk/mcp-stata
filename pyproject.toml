@@ -22,6 +22,7 @@ classifiers = [
 dependencies = [
     "mcp[cli]>=1.0.0",
     "pandas>=2.0.0",
+    "numpy>=1.26.0",
     "pydantic>=2.0.0",
     "pystata>=0.0.1",
     "stata_setup>=0.1.0",
@@ -40,6 +41,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "python-semantic-release>=9.8.0",
+    "maturin>=1.11.5",
 ]
 
 [project.urls]
@@ -51,8 +53,12 @@ Issues = "https://github.com/tmonk/mcp-stata/issues"
 mcp-stata = "mcp_stata.server:main"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+python-source = "src"
+module-name = "mcp_stata._native_sorter"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_stata"]
@@ -78,7 +84,10 @@ markers = [
 [tool.semantic_release]
 assets = ["server.json"]
 build_command = "python scripts/sync_server_version.py"
-version_toml = ["pyproject.toml:project.version"]
+version_toml = [
+    "pyproject.toml:project.version",
+    "Cargo.toml:package.version"
+]
 branch = "main"
 commit_message = "chore(release): {version} [skip ci]"
 tag_format = "v{version}"

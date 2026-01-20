@@ -30,8 +30,19 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install release dependencies
-        run: python -m pip install --upgrade pip python-semantic-release hatch
+        run: |
+          python -m pip install --upgrade pip python-semantic-release hatch
+          pip install -e .[dev]
+
+      - name: Run Rust tests
+        run: cargo test
+
+      - name: Run Python tests (no Stata)
+        run: pytest -v -m "not requires_stata"
 
       - name: Release
         env:

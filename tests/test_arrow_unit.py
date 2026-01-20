@@ -163,6 +163,8 @@ class TestArrowHandlerUnit:
 
     def test_handle_arrow_request_valid(self, manager):
         manager._client.get_arrow_stream.return_value = b"arrow_data"
+        manager._normalize_sort_spec.return_value = ("+v1",)
+        manager._get_cached_sort_indices.return_value = [2, 1, 0]
         body = {
             "datasetId": "test_id",
             "frame": "default",
@@ -176,11 +178,10 @@ class TestArrowHandlerUnit:
         result = handle_arrow_request(manager, body, view_id=None)
         
         assert result == b"arrow_data"
-        manager._client.apply_sort.assert_called_once_with(["v1"])
         manager._client.get_arrow_stream.assert_called_once_with(
             offset=10,
             limit=50,
             vars=["v1", "v2"],
             include_obs_no=True,
-            obs_indices=None
+            obs_indices=[2, 1, 0]
         )

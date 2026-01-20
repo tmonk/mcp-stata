@@ -2627,7 +2627,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 writer.write_table(table)
             
             return sink.getvalue().to_pybytes()
-            
+
         except Exception as e:
             raise RuntimeError(f"Failed to generate Arrow stream: {e}")
 
@@ -2741,7 +2741,6 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         for spec in sort_spec:
             if not isinstance(spec, str) or not spec:
                 raise ValueError(f"Invalid sort specification: {spec!r}")
-
             # Extract variable name (remove +/- prefix if present)
             varname = spec.lstrip("+-")
             if not varname:
@@ -2763,9 +2762,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         cmd = f"gsort {' '.join(gsort_args)}"
 
         try:
-            result = self.run_command_structured(cmd, echo=False)
+            # Sorting is hot-path for UI paging; use lightweight execution.
+            result = self.exec_lightweight(cmd)
             if not result.success:
-                error_msg = result.error.message if result.error else "Sort failed"
+                error_msg = result.stderr or "Sort failed"
                 raise RuntimeError(f"Failed to sort dataset: {error_msg}")
         except Exception as e:
             if isinstance(e, RuntimeError):

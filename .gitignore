@@ -17,3 +17,6 @@ test_external_do_file_full.py
 mcp.json
 scripts/test.do
 scripts/js_benchmark/node_modules/
+target/*
+dist/*
+src/mcp_stata/*.so

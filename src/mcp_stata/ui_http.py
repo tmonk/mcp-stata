@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import secrets
 import threading
@@ -24,6 +25,61 @@ from .config import (
 
 
 logger = logging.getLogger("mcp_stata")
+
+try:
+    from .native_sorter import argsort_numeric as _native_argsort_numeric
+    from .native_sorter import argsort_mixed as _native_argsort_mixed
+except Exception:
+    _native_argsort_numeric = None
+    _native_argsort_mixed = None
+
+
+def _try_native_argsort(
+    table: Any,
+    sort_cols: list[str],
+    descending: list[bool],
+    nulls_last: list[bool],
+) -> list[int] | None:
+    if _native_argsort_numeric is None and _native_argsort_mixed is None:
+        return None
+    try:
+        import pyarrow as pa
+        import numpy as np
+
+        is_string: list[bool] = []
+        cols: list[object] = []
+        for col in sort_cols:
+            arr = table.column(col).combine_chunks()
+            if pa.types.is_string(arr.type) or pa.types.is_large_string(arr.type):
+                is_string.append(True)
+                cols.append(arr.to_pylist())
+                continue
+            if not (pa.types.is_floating(arr.type) or pa.types.is_integer(arr.type)):
+                return None
+            is_string.append(False)
+            np_arr = arr.to_numpy(zero_copy_only=False)
+            if np_arr.dtype != np.float64:
+                np_arr = np_arr.astype(np.float64, copy=False)
+            # Normalize Stata missing values for numeric columns
+            np_arr = np.where(np_arr > 8.0e307, np.nan, np_arr)
+            cols.append(np_arr)
+
+        if "_n" not in table.column_names:
+            return None
+        obs = table.column("_n").to_numpy(zero_copy_only=False).astype(np.int64, copy=False)
+
+        if all(not flag for flag in is_string) and _native_argsort_numeric is not None:
+            idx = _native_argsort_numeric(cols, descending, nulls_last)
+        elif _native_argsort_mixed is not None:
+            idx = _native_argsort_mixed(cols, is_string, descending, nulls_last)
+        else:
+            return None
+
+        return [int(x) for x in (obs[idx] - 1).tolist()]
+    except Exception:
+        return None
+
+
 
 
 def _stable_hash(payload: dict[str, Any]) -> str:
@@ -87,12 +143,123 @@ class UIChannelManager:
         self._dataset_id_cache_at_version: int = -1
 
         self._views: dict[str, ViewHandle] = {}
+        self._last_sort_spec: tuple[str, ...] | None = None
+        self._last_sort_dataset_id: str | None = None
+        self._sort_index_cache: dict[tuple[str, tuple[str, ...]], list[int]] = {}
+        self._sort_cache_order: list[tuple[str, tuple[str, ...]]] = []
+        self._sort_cache_max_entries: int = 4
+        self._sort_table_cache: dict[tuple[str, tuple[str, ...]], Any] = {}
+        self._sort_table_order: list[tuple[str, tuple[str, ...]]] = []
+        self._sort_table_max_entries: int = 2
 
     def notify_potential_dataset_change(self) -> None:
         with self._lock:
             self._dataset_version += 1
             self._dataset_id_cache = None
             self._views.clear()
+            self._last_sort_spec = None
+            self._last_sort_dataset_id = None
+            self._sort_index_cache.clear()
+            self._sort_cache_order.clear()
+            self._sort_table_cache.clear()
+            self._sort_table_order.clear()
+
+    @staticmethod
+    def _normalize_sort_spec(sort_spec: list[str]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for spec in sort_spec:
+            if not isinstance(spec, str) or not spec:
+                raise ValueError(f"Invalid sort specification: {spec!r}")
+            raw = spec.strip()
+            if not raw:
+                raise ValueError(f"Invalid sort specification: {spec!r}")
+            sign = "-" if raw.startswith("-") else "+"
+            varname = raw.lstrip("+-")
+            if not varname:
+                raise ValueError(f"Invalid sort specification: {spec!r}")
+            normalized.append(f"{sign}{varname}")
+        return tuple(normalized)
+
+    def _get_cached_sort_indices(
+        self, dataset_id: str, sort_spec: tuple[str, ...]
+    ) -> list[int] | None:
+        key = (dataset_id, sort_spec)
+        with self._lock:
+            cached = self._sort_index_cache.get(key)
+            if cached is None:
+                return None
+            # refresh LRU order
+            if key in self._sort_cache_order:
+                self._sort_cache_order.remove(key)
+            self._sort_cache_order.append(key)
+            return cached
+
+    def _set_cached_sort_indices(
+        self, dataset_id: str, sort_spec: tuple[str, ...], indices: list[int]
+    ) -> None:
+        key = (dataset_id, sort_spec)
+        with self._lock:
+            if key in self._sort_index_cache:
+                self._sort_cache_order.remove(key)
+            self._sort_index_cache[key] = indices
+            self._sort_cache_order.append(key)
+            while len(self._sort_cache_order) > self._sort_cache_max_entries:
+                evict = self._sort_cache_order.pop(0)
+                self._sort_index_cache.pop(evict, None)
+
+    def _get_cached_sort_table(
+        self, dataset_id: str, sort_cols: tuple[str, ...]
+    ) -> Any | None:
+        key = (dataset_id, sort_cols)
+        with self._lock:
+            cached = self._sort_table_cache.get(key)
+            if cached is None:
+                return None
+            if key in self._sort_table_order:
+                self._sort_table_order.remove(key)
+            self._sort_table_order.append(key)
+            return cached
+
+    def _set_cached_sort_table(
+        self, dataset_id: str, sort_cols: tuple[str, ...], table: Any
+    ) -> None:
+        key = (dataset_id, sort_cols)
+        with self._lock:
+            if key in self._sort_table_cache:
+                self._sort_table_order.remove(key)
+            self._sort_table_cache[key] = table
+            self._sort_table_order.append(key)
+            while len(self._sort_table_order) > self._sort_table_max_entries:
+                evict = self._sort_table_order.pop(0)
+                self._sort_table_cache.pop(evict, None)
+
+    def _get_sort_table(self, dataset_id: str, sort_cols: list[str]) -> Any:
+        sort_cols_key = tuple(sort_cols)
+        cached = self._get_cached_sort_table(dataset_id, sort_cols_key)
+        if cached is not None:
+            return cached
+
+        state = self._client.get_dataset_state()
+        n = int(state.get("n", 0) or 0)
+        if n <= 0:
+            return None
+
+        # Pull full columns once via Arrow stream (Stata -> Arrow), then sort in Polars.
+        arrow_bytes = self._client.get_arrow_stream(
+            offset=0,
+            limit=n,
+            vars=sort_cols,
+            include_obs_no=True,
+            obs_indices=None,
+        )
+
+        import pyarrow as pa
+
+        with pa.ipc.open_stream(io.BytesIO(arrow_bytes)) as reader:
+            table = reader.read_all()
+
+        self._set_cached_sort_table(dataset_id, sort_cols_key, table)
+        return table
 
     def get_channel(self) -> UIChannelInfo:
         self._ensure_http_server()
@@ -582,14 +749,63 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
         filtered_n = view.filtered_n
 
     try:
-        # Apply sorting if requested
+        # Apply sorting if requested (Rust native sorter with Polars fallback; no dataset mutation)
         if sort_by:
             try:
-                manager._client.apply_sort(sort_by)
-                # If sorting with a filtered view, re-compute indices after sort
-                if view_id is not None:
+                normalized_sort = manager._normalize_sort_spec(sort_by)
+                sorted_indices = manager._get_cached_sort_indices(current_id, normalized_sort)
+                if sorted_indices is None:
+                    sort_cols = [spec.lstrip("+-") for spec in normalized_sort]
+                    descending = [spec.startswith("-") for spec in normalized_sort]
+                    nulls_last = [not desc for desc in descending]
+
+                    table = manager._get_sort_table(current_id, sort_cols)
+                    if table is None:
+                        sorted_indices = []
+                    else:
+                        sorted_indices = _try_native_argsort(table, sort_cols, descending, nulls_last)
+                        if sorted_indices is None:
+                            import polars as pl
+
+                            df = pl.from_arrow(table)
+                            # Normalize Stata missing values for numeric columns
+                            exprs = []
+                            for col, dtype in zip(df.columns, df.dtypes):
+                                if col == "_n":
+                                    exprs.append(pl.col(col))
+                                    continue
+                                if dtype in (pl.Float32, pl.Float64):
+                                    exprs.append(
+                                        pl.when(pl.col(col) > 8.0e307)
+                                        .then(None)
+                                        .otherwise(pl.col(col))
+                                        .alias(col)
+                                    )
+                                else:
+                                    exprs.append(pl.col(col))
+                            df = df.select(exprs)
+
+                            try:
+                                idx_series = df.select(
+                                    pl.arg_sort_by(
+                                        [pl.col(c) for c in sort_cols],
+                                        descending=descending,
+                                        nulls_last=nulls_last,
+                                    ).alias("_idx")
+                                )["_idx"]
+                                sorted_indices = (df["_n"].take(idx_series) - 1).to_list()
+                            except Exception:
+                                sorted_df = df.sort(by=sort_cols, descending=descending, nulls_last=nulls_last)
+                                sorted_indices = (sorted_df["_n"] - 1).to_list()
+
+                    manager._set_cached_sort_indices(current_id, normalized_sort, sorted_indices)
+
+                if view_id is None:
+                    obs_indices = sorted_indices
+                else:
                     assert view is not None
-                    obs_indices = manager._client.compute_view_indices(view.filter_expr)
+                    view_set = set(view.obs_indices)
+                    obs_indices = [idx for idx in sorted_indices if idx in view_set]
                     filtered_n = len(obs_indices)
             except ValueError as e:
                 raise HTTPError(400, "invalid_request", f"Invalid sort specification: {e}")
@@ -709,22 +925,65 @@ def handle_arrow_request(manager: UIChannelManager, body: dict[str, Any], *, vie
         obs_indices = view.obs_indices
 
     try:
-        # Apply sorting if requested
+        # Apply sorting if requested (Rust native sorter with Polars fallback; no dataset mutation)
         if sort_by:
             if not isinstance(sort_by, list) or not all(isinstance(s, str) for s in sort_by):
                 raise HTTPError(400, "invalid_request", "sortBy must be a list of strings")
             try:
-                manager._client.apply_sort(sort_by)
-                if view_id is not None:
-                    # encapsulated re-computation if view is active
-                    # Note: original code only does this for view_id is not None
-                    # But if we sort global dataset, existing views might become invalid unless
-                    # they rely on stable indices. Stata indices change on sort.
-                    # The current implementation of create_view computes indices once.
-                    # If we sort, those indices point to different rows! 
-                    # The original code handles this by re-computing view indices on sort.
+                normalized_sort = manager._normalize_sort_spec(sort_by)
+                sorted_indices = manager._get_cached_sort_indices(current_id, normalized_sort)
+                if sorted_indices is None:
+                    sort_cols = [spec.lstrip("+-") for spec in normalized_sort]
+                    descending = [spec.startswith("-") for spec in normalized_sort]
+                    nulls_last = [not desc for desc in descending]
+
+                    table = manager._get_sort_table(current_id, sort_cols)
+                    if table is None:
+                        sorted_indices = []
+                    else:
+                        sorted_indices = _try_native_argsort(table, sort_cols, descending, nulls_last)
+                        if sorted_indices is None:
+                            import polars as pl
+
+                            df = pl.from_arrow(table)
+                            # Normalize Stata missing values for numeric columns
+                            exprs = []
+                            for col, dtype in zip(df.columns, df.dtypes):
+                                if col == "_n":
+                                    exprs.append(pl.col(col))
+                                    continue
+                                if dtype in (pl.Float32, pl.Float64):
+                                    exprs.append(
+                                        pl.when(pl.col(col) > 8.0e307)
+                                        .then(None)
+                                        .otherwise(pl.col(col))
+                                        .alias(col)
+                                    )
+                                else:
+                                    exprs.append(pl.col(col))
+                            df = df.select(exprs)
+
+                            try:
+                                idx_series = df.select(
+                                    pl.arg_sort_by(
+                                        [pl.col(c) for c in sort_cols],
+                                        descending=descending,
+                                        nulls_last=nulls_last,
+                                    ).alias("_idx")
+                                )["_idx"]
+                                sorted_indices = (df["_n"].take(idx_series) - 1).to_list()
+                            except Exception:
+                                sorted_df = df.sort(by=sort_cols, descending=descending, nulls_last=nulls_last)
+                                sorted_indices = (sorted_df["_n"] - 1).to_list()
+
+                    manager._set_cached_sort_indices(current_id, normalized_sort, sorted_indices)
+
+                if view_id is None:
+                    obs_indices = sorted_indices
+                else:
                     assert view is not None
-                    obs_indices = manager._client.compute_view_indices(view.filter_expr)
+                    view_set = set(view.obs_indices)
+                    obs_indices = [idx for idx in sorted_indices if idx in view_set]
             except ValueError as e:
                 raise HTTPError(400, "invalid_request", f"Invalid sort: {e}")
             except RuntimeError as e:
