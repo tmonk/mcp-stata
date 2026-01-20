@@ -1,6 +1,6 @@
 # Stata MCP Server
 
-<a href="https://cursor.com/en-US/install-mcp?name=mcp-stata&config=eyJjb21tYW5kIjoidXZ4IC0tcmVmcmVzaCAtLWZyb20gbWNwLXN0YXRhQGxhdGVzdCBtY3Atc3RhdGEgLS1yZWluc3RhbGwtcGFja2FnZSBtY3Atc3RhdGEifQ%3D%3D"><img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Install MCP Server" height="20"></a>&nbsp;
+<a href="https://cursor.com/en-US/install-mcp?name=mcp-stata&config=eyJjb21tYW5kIjogInV2eCAtLXJlZnJlc2ggLS1yZWZyZXNoLXBhY2thZ2UgbWNwLXN0YXRhIC0tZnJvbSBtY3Atc3RhdGFAbGF0ZXN0IG1jcC1zdGF0YSJ9"><img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Install MCP Server" height="20"></a>&nbsp;
 <a href="https://pypi.org/project/mcp-stata/"><img src="https://img.shields.io/pypi/v/mcp-stata?style=flat&color=black" alt="PyPI - Version" height="20"></a>
 
 A [Model Context Protocol](https://github.com/modelcontextprotocol) (MCP) server that connects AI agents to a local Stata installation.
@@ -28,7 +28,7 @@ This server enables LLMs to:
 ### Run as a published tool with `uvx`
 
 ```bash
-uvx --refresh --from mcp-stata@latest mcp-stata --reinstall-package mcp-stata
+uvx --refresh --refresh-package mcp-stata --from mcp-stata@latest mcp-stata
 ```
 
 `uvx` is an alias for `uv tool run` and runs the tool in an isolated, cached environment.
@@ -80,10 +80,10 @@ Config file locations include:
       "command": "uvx",
         "args": [
         "--refresh",
+        "--refresh-package",
+        "mcp-stata",
         "--from",
         "mcp-stata@latest",
-        "mcp-stata",
-        "--reinstall-package",
         "mcp-stata"
       ]
     }
@@ -111,10 +111,10 @@ Cursor supports MCP config at:
       "command": "uvx",
        "args": [
         "--refresh",
+        "--refresh-package",
+        "mcp-stata",
         "--from",
         "mcp-stata@latest",
-        "mcp-stata",
-        "--reinstall-package",
         "mcp-stata"
       ]
     }
@@ -138,10 +138,10 @@ A common location is `~/.codeium/windsurf/mcp_config.json`.
       "command": "uvx",
         "args": [
         "--refresh",
+        "--refresh-package",
+        "mcp-stata",
         "--from",
         "mcp-stata@latest",
-        "mcp-stata",
-        "--reinstall-package",
         "mcp-stata"
       ]
     }
@@ -164,10 +164,10 @@ In Antigravity, MCP servers are managed from the MCP store/menu; you can open **
       "command": "uvx",
         "args": [
         "--refresh",
+        "--refresh-package",
+        "mcp-stata",
         "--from",
         "mcp-stata@latest",
-        "mcp-stata",
-        "--reinstall-package",
         "mcp-stata"
       ]
     }
@@ -193,10 +193,10 @@ Create `.vscode/mcp.json`:
       "command": "uvx",
       "args": [
         "--refresh",
+        "--refresh-package",
+        "mcp-stata",
         "--from",
         "mcp-stata@latest",
-        "mcp-stata",
-        "--reinstall-package",
         "mcp-stata"
       ]
     }
