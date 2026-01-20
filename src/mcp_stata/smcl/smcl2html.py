@@ -6,6 +6,7 @@ a single module geared toward MCP, emitting Markdown by default.
 
 import os
 import re
+from mcp_stata.native_ops import smcl_to_markdown as rust_smcl_to_markdown
 
 
 def expand_includes(lines, adopath):
@@ -50,6 +51,13 @@ def smcl_to_markdown(smcl_text: str, adopath: str = None, current_file: str = "h
     """Convert SMCL text to lightweight Markdown suitable for LLM consumption."""
     if not smcl_text:
         return ""
+
+    # Try Rust optimization first if no complicated includes are needed
+    if not adopath or "INCLUDE help" not in smcl_text:
+        res = rust_smcl_to_markdown(smcl_text)
+        if res:
+            # Add header to match existing Python behavior
+            return f"# Help for {current_file}\n" + res
 
     lines = smcl_text.splitlines()
     if lines and lines[0].strip() == "{smcl}":

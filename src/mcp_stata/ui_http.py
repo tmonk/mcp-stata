@@ -27,8 +27,8 @@ from .config import (
 logger = logging.getLogger("mcp_stata")
 
 try:
-    from .native_sorter import argsort_numeric as _native_argsort_numeric
-    from .native_sorter import argsort_mixed as _native_argsort_mixed
+    from .native_ops import argsort_numeric as _native_argsort_numeric
+    from .native_ops import argsort_mixed as _native_argsort_mixed
 except Exception:
     _native_argsort_numeric = None
     _native_argsort_mixed = None
