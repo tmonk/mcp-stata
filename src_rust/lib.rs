@@ -7,10 +7,11 @@ use regex::Regex;
 use std::cmp::Ordering;
 use std::sync::OnceLock;
 
-static RE_TAG: OnceLock<Regex> = OnceLock::new();
-static RE_ANY_TAG: OnceLock<Regex> = OnceLock::new();
+static RE_INLINE: OnceLock<Regex> = OnceLock::new();
+static RE_P: OnceLock<Regex> = OnceLock::new();
 static RE_RC_PRIMARY: OnceLock<Regex> = OnceLock::new();
 static RE_RC_SECONDARY: OnceLock<Regex> = OnceLock::new();
+static RE_ANY_TAG: OnceLock<Regex> = OnceLock::new();
 
 const PAR_SORT_THRESHOLD: usize = 2_500;
 const PAR_FILTER_THRESHOLD: usize = 5_000;
@@ -270,10 +271,17 @@ fn argsort_mixed(
 
 #[pyfunction]
 pub fn smcl_to_markdown(smcl: String) -> String {
-    let re_tag = RE_TAG.get_or_init(|| Regex::new(r"\{([a-zA-Z0-9_]+):?([^}]*)\}").unwrap());
-    let re_any_tag = RE_ANY_TAG.get_or_init(|| Regex::new(r"\{[^}]*\}").unwrap());
+    let re_inline = RE_INLINE.get_or_init(|| {
+        Regex::new(r"\{([a-zA-Z0-9_]+):([^}]*)\}").unwrap()
+    });
+    let re_any = RE_ANY_TAG.get_or_init(|| {
+        Regex::new(r"\{[^}]*\}").unwrap()
+    });
+    let re_p = RE_P.get_or_init(|| {
+        Regex::new(r"\{p[^}]*\}").unwrap()
+    });
 
-    let mut body_parts = Vec::new();
+    let mut body = String::with_capacity(smcl.len());
     let mut title = None;
 
     for line in smcl.lines() {
@@ -281,38 +289,46 @@ pub fn smcl_to_markdown(smcl: String) -> String {
         if trimmed.is_empty() || trimmed == "{smcl}" {
             continue;
         }
-        if let Some(t) = trimmed.strip_prefix("{title:") {
-            if let Some(title_text) = t.strip_suffix('}') {
-                title = Some(title_text.to_string());
+
+        if trimmed.starts_with("{title:") {
+            if let Some(t) = trimmed.strip_prefix("{title:").and_then(|s| s.strip_suffix('}')) {
+                title = Some(t.to_string());
                 continue;
             }
         }
 
-        let mut processed = trimmed.replace("{p_end}", "");
-        processed = re_tag
-            .replace_all(&processed, |caps: &regex::Captures| {
-                let tag = caps.get(1).map_or("", |m| m.as_str()).to_lowercase();
-                let content = caps.get(2).map_or("", |m| m.as_str());
-                match tag.as_str() {
-                    "bf" | "strong" => format!("**{content}**"),
-                    "it" | "em" => format!("*{content}*"),
-                    "cmd" | "cmdab" | "code" | "inp" | "input" | "res" | "err" | "txt" => {
-                        format!("`{content}`")
-                    }
-                    _ => content.to_string(),
+        // Two-pass approach to match Python's behavior exactly
+        
+        // Pass 1: Replace known tags with Markdown
+        let mut processed = re_inline.replace_all(trimmed, |caps: &regex::Captures| {
+            let tag = caps.get(1).map_or("", |m| m.as_str()).to_lowercase();
+            let content = caps.get(2).map_or("", |m| m.as_str());
+            match tag.as_str() {
+                "bf" | "strong" => format!("**{content}**"),
+                "it" | "em" => format!("*{content}*"),
+                "cmd" | "cmdab" | "code" | "inp" | "input" | "res" | "err" | "txt" => {
+                    format!("`{content}`")
                 }
-            })
-            .to_string();
+                _ => content.to_string(),
+            }
+        }).to_string();
 
-        processed = re_any_tag.replace_all(&processed, "").to_string();
+        // Pass 2: Strip all remaining tags (including p-tags and p-end)
+        processed = processed.replace("{p_end}", "");
+        processed = re_p.replace_all(&processed, "").to_string();
+        processed = re_any.replace_all(&processed, "").to_string();
+        
         if !processed.is_empty() {
-            body_parts.push(processed);
+            if !body.is_empty() {
+                body.push('\n');
+            }
+            body.push_str(&processed);
         }
     }
 
     match title {
-        Some(t) => format!("## {t}\n\n{}", body_parts.join("\n")),
-        None => body_parts.join("\n"),
+        Some(t) => format!("## {t}\n\n{}", body.trim()),
+        None => body.trim().to_string(),
     }
 }
 
