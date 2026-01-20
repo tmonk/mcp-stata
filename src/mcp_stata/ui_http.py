@@ -80,6 +80,54 @@ def _try_native_argsort(
         return None
 
 
+def _get_sorted_indices_polars(
+    table: Any,
+    sort_cols: list[str],
+    descending: list[bool],
+    nulls_last: list[bool],
+) -> list[int]:
+    import polars as pl
+
+    df = pl.from_arrow(table)
+    # Normalize Stata missing values for numeric columns
+    exprs = []
+    for col, dtype in zip(df.columns, df.dtypes):
+        if col == "_n":
+            exprs.append(pl.col(col))
+            continue
+        if dtype in (pl.Float32, pl.Float64):
+            exprs.append(
+                pl.when(pl.col(col) > 8.0e307)
+                .then(None)
+                .otherwise(pl.col(col))
+                .alias(col)
+            )
+        else:
+            exprs.append(pl.col(col))
+    df = df.select(exprs)
+
+    try:
+        # Use expressions for arithmetic to avoid eager Series-scalar conversion issues
+        # that have been observed in some environments with Int64 dtypes.
+        res = df.select(
+            idx=pl.arg_sort_by(
+                [pl.col(c) for c in sort_cols],
+                descending=descending,
+                nulls_last=nulls_last,
+            ),
+            zero_based_n=pl.col("_n") - 1
+        )
+        return res["zero_based_n"].take(res["idx"]).to_list()
+    except Exception:
+        # Fallback to eager sort if arg_sort_by fails or has issues
+        return (
+            df.sort(by=sort_cols, descending=descending, nulls_last=nulls_last)
+            .select(pl.col("_n") - 1)
+            .to_series()
+            .to_list()
+        )
+
+
 
 
 def _stable_hash(payload: dict[str, Any]) -> str:
@@ -765,38 +813,7 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
                     else:
                         sorted_indices = _try_native_argsort(table, sort_cols, descending, nulls_last)
                         if sorted_indices is None:
-                            import polars as pl
-
-                            df = pl.from_arrow(table)
-                            # Normalize Stata missing values for numeric columns
-                            exprs = []
-                            for col, dtype in zip(df.columns, df.dtypes):
-                                if col == "_n":
-                                    exprs.append(pl.col(col))
-                                    continue
-                                if dtype in (pl.Float32, pl.Float64):
-                                    exprs.append(
-                                        pl.when(pl.col(col) > 8.0e307)
-                                        .then(None)
-                                        .otherwise(pl.col(col))
-                                        .alias(col)
-                                    )
-                                else:
-                                    exprs.append(pl.col(col))
-                            df = df.select(exprs)
-
-                            try:
-                                idx_series = df.select(
-                                    pl.arg_sort_by(
-                                        [pl.col(c) for c in sort_cols],
-                                        descending=descending,
-                                        nulls_last=nulls_last,
-                                    ).alias("_idx")
-                                )["_idx"]
-                                sorted_indices = (df["_n"].take(idx_series) - 1).to_list()
-                            except Exception:
-                                sorted_df = df.sort(by=sort_cols, descending=descending, nulls_last=nulls_last)
-                                sorted_indices = (sorted_df["_n"] - 1).to_list()
+                            sorted_indices = _get_sorted_indices_polars(table, sort_cols, descending, nulls_last)
 
                     manager._set_cached_sort_indices(current_id, normalized_sort, sorted_indices)
 
@@ -825,7 +842,6 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
         # Re-raise HTTPError exceptions as-is
         raise
     except RuntimeError as e:
-        # StataClient uses RuntimeError("No data in memory") for empty dataset.
         msg = str(e) or "No data in memory"
         if "no data" in msg.lower():
             raise HTTPError(400, "no_data_in_memory", msg)
@@ -943,40 +959,9 @@ def handle_arrow_request(manager: UIChannelManager, body: dict[str, Any], *, vie
                     else:
                         sorted_indices = _try_native_argsort(table, sort_cols, descending, nulls_last)
                         if sorted_indices is None:
-                            import polars as pl
+                            sorted_indices = _get_sorted_indices_polars(table, sort_cols, descending, nulls_last)
 
-                            df = pl.from_arrow(table)
-                            # Normalize Stata missing values for numeric columns
-                            exprs = []
-                            for col, dtype in zip(df.columns, df.dtypes):
-                                if col == "_n":
-                                    exprs.append(pl.col(col))
-                                    continue
-                                if dtype in (pl.Float32, pl.Float64):
-                                    exprs.append(
-                                        pl.when(pl.col(col) > 8.0e307)
-                                        .then(None)
-                                        .otherwise(pl.col(col))
-                                        .alias(col)
-                                    )
-                                else:
-                                    exprs.append(pl.col(col))
-                            df = df.select(exprs)
-
-                            try:
-                                idx_series = df.select(
-                                    pl.arg_sort_by(
-                                        [pl.col(c) for c in sort_cols],
-                                        descending=descending,
-                                        nulls_last=nulls_last,
-                                    ).alias("_idx")
-                                )["_idx"]
-                                sorted_indices = (df["_n"].take(idx_series) - 1).to_list()
-                            except Exception:
-                                sorted_df = df.sort(by=sort_cols, descending=descending, nulls_last=nulls_last)
-                                sorted_indices = (sorted_df["_n"] - 1).to_list()
-
-                    manager._set_cached_sort_indices(current_id, normalized_sort, sorted_indices)
+                manager._set_cached_sort_indices(current_id, normalized_sort, sorted_indices)
 
                 if view_id is None:
                     obs_indices = sorted_indices
