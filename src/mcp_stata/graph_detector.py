@@ -48,55 +48,53 @@ class GraphCreationDetector:
             return ""
         
         # Access command_idx from stata_client if available
-        # NOTE: We only use command_idx for the default 'Graph' name to detect
-        # modifications. For named graphs, we only detect creation (name change)
-        # to avoid triggering redundant notifications for all existing graphs 
-        # on every command (since command_idx changes globally).
         cmd_idx = getattr(self._stata_client, "_command_idx", 0)
-        if graph_name.lower() == "graph":
-            return f"{graph_name}_{cmd_idx}"
-        return graph_name
+        # Always include command_idx to ensure modifications to named graphs are 
+        # detected when a new command starts. Within a single command, the 
+        # detected_graphs set in the cache will prevent duplicates.
+        return f"{graph_name}_{cmd_idx}"
     
     def _detect_graphs_via_pystata(self) -> List[str]:
         """Detect newly created graphs using direct pystata state access."""
         if not self._stata_client:
             return []
         
-        try:
-            # Get current graph state using pystata's sfi interface
-            current_graphs = self._get_current_graphs_from_pystata()
-            current_state = self._get_graph_state_from_pystata()
-            
-            # Compare with last known state to detect new graphs
-            new_graphs = []
-            
-            # Check for new graph names
-            for graph_name in current_graphs:
-                if graph_name not in self._last_graph_state and graph_name not in self._removed_graphs:
-                    new_graphs.append(graph_name)
-            
-            # Check for state changes in existing graphs (modifications)
-            for graph_name, state in current_state.items():
-                if graph_name in self._last_graph_state:
-                    last_state = self._last_graph_state[graph_name]
-                    # Compare stable signature only.
-                    if state.get("signature") != last_state.get("signature"):
-                        if graph_name not in self._removed_graphs:
-                            new_graphs.append(graph_name)
-            
-            # Update cached state
-            self._last_graph_state = current_state.copy()
-            
-            return new_graphs
-            
-        except (ImportError, RuntimeError, ValueError, AttributeError) as e:
-            # These are expected exceptions when SFI is not available or Stata state is inaccessible
-            logger.debug(f"Failed to detect graphs via pystata (expected): {e}")
-            return []
-        except Exception as e:
-            # Unexpected errors should be logged as errors
-            logger.error(f"Unexpected error in pystata graph detection: {e}")
-            return []
+        with self._lock:
+            try:
+                # Get current graph state using pystata's sfi interface
+                current_graphs = self._get_current_graphs_from_pystata()
+                current_state = self._get_graph_state_from_pystata()
+                
+                # Compare with last known state to detect new graphs
+                new_graphs = []
+                
+                # Check for new graph names
+                for graph_name in current_graphs:
+                    if graph_name not in self._last_graph_state and graph_name not in self._removed_graphs:
+                        new_graphs.append(graph_name)
+                
+                # Check for state changes in existing graphs (modifications)
+                for graph_name, state in current_state.items():
+                    if graph_name in self._last_graph_state:
+                        last_state = self._last_graph_state[graph_name]
+                        # Compare stable signature.
+                        if state.get("signature") != last_state.get("signature"):
+                            if graph_name not in self._removed_graphs:
+                                new_graphs.append(graph_name)
+                
+                # Update cached state
+                self._last_graph_state = current_state.copy()
+                
+                return new_graphs
+                
+            except (ImportError, RuntimeError, ValueError, AttributeError) as e:
+                # These are expected exceptions when SFI is not available or Stata state is inaccessible
+                logger.debug(f"Failed to detect graphs via pystata (expected): {e}")
+                return []
+            except Exception as e:
+                # Unexpected errors should be logged as errors
+                logger.error(f"Unexpected error in pystata graph detection: {e}")
+                return []
     
     def _get_current_graphs_from_pystata(self) -> List[str]:
         """Get current list of graphs using pystata's sfi interface."""

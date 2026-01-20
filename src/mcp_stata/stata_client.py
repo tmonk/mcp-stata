@@ -1001,11 +1001,10 @@ class StataClient:
         if not graph_name:
             return ""
         cmd_idx = getattr(self, "_command_idx", 0)
-        # Only include command index for default 'Graph' to detect modifications.
-        # For named graphs, we only want to detect them when they are new or renamed.
-        if graph_name.lower() == "graph":
-            return f"{graph_name}_{cmd_idx}"
-        return graph_name
+        # Include command index for all graphs to detect re-creation/modification 
+        # between commands. The detector's internal set will handle deduplication 
+        # within a single command execution stream.
+        return f"{graph_name}_{cmd_idx}"
 
     def _request_break_in(self) -> None:
         """
@@ -1339,11 +1338,14 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         return pat.sub(repl, code)
 
-    def _get_rc_from_scalar(self, Scalar) -> int:
+    def _get_rc_from_scalar(self, Scalar=None) -> int:
         """Safely get return code, handling None values."""
         try:
             from sfi import Macro
-            rc_val = Macro.getGlobal("_rc")
+            # In PyStata, the last return code is stored in the _rc macro
+            # We first ensure it's copied to a known global macro for reliable retrieval
+            self.stata.run("macro define mcp_last_rc = _rc", echo=False)
+            rc_val = Macro.getGlobal("mcp_last_rc")
             if rc_val is None:
                 return -1
             return int(float(rc_val))
@@ -1763,7 +1765,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 ret = self.stata.run(code, echo=echo)
                 if isinstance(ret, str) and ret:
                     ret_text = ret
-
+                    parsed_rc = self._parse_rc_from_text(ret_text)
+                    if parsed_rc is not None:
+                        rc = parsed_rc
                 
             except Exception as e:
                 exc = e
@@ -1816,6 +1820,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     ret = self.stata.run(code, echo=echo)
                 if isinstance(ret, str) and ret:
                     ret_text = ret
+                    # Try to parse RC from the output text. 
+                    # Many Stata commands emit 'r(N);' on failure even when quietly.
+                    parsed_rc = self._parse_rc_from_text(ret_text)
+                    if parsed_rc is not None:
+                        rc = parsed_rc
             except Exception as e:
                 exc = e
                 rc = 1
@@ -3480,6 +3489,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         """
         import os
         import logging
+        logger = logging.getLogger("mcp_stata.stata_client")
         
         # Initialize cache in thread-safe manner
         self._initialize_cache()
@@ -3520,13 +3530,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             cache_path_for_stata = cache_path.replace("\\", "/")
 
             resolved_graph_name = self._resolve_graph_name_for_stata(graph_name)
-            # Use display + export without name() for maximum compatibility.
-            # name(NAME) often fails in PyStata for non-active graphs (r(693)).
-            # Quoting the name helps with spaces/special characters.
-            display_cmd = f'quietly graph display "{resolved_graph_name}"'
-            self._exec_no_capture_silent(display_cmd, echo=False)
+            safe_name = resolved_graph_name.strip()
             
-            export_cmd = f'quietly graph export "{cache_path_for_stata}", replace as(svg)'
+            # The most reliable and efficient strategy for capturing distinct graphs in 
+            # PyStata background tasks:
+            # 1. Ensure the specific graph is active in the Stata engine via 'graph display'.
+            # 2. Export with the explicit name() option to ensure isolation.
+            # We use name() without quotes as it's an internal Stata name.
+            self._exec_no_capture_silent(f'graph display {safe_name}', echo=False)
+            export_cmd = f'graph export "{cache_path_for_stata}", name({safe_name}) replace as(svg)'
             resp = self._exec_no_capture_silent(export_cmd, echo=False)
             
             if resp.success and os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
