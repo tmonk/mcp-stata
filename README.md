@@ -28,7 +28,7 @@ This server enables LLMs to:
 ### Run as a published tool with `uvx`
 
 ```bash
-uvx --refresh --from mcp-stata@latest mcp-stata
+uvx --refresh --from mcp-stata@latest mcp-stata --reinstall-package mcp-stata
 ```
 
 `uvx` is an alias for `uv tool run` and runs the tool in an isolated, cached environment.
