@@ -58,7 +58,7 @@ build-backend = "maturin"
 
 [tool.maturin]
 python-source = "src"
-module-name = "mcp_stata._native_sorter"
+module-name = "mcp_stata._native_ops"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_stata"]

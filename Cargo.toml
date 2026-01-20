@@ -10,14 +10,16 @@ readme = "README.md"
 keywords = ["stata", "mcp", "sorting", "pyo3"]
 
 [lib]
-name = "_native_sorter"
+name = "_native_ops"
 path = "src_rust/lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
+regex = "1.10"
 pyo3 = { version = "0.27.2", features = ["extension-module"] }
 numpy = "0.27"
 rayon = "1.10"
+fasteval = "0.2"  # Zero-allocation expression evaluator
 
 [profile.release]
 lto = true           # Link-time optimization

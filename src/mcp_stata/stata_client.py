@@ -35,6 +35,7 @@ from .models import (
 from .smcl.smcl2html import smcl_to_markdown
 from .streaming_io import FileTeeIO, TailBuffer
 from .graph_detector import StreamingGraphCache
+from .native_ops import fast_scan_log, compute_filter_indices
 
 logger = logging.getLogger("mcp_stata")
 
@@ -752,6 +753,12 @@ class StataClient:
         if not smcl_content:
             return f"Stata error r({rc})", ""
         
+        # Try Rust optimization
+        native_res = fast_scan_log(smcl_content, rc)
+        if native_res:
+            error_msg, context, _ = native_res
+            return error_msg, context
+
         lines = smcl_content.splitlines()
         
         # Search backwards for {err} tags - they indicate error lines
@@ -798,6 +805,13 @@ class StataClient:
         if not smcl_content:
             return None
             
+        # Try Rust optimization
+        native_res = fast_scan_log(smcl_content, 0)
+        if native_res:
+            _, _, rc = native_res
+            if rc is not None:
+                return rc
+
         # 1. Primary check: SMCL search tag {search r(N), ...}
         # This is the most authoritative interactive indicator
         matches = list(re.finditer(r'\{search r\((\d+)\)', smcl_content))
@@ -2687,11 +2701,35 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         code = self._compile_filter_expr(filter_expr)
         _ = self._get_var_index_map()
 
+        is_string_vars = []
+        if vars_used:
+            from sfi import Variable # type: ignore
+            is_string_vars = [Variable.isString(v) for v in vars_used]
+
         indices: List[int] = []
         for start in range(0, n, chunk_size):
             end = min(start + chunk_size, n)
             obs_list = list(range(start, end))
             raw_rows = Data.get(var=vars_used, obs=obs_list) if vars_used else [[None] for _ in obs_list]
+
+            # Try Rust optimization for the chunk
+            if vars_used and raw_rows:
+                # Transpose rows to columns for Rust
+                cols = []
+                # Extract columns
+                for j in range(len(vars_used)):
+                    col_data_list = [row[j] for row in raw_rows]
+                    if not is_string_vars[j]:
+                        import numpy as np
+                        col_data = np.array(col_data_list, dtype=np.float64)
+                    else:
+                        col_data = col_data_list
+                    cols.append(col_data)
+
+                rust_indices = compute_filter_indices(filter_expr, vars_used, cols, is_string_vars)
+                if rust_indices is not None:
+                    indices.extend([int(obs_list[i]) for i in rust_indices])
+                    continue
 
             for row_i, obs in enumerate(obs_list):
                 env: Dict[str, Any] = {}
@@ -3474,9 +3512,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         
         try:
             # Include signature in filename to force client-side refresh
+            import hashlib
             sig = self._get_graph_signature(graph_name)
             safe_name = self._sanitize_filename(sig)
-            cache_path = os.path.join(self._preemptive_cache_dir, f"{safe_name}.svg")
+            suffix = hashlib.md5((sig or "").encode("utf-8")).hexdigest()[:8]
+            cache_path = os.path.join(self._preemptive_cache_dir, f"{safe_name}_{suffix}.svg")
             cache_path_for_stata = cache_path.replace("\\", "/")
 
             resolved_graph_name = self._resolve_graph_name_for_stata(graph_name)
