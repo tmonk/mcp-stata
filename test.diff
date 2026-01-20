@@ -1,0 +1,49 @@
+diff --git a/.github/workflows/publish.yml b/.github/workflows/publish.yml
+index 4298f46..b89b7e6 100644
+--- a/.github/workflows/publish.yml
++++ b/.github/workflows/publish.yml
+@@ -38,7 +38,7 @@ jobs:
+     runs-on: windows-latest
+     strategy:
+       matrix:
+-        target: [x64]
++        target: [x64, x86, aarch64]
+     steps:
+       - uses: actions/checkout@v4
+       - uses: actions/setup-python@v5
+@@ -72,6 +72,8 @@ jobs:
+           target: ${{ matrix.target }}
+           args: --release --out dist --find-interpreter
+           sccache: "true"
++        env:
++          MACOSX_DEPLOYMENT_TARGET: "11.0"
+       - name: Upload wheels
+         uses: actions/upload-artifact@v4
+         with:
+diff --git a/Cargo.toml b/Cargo.toml
+index 7b8496c..a6cdcec 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -16,8 +16,8 @@ crate-type = ["cdylib"]
+ 
+ [dependencies]
+ regex = "1.10"
+-pyo3 = { version = "0.27.2", features = ["extension-module"] }
+-numpy = "0.27"
++pyo3 = { version = "0.27.2", features = ["extension-module", "abi3-py312"] }
++numpy = { version = "0.27", features = ["abi3"] }
+ rayon = "1.10"
+ fasteval = "0.2"  # Zero-allocation expression evaluator
+ 
+diff --git a/pyproject.toml b/pyproject.toml
+index 8a2abe9..327f6e3 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -59,6 +59,7 @@ build-backend = "maturin"
+ [tool.maturin]
+ python-source = "src"
+ module-name = "mcp_stata._native_ops"
++features = ["pyo3/abi3-py312"]
+ 
+ [tool.hatch.build.targets.wheel]
+ packages = ["src/mcp_stata"]

@@ -38,7 +38,7 @@ jobs:
     runs-on: windows-latest
     strategy:
       matrix:
-        target: [x64]
+        target: [x64, x86, aarch64]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -72,6 +72,8 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter
           sccache: "true"
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
