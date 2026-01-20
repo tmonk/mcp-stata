@@ -1126,13 +1126,16 @@ class StataClient:
                     curr = parent
 
                 ordered_candidates = []
+                if app_bundle:
+                    # On macOS, the parent of the .app is often the correct install path
+                    # (e.g., /Applications/StataNow containing StataMP.app)
+                    parent_dir = os.path.dirname(app_bundle)
+                    if parent_dir and parent_dir != "/":
+                        ordered_candidates.append(parent_dir)
+                    ordered_candidates.append(app_bundle)
+                
                 if bin_dir:
                     ordered_candidates.append(bin_dir)
-                if app_bundle:
-                    ordered_candidates.append(app_bundle)
-                    parent_dir = os.path.dirname(app_bundle)
-                    if parent_dir not in ordered_candidates:
-                        ordered_candidates.append(parent_dir)
                 
                 # Deduplicate preserving order
                 seen = set()
