@@ -375,18 +375,19 @@ def find_stata_candidates() -> List[Tuple[str, str]]:
     candidates: List[Tuple[str, str]] = []  # List of (path, edition)
 
     if system == "Darwin":  # macOS
-        app_globs = [
+        # Search targets specific to macOS installation patterns
+        patterns = [
             "/Applications/StataNow/StataMP.app",
             "/Applications/StataNow/StataSE.app",
             "/Applications/StataNow/Stata.app",
             "/Applications/Stata/StataMP.app",
             "/Applications/Stata/StataSE.app",
             "/Applications/Stata/Stata.app",
-            "/Applications/Stata*.app",
             "/Applications/Stata*/Stata*.app",
+            "/Applications/Stata*.app",
         ]
 
-        for pattern in app_globs:
+        for pattern in patterns:
             for app_dir in glob.glob(pattern):
                 binary_dir = os.path.join(app_dir, "Contents", "MacOS")
                 if not _exists_fast(binary_dir):
@@ -395,6 +396,7 @@ def find_stata_candidates() -> List[Tuple[str, str]]:
                     full_path = os.path.join(binary_dir, binary)
                     if _exists_fast(full_path):
                         candidates.append((full_path, edition))
+        candidates = _dedupe_preserve(candidates)
 
     elif system == "Windows":
         # Include ProgramW6432 (real 64-bit Program Files) and hardcode fallbacks.
@@ -443,6 +445,7 @@ def find_stata_candidates() -> List[Tuple[str, str]]:
                 full_path = os.path.join(stata_dir, exe)
                 if _exists_fast(full_path):
                     candidates.append((full_path, edition))
+        candidates = _dedupe_preserve(candidates)
 
     elif system == "Linux":
         home_base = os.environ.get("HOME") or os.path.expanduser("~")
@@ -486,7 +489,8 @@ def find_stata_candidates() -> List[Tuple[str, str]]:
 
     # Final validation of candidates (still using fast checks)
     validated: List[Tuple[str, str]] = []
-    for path, edition in _sort_candidates(candidates):
+    unique_candidates = _dedupe_preserve(candidates)
+    for path, edition in _sort_candidates(unique_candidates):
         if not _exists_fast(path):
             logger.warning("Discovered candidate missing on disk: %s", path)
             continue

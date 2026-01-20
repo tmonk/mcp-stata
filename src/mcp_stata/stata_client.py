@@ -1098,6 +1098,10 @@ class StataClient:
             
             # Get discovered Stata paths (cached from first call)
             discovery_candidates = _get_discovery_candidates()
+            if not discovery_candidates:
+                raise RuntimeError("No Stata candidates found during discovery")
+            
+            logger.info("Initializing Stata engine (attempting up to %d candidate binaries)...", len(discovery_candidates))
 
             # Diagnostic: force faulthandler to output to stderr for C crashes
             import faulthandler
@@ -1159,7 +1163,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
     try:
         stata_setup.config({repr(path)}, {repr(edition)})
         from pystata import stata
-        stata.run('about', echo=True)
+        # Minimal verification of engine health
+        stata.run('display 1', echo=False)
         print('PREFLIGHT_OK')
     except Exception as e:
         print(f'PREFLIGHT_FAIL: {{e}}', file=sys.stderr)
@@ -1167,9 +1172,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 """
                         
                         try:
+                            # Use shorter timeout for pre-flight if feasible, 
+                            # but keep it safe for slow environments. 15s is usually enough for a ping.
                             res = subprocess.run(
                                 [sys.executable, "-c", preflight_code],
-                                capture_output=True, text=True, timeout=30
+                                capture_output=True, text=True, timeout=20
                             )
                             if res.returncode != 0:
                                 sys.stderr.write(f"[mcp_stata] Pre-flight failed (rc={res.returncode}) for '{path}'\n")
