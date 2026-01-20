@@ -20,3 +20,4 @@ scripts/js_benchmark/node_modules/
 target/*
 dist/*
 src/mcp_stata/*.so
+Cargo.lock
