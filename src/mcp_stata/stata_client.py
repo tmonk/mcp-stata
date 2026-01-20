@@ -109,12 +109,6 @@ def _get_discovery_candidates() -> List[Tuple[str, str]]:
             else:
                 logger.info("STATA_PATH env not set; attempting auto-discovery")
             
-            try:
-                pkg_version = version("mcp-stata")
-            except PackageNotFoundError:
-                pkg_version = "unknown"
-            logger.info("mcp-stata version: %s", pkg_version)
-            
             # Run discovery
             candidates = find_stata_candidates()
             

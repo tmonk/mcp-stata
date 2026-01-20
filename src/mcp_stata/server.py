@@ -31,6 +31,29 @@ logger = logging.getLogger("mcp_stata")
 payload_logger = logging.getLogger("mcp_stata.payloads")
 _LOGGING_CONFIGURED = False
 
+def get_server_version() -> str:
+    """Determine the server version from package metadata or fallback."""
+    try:
+        return version("mcp-stata")
+    except PackageNotFoundError:
+        # If not installed, try to find version in pyproject.toml near this file
+        try:
+            # We are in src/mcp_stata/server.py, pyproject.toml is at ../../pyproject.toml
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            pyproject_path = os.path.join(base_dir, "pyproject.toml")
+            if os.path.exists(pyproject_path):
+                with open(pyproject_path, "r") as f:
+                    import re
+                    content = f.read()
+                    match = re.search(r'^version\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE)
+                    if match:
+                        return match.group(1)
+        except Exception:
+            pass
+        return "unknown"
+
+SERVER_VERSION = get_server_version()
+
 def setup_logging():
     global _LOGGING_CONFIGURED
     if _LOGGING_CONFIGURED:
@@ -84,13 +107,8 @@ def setup_logging():
     if logger.level == logging.NOTSET:
         logger.setLevel(getattr(logging, log_level, logging.DEBUG))
 
-    try:
-        _mcp_stata_version = version("mcp-stata")
-    except PackageNotFoundError:
-        _mcp_stata_version = "unknown"
-
     logger.info("=== mcp-stata server starting ===")
-    logger.info("mcp-stata version: %s", _mcp_stata_version)
+    logger.info("mcp-stata version: %s", SERVER_VERSION)
     logger.info("STATA_PATH env at startup: %s", os.getenv("STATA_PATH", "<not set>"))
     logger.info("LOG_LEVEL: %s", log_level)
 
@@ -98,6 +116,9 @@ def setup_logging():
 
 # Initialize FastMCP
 mcp = FastMCP("mcp_stata")
+# Set version on the underlying server to expose it in InitializeResult
+mcp._mcp_server.version = SERVER_VERSION
+
 client = StataClient()
 ui_channel = UIChannelManager(client)
 
@@ -1098,11 +1119,7 @@ def export_graphs_all() -> str:
 
 def main():
     if "--version" in sys.argv:
-        try:
-            from importlib.metadata import version
-            print(version("mcp-stata"))
-        except Exception:
-            print("unknown")
+        print(SERVER_VERSION)
         return
 
     setup_logging()
