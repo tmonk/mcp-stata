@@ -3,7 +3,7 @@ name = "mcp-stata"
 version = "1.19.1"
 description = " A lightweight Model Context Protocol (MCP) server for Stata. Execute commands, inspect data, retrieve stored results (`r()`/`e()`), and view graphs in your chat interface. Built for economists who want to integrate LLM assistance into their Stata workflow. "
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "AGPL-3.0-or-later"
 authors = [
     { name = "Thomas Monk", email = "t.d.monk@lse.ac.uk" }
@@ -15,7 +15,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "Topic :: Scientific/Engineering :: Information Analysis",
     "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -61,7 +60,7 @@ build-backend = "maturin"
 [tool.maturin]
 python-source = "src"
 module-name = "mcp_stata._native_ops"
-features = ["pyo3/abi3-py310"]
+features = ["pyo3/abi3-py311"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcp_stata"]
@@ -71,7 +70,7 @@ exclude = ["/tests", "/uv.lock"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
