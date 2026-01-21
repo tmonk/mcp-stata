@@ -1812,14 +1812,28 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     self.stata.run("set trace on")
                 output_buf = StringIO()
                 with redirect_stdout(output_buf), redirect_stderr(output_buf):
-                    ret = self.stata.run(code, echo=echo)
+                    # Use capture noisily to ensure we get all output AND the return code
+                    # even if the command fails.
+                    wrapped_code = f"capture noisily {{\n{code}\n}}\ndisplay \"MCP_RC:\" _rc"
+                    ret = self.stata.run(wrapped_code, echo=echo)
+                    
                 if isinstance(ret, str) and ret:
                     ret_text = ret
-                    # Try to parse RC from the output text. 
-                    # Many Stata commands emit 'r(N);' on failure even when quietly.
+                    # Extract RC from our marker
+                    rc_match = re.search(r"MCP_RC:\s*(\d+)", ret_text)
+                    if rc_match:
+                        rc = int(rc_match.group(1))
+                    else:
+                        logger.debug("RC Marker NOT found in output: %r", ret_text)
+                    
+                    # Secondary check: parse RC from the output text. 
                     parsed_rc = self._parse_rc_from_text(ret_text)
                     if parsed_rc is not None:
-                        rc = parsed_rc
+                        if rc == 0:
+                            rc = parsed_rc
+                    
+                    if rc != 0:
+                        logger.debug("Detected non-zero RC: %d for command: %s", rc, code)
             except Exception as e:
                 exc = e
                 rc = 1
