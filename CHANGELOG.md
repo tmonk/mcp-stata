@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v1.20.0 (2026-01-21)
+
+### Bug Fixes
+
+- Update Python version support to 3.11+ across configuration files. 3.10 is incompatible
+  ([`e6026ac`](https://github.com/tmonk/mcp-stata/commit/e6026ac518767b091090047b6824e1ec89ab53f9))
+
+### Features
+
+- Implement session management for Stata integration - fully backwards compatible
+  ([`17f4bc9`](https://github.com/tmonk/mcp-stata/commit/17f4bc9801742ebec525b6a0d8a63dd9f9928aed))
+
+
 ## v1.19.1 (2026-01-20)
 
 ### Bug Fixes
