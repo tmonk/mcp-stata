@@ -20,7 +20,7 @@ This server enables LLMs to:
 ## Prerequisites
 
 - **Stata 17+** (required for `pystata` integration)
-- **Python 3.12+** (required)
+- **Python 3.11+** (required)
 - **uv** (recommended for install/run)
 
 ## Installation
