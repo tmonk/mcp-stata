@@ -98,19 +98,19 @@ class TestOutputTruncation:
         assert len(result.error.snippet) > 0
 
 
+@pytest.mark.asyncio
 class TestJSONCompactness:
     """Test that JSON responses are compact (no indentation)."""
 
-    def _run_command_sync(self, command: str) -> str:
+    async def _run_command_async(self, command: str) -> str:
         """Helper to run command and get JSON response."""
-        import asyncio
         from mcp_stata.server import run_command
-        result = asyncio.run(run_command(command))
+        result = await run_command(command)
         return result  # run_command already returns a JSON string
 
-    def test_run_command_returns_compact_json(self):
+    async def test_run_command_returns_compact_json(self):
         """Server tools should return compact JSON without indentation."""
-        result_str = self._run_command_sync("display 1+1")
+        result_str = await self._run_command_async("display 1+1")
 
         # Parse to ensure it's valid JSON
         result = json.loads(result_str)
@@ -120,23 +120,18 @@ class TestJSONCompactness:
         # Remove the stdout content first, then check
         result_copy = result.copy()
         result_copy["stdout"] = ""
-        compact_str = json.dumps(result_copy)
-
         # The JSON structure itself should not have newlines from indentation
         # (it will have the keys/values in one line)
-        lines = result_str.split("\n")
-        # If indented, would have many lines; compact should have few
-        # Note: stdout itself may have newlines, so we check structure
         assert result_str.find('  "') == -1  # No double-space indent
 
-    def test_graph_export_returns_compact_json(self):
+    async def test_graph_export_returns_compact_json(self):
         """Graph export should return compact JSON."""
         # Initialize with a graph
-        self._run_command_sync("sysuse auto, clear")
-        self._run_command_sync("scatter price mpg, name(CompactTest, replace)")
+        await self._run_command_async("sysuse auto, clear")
+        await self._run_command_async("scatter price mpg, name(CompactTest, replace)")
 
         from mcp_stata.server import export_graphs_all
-        result_str = export_graphs_all()  # Already returns JSON string
+        result_str = await export_graphs_all()  # Already returns JSON string
         result = json.loads(result_str)
 
         # Should be valid JSON

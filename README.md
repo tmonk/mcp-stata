@@ -214,27 +214,27 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 
 ## Tools Available (from server.py)
 
-* `run_command(code, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None)`: Execute Stata syntax.
+* `run_command(code, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, session_id="default")`: Execute Stata syntax in the specified session.
   - Always writes output to a temporary log file and emits a single `notifications/logMessage` containing `{"event":"log_path","path":"..."}` so the client can tail it locally.
   - May emit `notifications/progress` when the client provides a progress token/callback.
 * `read_log(path, offset=0, max_bytes=65536)`: Read a slice of a previously-provided log file (JSON: `path`, `offset`, `next_offset`, `data`).
 * `find_in_log(path, query, start_offset=0, max_bytes=5_000_000, before=2, after=2, case_sensitive=False, regex=False, max_matches=50)`: Search a log file for text and return context windows.
   - Returns JSON with `matches` (context lines, line indices), `next_offset`, and `truncated` if `max_matches` is hit.
   - Supports literal or regex search with bounded read window for large logs.
-* `load_data(source, clear=True, as_json=True, raw=False, max_output_lines=None)`: Heuristic loader (sysuse/webuse/use/path/URL) with JSON envelope unless `raw=True`. Supports output truncation.
-* `get_data(start=0, count=50)`: View dataset rows (JSON response, capped to 500 rows).
-* `get_ui_channel()`: Return a short-lived localhost HTTP endpoint + bearer token for the UI-only data browser.
-* `describe()`: View dataset structure via Stata `describe`.
-* `list_graphs()`: See available graphs in memory (JSON list with an `active` flag).
-* `export_graph(graph_name=None, format="pdf")`: Export a graph to a file path (default PDF; use `format="png"` for PNG).
-* `export_graphs_all()`: Export all in-memory graphs. Returns file paths.
-* `get_help(topic, plain_text=False)`: Markdown-rendered Stata help by default; `plain_text=True` strips formatting.
-* `codebook(variable, as_json=True, trace=False, raw=False, max_output_lines=None)`: Variable-level metadata (JSON envelope by default; supports `trace=True` and output truncation).
-* `run_do_file(path, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None)`: Execute a .do file.
-  - Always writes output to a temporary log file and emits a single `notifications/logMessage` containing `{"event":"log_path","path":"..."}` so the client can tail it locally.
-  - Emits incremental `notifications/progress` when the client provides a progress token/callback.
-* `get_stored_results()`: Get `r()` and `e()` scalars/macros as JSON.
-* `get_variable_list()`: JSON list of variables and labels.
+* `load_data(source, clear=True, as_json=True, raw=False, max_output_lines=None, session_id="default")`: Heuristic loader (sysuse/webuse/use/path/URL) for the specified session.
+* `get_ui_channel(session_id="default")`: Return a short-lived localhost HTTP endpoint + bearer token for the UI-only data browser, targeting the specified session.
+* `describe(session_id="default")`: View dataset structure via Stata `describe`.
+* `list_graphs(session_id="default")`: See available graphs in memory (JSON list with an `active` flag).
+* `export_graph(graph_name=None, format="pdf", session_id="default")`: Export a graph to a file path.
+* `export_graphs_all(session_id="default")`: Export all in-memory graphs. Returns file paths.
+* `get_help(topic, plain_text=False, session_id="default")`: Markdown-rendered Stata help.
+* `codebook(variable, as_json=True, trace=False, raw=False, max_output_lines=None, session_id="default")`: Variable-level metadata.
+* `run_do_file(path, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, session_id="default")`: Execute a .do file in the specified session.
+* `get_stored_results(session_id="default")`: Get `r()` and `e()` scalars/macros as JSON.
+* `get_variable_list(session_id="default")`: JSON list of variables and labels.
+* `create_session(session_id)`: Manually create a new Stata session.
+* `list_sessions()`: List all active sessions and their status.
+* `stop_session(session_id)`: Terminate a specific session.
 
 ### Cancellation
 
@@ -261,6 +261,7 @@ Important properties:
 - **Loopback only**: binds to `127.0.0.1`.
 - **Bearer auth**: every request requires an `Authorization: Bearer <token>` header.
 - **Short-lived tokens**: clients should call `get_ui_channel()` to obtain a fresh token as needed.
+- **Session Isolate**: caches (views, sorting) are isolated per `sessionId`.
 - **No Stata dataset mutation** for browsing/filtering:
   - No generated variables.
   - Paging uses `sfi.Data.get`.
@@ -296,18 +297,18 @@ Server-enforced limits (current defaults):
 
 All endpoints are under `baseUrl` and require the bearer token.
 
-- `GET /v1/dataset`
-  - Returns dataset identity and basic state (`id`, `frame`, `n`, `k`).
-- `GET /v1/vars`
-  - Returns variable metadata (`name`, `type`, `label`, `format`).
+- `GET /v1/dataset?sessionId=default`
+  - Returns dataset identity and basic state (`id`, `frame`, `n`, `k`) for the given session.
+- `GET /v1/vars?sessionId=default`
+  - Returns full variable list with labels, types, and formats.
 - `POST /v1/page`
-  - Returns a page of data for selected variables.
+  - Paged data retrieval. Supports `sortBy`, `filterExpr` (ephemeral), and `sessionId`.
 - `POST /v1/arrow`
   - Returns a binary Arrow IPC stream (same input as `/v1/page`).
 - `POST /v1/views`
-  - Creates a server-side filtered view (handle-based filtering).
-- `POST /v1/views/:viewId/page`
-  - Pages within a filtered view.
+  - Create a long-lived filtered view. Returns a `viewId`. Requires `sessionId`.
+- `POST /v1/views/<viewId>/page`
+  - Paged retrieval from a previously created view. Supports `sortBy` and `sessionId`.
 - `POST /v1/views/:viewId/arrow`
   - Returns a binary Arrow IPC stream from a filtered view.
 - `DELETE /v1/views/:viewId`

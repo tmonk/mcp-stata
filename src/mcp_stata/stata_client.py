@@ -1317,17 +1317,28 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             self._graph_name_aliases = {}
             self._graph_name_reverse = {}
 
-        # Handle common patterns: name("..." ...) or name(`"..."' ...)
-        pat = re.compile(r"name\(\s*(?:`\"(?P<cq>[^\"]*)\"'|\"(?P<dq>[^\"]*)\")\s*(?P<rest>[^)]*)\)")
+        # Handle common patterns: name("..." ...), name(`"..."' ...), or name(unquoted ...)
+        pat = re.compile(r"name\(\s*(?:`\"(?P<cq>[^\"]*)\"'|\"(?P<dq>[^\"]*)\"|(?P<uq>[^,\s\)]+))\s*(?P<rest>[^)]*)\)")
 
         def repl(m: re.Match) -> str:
-            original = m.group("cq") if m.group("cq") is not None else m.group("dq")
-            original = original or ""
+            original = m.group("cq") or m.group("dq") or m.group("uq")
+            original = (original or "").strip()
+            
+            # If it's already an alias we recognize, don't rewrite it again
+            if original.startswith("mcp_g_") and original in self._graph_name_reverse:
+                return m.group(0)
+
             internal = self._graph_name_aliases.get(original)
             if not internal:
-                internal = self._make_valid_stata_name(original)
-                self._graph_name_aliases[original] = internal
-                self._graph_name_reverse[internal] = original
+                # Only rewrite if it's NOT a valid Stata name or has special characters
+                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", original) or len(original) > 32:
+                    internal = self._make_valid_stata_name(original)
+                    self._graph_name_aliases[original] = internal
+                    self._graph_name_reverse[internal] = original
+                else:
+                    # Valid name, use as is but still record it if we want reverse mapping to be consistent
+                    internal = original
+
             rest = m.group("rest") or ""
             return f"name({internal}{rest})"
 
@@ -1675,7 +1686,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                         # Close SMCL log AFTER output redirection
                         self._close_smcl_log(log_name)
                         # Restore and capture results while still inside the lock
-                        self._restore_results_from_hold("_hold_name")
+                        if hasattr(self, "_hold_name"):
+                            self._restore_results_from_hold("_hold_name")
 
             except Exception as e:
                 sys_error = str(e)
@@ -1812,14 +1824,28 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     self.stata.run("set trace on")
                 output_buf = StringIO()
                 with redirect_stdout(output_buf), redirect_stderr(output_buf):
-                    ret = self.stata.run(code, echo=echo)
+                    # Use capture noisily to ensure we get all output AND the return code
+                    # even if the command fails.
+                    wrapped_code = f"capture noisily {{\n{code}\n}}\ndisplay \"MCP_RC:\" _rc"
+                    ret = self.stata.run(wrapped_code, echo=echo)
+                    
                 if isinstance(ret, str) and ret:
                     ret_text = ret
-                    # Try to parse RC from the output text. 
-                    # Many Stata commands emit 'r(N);' on failure even when quietly.
+                    # Extract RC from our marker
+                    rc_match = re.search(r"MCP_RC:\s*(\d+)", ret_text)
+                    if rc_match:
+                        rc = int(rc_match.group(1))
+                    else:
+                        logger.debug("RC Marker NOT found in output: %r", ret_text)
+                    
+                    # Secondary check: parse RC from the output text. 
                     parsed_rc = self._parse_rc_from_text(ret_text)
                     if parsed_rc is not None:
-                        rc = parsed_rc
+                        if rc == 0:
+                            rc = parsed_rc
+                    
+                    if rc != 0:
+                        logger.debug("Detected non-zero RC: %d for command: %s", rc, code)
             except Exception as e:
                 exc = e
                 rc = 1
@@ -2707,8 +2733,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         is_string_vars = []
         if vars_used:
-            from sfi import Variable # type: ignore
-            is_string_vars = [Variable.isString(v) for v in vars_used]
+            from sfi import Data # type: ignore
+            is_string_vars = [Data.isVarTypeStr(v) or Data.isVarTypeStrL(v) for v in vars_used]
 
         indices: List[int] = []
         for start in range(0, n, chunk_size):
@@ -2877,7 +2903,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 finally:
                     self.stata.run(f"capture _return restore {hold_name}", echo=False)
 
-                raw_list = graph_list_str.split() if graph_list_str else []
+                import shlex
+                raw_list = shlex.split(graph_list_str or "")
 
                 # Map internal Stata names back to user-facing names when we have an alias.
                 reverse = getattr(self, "_graph_name_reverse", {})
@@ -3015,7 +3042,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 resolved = self._resolve_graph_name_for_stata(graph_name)
                 # Use display + export without name() for maximum compatibility.
                 # name(NAME) often fails in PyStata for non-active graphs (r(693)).
-                self._exec_no_capture_silent(f'quietly graph display "{resolved}"', echo=False)
+                display_resp = self._exec_no_capture_silent(f'quietly graph display "{resolved}"', echo=False)
+                if not display_resp.success:
+                    msg = display_resp.error.message if display_resp.error else f"Graph window for '{graph_name}' (resolved as '{resolved}') not found (rc={display_resp.rc})"
+                    raise RuntimeError(msg)
             
             cmd = f'quietly graph export "{filename_for_stata}", replace as({fmt})'
 
@@ -3358,22 +3388,24 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             svg_path_for_stata = svg_path.replace("\\", "/")
 
             try:
-                export_cmd = f'quietly graph export "{svg_path_for_stata}", name({resolved}) replace as(svg)'
-                export_resp = self._exec_no_capture_silent(export_cmd, echo=False)
+                # Setting the graph as current via 'graph display' and then exporting 
+                # is more reliable across Stata versions than using 'graph export, name()'.
+                display_cmd = f'quietly graph display "{resolved}"'
+                display_resp = self._exec_no_capture_silent(display_cmd, echo=False)
+                
+                if not display_resp.success:
+                    raise RuntimeError(display_resp.error.message if display_resp.error else f"Graph '{name}' (resolved as '{resolved}') not found (rc={display_resp.rc})")
 
-                if not export_resp.success:
-                    display_cmd = f'quietly graph display {resolved}'
-                    display_resp = self._exec_no_capture_silent(display_cmd, echo=False)
-                    if display_resp.success:
-                        export_cmd2 = f'quietly graph export "{svg_path_for_stata}", replace as(svg)'
-                        export_resp = self._exec_no_capture_silent(export_cmd2, echo=False)
-                    else:
-                        export_resp = display_resp
+                export_cmd = f'quietly graph export "{svg_path_for_stata}", replace as(svg)'
+                export_resp = self._exec_no_capture_silent(export_cmd, echo=False)
 
                 if export_resp.success and os.path.exists(svg_path) and os.path.getsize(svg_path) > 0:
                     with open(svg_path, "rb") as f:
                         return f.read()
-                error_msg = getattr(export_resp, 'error', 'Unknown error')
+                
+                # If we reached here, something failed.
+                error_info = getattr(export_resp, 'error', None)
+                error_msg = error_info.message if error_info else f"Stata error r({export_resp.rc})"
                 raise RuntimeError(f"Failed to export graph {name}: {error_msg}")
             finally:
                 if os.path.exists(svg_path):
