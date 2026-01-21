@@ -61,13 +61,3 @@ class GraphExport(BaseModel):
 class GraphExportResponse(BaseModel):
     graphs: List[GraphExport]
 
-
-class SessionInfo(BaseModel):
-    id: str
-    status: str
-    created_at: str
-    pid: Optional[int] = None
-
-
-class SessionListResponse(BaseModel):
-    sessions: List[SessionInfo]
