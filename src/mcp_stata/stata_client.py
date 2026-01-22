@@ -1651,7 +1651,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                         start_offset = os.path.getsize(smcl_path)
                     else:
                         # Create fallback SMCL log for authoritative output capture
-                        smcl_path = self._create_smcl_log_path(prefix="mcp_", max_hex=16, base_dir=cwd)
+                        smcl_path = self._create_smcl_log_path(prefix="mcp_", max_hex=16)
                         log_name = self._make_smcl_log_name()
                         self._open_smcl_log(smcl_path, log_name)
                     
@@ -1956,7 +1956,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
 
         # Create SMCL log path for authoritative output capture
-        smcl_path = self._create_smcl_log_path(base_dir=cwd)
+        smcl_path = self._create_smcl_log_path()
         smcl_log_name = self._make_smcl_log_name()
 
         # Inform the MCP client immediately where to read/tail the output.
@@ -2176,8 +2176,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         graph_cache = self._init_streaming_graph_cache(auto_cache_graphs, on_graph_cached, notify_log)
         _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
 
-        base_dir = cwd or os.path.dirname(effective_path)
-        smcl_path = self._create_smcl_log_path(base_dir=base_dir)
+        smcl_path = self._create_smcl_log_path()
         smcl_log_name = self._make_smcl_log_name()
 
         # Inform the MCP client immediately where to read/tail the output.
@@ -3621,8 +3620,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         smcl_path = None
 
         _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
-        base_dir = cwd or os.path.dirname(effective_path)
-        smcl_path = self._create_smcl_log_path(base_dir=base_dir)
+        smcl_path = self._create_smcl_log_path()
         smcl_log_name = self._make_smcl_log_name()
 
         rc = -1
