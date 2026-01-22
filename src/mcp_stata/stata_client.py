@@ -162,6 +162,8 @@ class StataClient:
         self._is_executing = False
         self._command_idx = 0  # Counter for user-initiated commands
         self._initialized = False
+        self._persistent_log_path = None
+        self._persistent_log_name = None
         from .graph_detector import GraphCreationDetector
         self._graph_detector = GraphCreationDetector(self)
 
@@ -170,6 +172,8 @@ class StataClient:
         inst._exec_lock = threading.RLock()
         inst._is_executing = False
         inst._command_idx = 0
+        inst._persistent_log_path = None
+        inst._persistent_log_name = None
         from .graph_detector import GraphCreationDetector
         inst._graph_detector = GraphCreationDetector(inst)
         return inst
@@ -241,100 +245,42 @@ class StataClient:
     def _open_smcl_log(self, smcl_path: str, log_name: str, *, quiet: bool = False) -> bool:
         path_for_stata = smcl_path.replace("\\", "/")
         base_cmd = f"log using \"{path_for_stata}\", replace smcl name({log_name})"
-        unnamed_cmd = f"log using \"{path_for_stata}\", replace smcl"
-        for attempt in range(4):
-            try:
-                logger.debug(
-                    "_open_smcl_log attempt=%s log_name=%s path=%s",
-                    attempt + 1,
-                    log_name,
-                    smcl_path,
-                )
-                logger.warning(
-                    "SMCL open attempt %s cwd=%s path=%s",
-                    attempt + 1,
-                    os.getcwd(),
-                    smcl_path,
-                )
-                logger.debug(
-                    "SMCL open attempt=%s cwd=%s path=%s cmd=%s",
-                    attempt + 1,
-                    os.getcwd(),
-                    smcl_path,
-                    base_cmd,
-                )
-                try:
-                    close_ret = self.stata.run("capture log close _all", echo=False)
-                    if close_ret:
-                        logger.warning("SMCL close_all output: %s", close_ret)
-                except Exception:
-                    pass
-                cmd = f"{'quietly ' if quiet else ''}{base_cmd}"
-                try:
-                    output_buf = StringIO()
-                    with redirect_stdout(output_buf), redirect_stderr(output_buf):
-                        self.stata.run(cmd, echo=False)
-                    ret = output_buf.getvalue().strip()
-                    if ret:
-                        logger.warning("SMCL log open output: %s", ret)
-                except Exception as e:
-                    logger.warning("SMCL log open failed (attempt %s): %s", attempt + 1, e)
-                    logger.warning("SMCL log open failed: %r", e)
-                    try:
-                        retry_buf = StringIO()
-                        with redirect_stdout(retry_buf), redirect_stderr(retry_buf):
-                            self.stata.run(base_cmd, echo=False)
-                        ret = retry_buf.getvalue().strip()
-                        if ret:
-                            logger.warning("SMCL log open output (no quiet): %s", ret)
-                    except Exception as inner:
-                        logger.warning("SMCL log open retry failed: %s", inner)
-                query_buf = StringIO()
-                try:
-                    with redirect_stdout(query_buf), redirect_stderr(query_buf):
-                        self.stata.run("log query", echo=False)
-                except Exception as query_err:
-                    query_buf.write(f"log query failed: {query_err!r}")
-                query_ret = query_buf.getvalue().strip()
-                logger.warning("SMCL log query output: %s", query_ret)
-
-                if query_ret:
-                    query_lower = query_ret.lower()
-                    log_confirmed = "log:" in query_lower and "smcl" in query_lower and " on" in query_lower
-                    if log_confirmed:
-                        self._last_smcl_log_named = True
-                        logger.info("SMCL log confirmed: %s", path_for_stata)
-                        return True
-                logger.warning("SMCL log not confirmed after open; query_ret=%s", query_ret)
-                try:
-                    unnamed_output = StringIO()
-                    with redirect_stdout(unnamed_output), redirect_stderr(unnamed_output):
-                        self.stata.run(unnamed_cmd, echo=False)
-                    unnamed_ret = unnamed_output.getvalue().strip()
-                    if unnamed_ret:
-                        logger.warning("SMCL log open output (unnamed): %s", unnamed_ret)
-                except Exception as e:
-                    logger.warning("SMCL log open failed (unnamed, attempt %s): %s", attempt + 1, e)
-                unnamed_query_buf = StringIO()
-                try:
-                    with redirect_stdout(unnamed_query_buf), redirect_stderr(unnamed_query_buf):
-                        self.stata.run("log query", echo=False)
-                except Exception as query_err:
-                    unnamed_query_buf.write(f"log query failed: {query_err!r}")
-                unnamed_query = unnamed_query_buf.getvalue().strip()
-                if unnamed_query:
-                    unnamed_lower = unnamed_query.lower()
-                    unnamed_confirmed = "log:" in unnamed_lower and "smcl" in unnamed_lower and " on" in unnamed_lower
-                    if unnamed_confirmed:
-                        self._last_smcl_log_named = False
-                        logger.info("SMCL log confirmed (unnamed): %s", path_for_stata)
-                        return True
-            except Exception as e:
-                logger.warning("Failed to open SMCL log (attempt %s): %s", attempt + 1, e)
-                if attempt < 3:
-                    time.sleep(0.1)
-        logger.warning("Failed to open SMCL log with cmd: %s", cmd)
-        return False
+        
+        # We no longer use "capture log close _all" because it would close the session log.
+        # Instead, we surgically close only the log name we intend to use.
+        try:
+            self.stata.run(f"capture log close {log_name}", echo=False)
+        except Exception:
+            pass
+            
+        cmd = f"{'quietly ' if quiet else ''}{base_cmd}"
+        try:
+            output_buf = StringIO()
+            with redirect_stdout(output_buf), redirect_stderr(output_buf):
+                self.stata.run(cmd, echo=False)
+            
+            # Verify success via log query
+            query_buf = StringIO()
+            with redirect_stdout(query_buf), redirect_stderr(query_buf):
+                self.stata.run("log query", echo=False)
+            
+            query_ret = query_buf.getvalue().strip().lower()
+            if "log:" in query_ret and "smcl" in query_ret and " on" in query_ret:
+                self._last_smcl_log_named = True
+                return True
+                
+        except Exception as e:
+            logger.warning("SMCL log open failed: %s", e)
+            
+        # Fallback to unnamed log
+        try:
+            unnamed_cmd = f"{'quietly ' if quiet else ''}log using \"{path_for_stata}\", replace smcl"
+            self.stata.run("capture log close", echo=False)
+            self.stata.run(unnamed_cmd, echo=False)
+            self._last_smcl_log_named = False
+            return True
+        except Exception:
+            return False
 
     def _close_smcl_log(self, log_name: str) -> None:
         try:
@@ -740,6 +686,30 @@ class StataClient:
             return ""
         except Exception as e:
             logger.warning(f"Failed to read SMCL file {path}: {e}")
+            return ""
+
+    def _read_persistent_log_chunk(self, start_offset: int) -> str:
+        """Read fresh chunk from persistent SMCL log starting at offset."""
+        if not self._persistent_log_path:
+            return ""
+        try:
+            with open(self._persistent_log_path, 'r', encoding='utf-8', errors='replace') as f:
+                f.seek(start_offset)
+                return f.read()
+        except PermissionError:
+            if os.name == "nt":
+                try:
+                    # Windows fallback for locked persistent log
+                    res = subprocess.run(f'type "{self._persistent_log_path}"', shell=True, capture_output=True)
+                    if res.returncode == 0:
+                        full_content = res.stdout.decode('utf-8', errors='replace')
+                        if len(full_content) > start_offset:
+                            return full_content[start_offset:]
+                        return ""
+                except Exception:
+                    pass
+            return ""
+        except Exception:
             return ""
 
     def _extract_error_from_smcl(self, smcl_content: str, rc: int) -> Tuple[str, str]:
@@ -1166,10 +1136,12 @@ class StataClient:
                 for path in candidates:
                     try:
                         # 1. Pre-flight check in a subprocess to capture hard exits/crashes
-                        sys.stderr.write(f"[mcp_stata] DEBUG: Pre-flight check for path '{path}'\n")
-                        sys.stderr.flush()
-                        
-                        preflight_code = f"""
+                        skip_preflight = os.environ.get("MCP_STATA_SKIP_PREFLIGHT") == "1"
+                        if not skip_preflight:
+                            sys.stderr.write(f"[mcp_stata] DEBUG: Pre-flight check for path '{path}'\n")
+                            sys.stderr.flush()
+                            
+                            preflight_code = f"""
 import sys
 import stata_setup
 from contextlib import redirect_stdout, redirect_stderr
@@ -1184,31 +1156,34 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         print(f'PREFLIGHT_FAIL: {{e}}', file=sys.stderr)
         sys.exit(1)
 """
-                        
-                        try:
-                            # Use shorter timeout for pre-flight if feasible, 
-                            # but keep it safe for slow environments. 15s is usually enough for a ping.
-                            res = subprocess.run(
-                                [sys.executable, "-c", preflight_code],
-                                capture_output=True, text=True, timeout=20
-                            )
-                            if res.returncode != 0:
-                                sys.stderr.write(f"[mcp_stata] Pre-flight failed (rc={res.returncode}) for '{path}'\n")
-                                if res.stdout.strip():
-                                    sys.stderr.write(f"--- Pre-flight stdout ---\n{res.stdout.strip()}\n")
-                                if res.stderr.strip():
-                                    sys.stderr.write(f"--- Pre-flight stderr ---\n{res.stderr.strip()}\n")
+                            
+                            try:
+                                # Use shorter timeout for pre-flight if feasible, 
+                                # but keep it safe for slow environments. 15s is usually enough for a ping.
+                                res = subprocess.run(
+                                    [sys.executable, "-c", preflight_code],
+                                    capture_output=True, text=True, timeout=20
+                                )
+                                if res.returncode != 0:
+                                    sys.stderr.write(f"[mcp_stata] Pre-flight failed (rc={res.returncode}) for '{path}'\n")
+                                    if res.stdout.strip():
+                                        sys.stderr.write(f"--- Pre-flight stdout ---\n{res.stdout.strip()}\n")
+                                    if res.stderr.strip():
+                                        sys.stderr.write(f"--- Pre-flight stderr ---\n{res.stderr.strip()}\n")
+                                    sys.stderr.flush()
+                                    last_error = f"Pre-flight failed: {res.stdout.strip()} {res.stderr.strip()}"
+                                    continue
+                                else:
+                                    sys.stderr.write(f"[mcp_stata] Pre-flight succeeded for '{path}'. Proceeding to in-process init.\n")
+                                    sys.stderr.flush()
+                            except Exception as pre_e:
+                                sys.stderr.write(f"[mcp_stata] Pre-flight execution error for '{path}': {repr(pre_e)}\n")
                                 sys.stderr.flush()
-                                last_error = f"Pre-flight failed: {res.stdout.strip()} {res.stderr.strip()}"
+                                last_error = pre_e
                                 continue
-                            else:
-                                sys.stderr.write(f"[mcp_stata] Pre-flight succeeded for '{path}'. Proceeding to in-process init.\n")
-                                sys.stderr.flush()
-                        except Exception as pre_e:
-                            sys.stderr.write(f"[mcp_stata] Pre-flight execution error for '{path}': {repr(pre_e)}\n")
+                        else:
+                            sys.stderr.write(f"[mcp_stata] DEBUG: Skipping pre-flight check for path '{path}' (MCP_STATA_SKIP_PREFLIGHT=1)\n")
                             sys.stderr.flush()
-                            last_error = pre_e
-                            continue
 
                         msg = f"[mcp_stata] DEBUG: In-process stata_setup.config('{path}', '{edition}')\n"
                         sys.stderr.write(msg)
@@ -1262,6 +1237,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     stata.run("display 1", echo=False)
                 self.stata = stata
                 self._initialized = True
+
+                # Initialize persistent session log
+                self._persistent_log_path = self._create_smcl_log_path(prefix="mcp_session_")
+                self._persistent_log_name = "_mcp_session"
+                path_for_stata = self._persistent_log_path.replace("\\", "/")
+                # Open the log once for the entire session, ensuring any previous one is closed
+                stata.run(f"capture log close {self._persistent_log_name}", echo=False)
+                stata.run(f'log using "{path_for_stata}", replace smcl name({self._persistent_log_name})', echo=False)
+                
                 sys.stderr.write("[mcp_stata] DEBUG: pystata warmed up successfully\n")
                 sys.stderr.flush()
             except BaseException as e:
@@ -1647,16 +1631,29 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         error_envelope = None
         smcl_content = ""
         smcl_path = None
+        
+        # Determine if we can use the persistent session log
+        use_persistent = (
+            self._persistent_log_path and 
+            os.path.exists(self._persistent_log_path) and 
+            cwd is None  # If cwd is set, we might prefer a local log or at least be careful
+        )
 
         with self._exec_lock:
             try:
                 from sfi import Scalar, SFIToolkit
                 with self._temp_cwd(cwd):
-                    # Create SMCL log for authoritative output capture
-                    # Use shorter unique path to avoid Windows path issues
-                    smcl_path = self._create_smcl_log_path(prefix="mcp_", max_hex=16, base_dir=cwd)
-                    log_name = self._make_smcl_log_name()
-                    self._open_smcl_log(smcl_path, log_name)
+                    start_offset = 0
+                    log_name = None
+                    
+                    if use_persistent:
+                        smcl_path = self._persistent_log_path
+                        start_offset = os.path.getsize(smcl_path)
+                    else:
+                        # Create fallback SMCL log for authoritative output capture
+                        smcl_path = self._create_smcl_log_path(prefix="mcp_", max_hex=16, base_dir=cwd)
+                        log_name = self._make_smcl_log_name()
+                        self._open_smcl_log(smcl_path, log_name)
                     
                     try:
                         with self._redirect_io(output_buffer, error_buffer):
@@ -1664,12 +1661,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                                 if trace:
                                     self.stata.run("set trace on")
 
-                                # Run the user code
-                                self.stata.run(code, echo=echo)
+                                # Hold name including high-entropy suffix for XDist safety
+                                self._hold_name = f"mcp_hold_{uuid.uuid4().hex[:12]}"
                                 
-                                # Hold results IMMEDIATELY to prevent clobbering by cleanup
-                                self._hold_name = f"mcp_hold_{uuid.uuid4().hex[:8]}"
-                                self.stata.run(f"capture _return hold {self._hold_name}", echo=False)
+                                # Optimize: bundle command with hold to save round-trips
+                                # We wrap the command in capture to ensure we get the RC and then hold
+                                combined_command = f"{code}\n_return hold {self._hold_name}"
+                                
+                                # Run the user code combined with hold
+                                self.stata.run(combined_command, echo=echo)
                                 
                             finally:
                                 if trace:
@@ -1678,9 +1678,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                                     except Exception:
                                         pass
                     finally:
-                        # Close SMCL log AFTER output redirection
-                        self._close_smcl_log(log_name)
-                        # Restore and capture results while still inside the lock
+                        if not use_persistent and log_name:
+                            # Close fallback SMCL log
+                            self._close_smcl_log(log_name)
+                        
+                        # Restore results from hold while still inside the lock
                         self._restore_results_from_hold("_hold_name")
 
             except Exception as e:
@@ -1691,9 +1693,21 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         # Read SMCL content as the authoritative source
         if smcl_path:
-            smcl_content = self._read_smcl_file(smcl_path)
-            # Clean up SMCL file
-            self._safe_unlink(smcl_path)
+            if use_persistent:
+                smcl_content = self._read_persistent_log_chunk(start_offset)
+                # Ensure the returned log_path points to a STANDALONE file containing
+                # only this command results, satisfying the contract.
+                standalone_path = self._create_smcl_log_path(prefix="mcp_standalone_", max_hex=16)
+                try:
+                    with open(standalone_path, "w", encoding="utf-8") as f:
+                        f.write(smcl_content)
+                    smcl_path = standalone_path
+                except Exception as e:
+                    logger.warning("Failed to create standalone log file: %s", e)
+            else:
+                smcl_content = self._read_smcl_file(smcl_path)
+                # Clean up fallback SMCL file
+                self._safe_unlink(smcl_path)
 
         stdout_content = output_buffer.getvalue()
         stderr_content = error_buffer.getvalue()

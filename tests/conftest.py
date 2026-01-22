@@ -31,6 +31,9 @@ def stata_client():
     from mcp_stata.stata_client import StataClient
     from mcp_stata import discovery
     
+    # Speed up tests by skipping the heavy subprocess pre-flight check in StataClient.init()
+    os.environ["MCP_STATA_SKIP_PREFLIGHT"] = "1"
+    
     stata_path = os.environ.get("STATA_PATH")
     if not stata_path or not os.path.exists(stata_path):
         stata_path, _ = discovery.find_stata_path()
