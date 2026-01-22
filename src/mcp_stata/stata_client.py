@@ -315,7 +315,7 @@ class StataClient:
         hold_name = getattr(self, hold_attr)
         try:
             self.stata.run(f"capture _return restore {hold_name}", echo=False)
-            self._last_results = self.get_stored_results(force_fresh=True)
+            self._last_results = None # Invalidate cache instead of fetching
         except Exception:
             pass
         finally:
@@ -1672,132 +1672,63 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         return f"Stata error r({rc})", context_str
 
     def _exec_with_capture(self, code: str, echo: bool = True, trace: bool = False, cwd: Optional[str] = None) -> CommandResponse:
-        if not self._initialized:
-            self.init()
-
+        """Executes a command and returns results in a structured envelope."""
+        if not self._initialized: self.init()
         self._increment_command_idx()
-        # Rewrite graph names with special characters to internal aliases
         code = self._maybe_rewrite_graph_name_in_command(code)
 
-        output_buffer = StringIO()
-        error_buffer = StringIO()
-        rc = 0
-        sys_error = None
-        error_envelope = None
-        smcl_content = ""
-        smcl_path = None
+        output_buffer, error_buffer = StringIO(), StringIO()
+        rc, sys_error = 0, None
         
-        # Determine if we can use the persistent session log
-        use_persistent = (
-            self._persistent_log_path and 
-            os.path.exists(self._persistent_log_path) and 
-            cwd is None  # If cwd is set, we might prefer a local log or at least be careful
-        )
-
         with self._exec_lock:
+            # Persistent log selection
+            use_p = self._persistent_log_path and os.path.exists(self._persistent_log_path) and cwd is None
+            smcl_path = self._persistent_log_path if use_p else self._create_smcl_log_path(prefix="mcp_", max_hex=16)
+            log_name = None if use_p else self._make_smcl_log_name()
+            start_off = os.path.getsize(smcl_path) if use_p else 0
+            if not use_p: self._open_smcl_log(smcl_path, log_name)
+
             try:
-                try:
-                    from sfi import Scalar, SFIToolkit
-                    with self._temp_cwd(cwd):
-                        start_offset = 0
-                        log_name = None
-                        
-                        if use_persistent:
-                            smcl_path = self._persistent_log_path
-                            start_offset = os.path.getsize(smcl_path)
-                        else:
-                            # Create fallback SMCL log for authoritative output capture
-                            smcl_path = self._create_smcl_log_path(prefix="mcp_", max_hex=16)
-                            log_name = self._make_smcl_log_name()
-                            self._open_smcl_log(smcl_path, log_name)
-                        
-                        try:
-                            with self._redirect_io(output_buffer, error_buffer):
-                                try:
-                                    if trace:
-                                        self.stata.run("set trace on")
-
-                                    # Hold name including high-entropy suffix for XDist safety
-                                    self._hold_name = f"mcp_hold_{uuid.uuid4().hex[:12]}"
-                                    
-                                    # Optimize: bundle command with hold to save round-trips
-                                    # We wrap the command in capture to ensure we get the RC and then hold
-                                    combined_command = f"{code}\n_return hold {self._hold_name}"
-                                    
-                                    # Run the user code combined with hold
-                                    self.stata.run(combined_command, echo=echo)
-                                    
-                                except Exception as e:
-                                    # Capture the user's RC IMMEDIATELY before finally blocks run
-                                    # PyStata's Scalar.getValue('c(rc)') often returns 0 after a SystemError,
-                                    # so we MUST parse the error message itself first.
-                                    rc_parsed = self._parse_rc_from_text(str(e))
-                                    if rc_parsed is not None:
-                                        rc = rc_parsed
-                                    else:
-                                        try:
-                                            from sfi import Scalar as SFI_Scalar
-                                            rc = int(float(SFI_Scalar.getValue("c(rc)") or 1))
-                                        except Exception:
-                                            rc = 1
-                                    raise
-                                finally:
-                                    if trace:
-                                        try:
-                                            self.stata.run("set trace off")
-                                        except Exception:
-                                            pass
-                        finally:
-                            if not use_persistent and log_name:
-                                # Close fallback SMCL log
-                                self._close_smcl_log(log_name)
-                            
-                            # Restore results from hold while still inside the lock
-                            # This may fail if the command above failed before hold, but that's okay
-                            # as we've already captured the RC.
-                            self._restore_results_from_hold("_hold_name")
-
-                except Exception as e:
-                    sys_error = str(e)
-                    # If rc wasn't captured in the inner block, try again
-                    if rc == 0:
-                        try:
-                            from sfi import Scalar as SFI_Scalar2
-                            rc = int(float(SFI_Scalar2.getValue("c(rc)") or 1))
-                        except Exception:
-                            # Fallback to parsing text
-                            parsed_rc = self._parse_rc_from_text(sys_error)
-                            rc = parsed_rc if parsed_rc is not None else 1
+                from sfi import Scalar
+                with self._temp_cwd(cwd), self._redirect_io(output_buffer, error_buffer):
+                    try:
+                        if trace: self.stata.run("set trace on")
+                        self._hold_name = f"mcp_hold_{uuid.uuid4().hex[:12]}"
+                        # Run command and snapshot results in one go
+                        self.stata.run(f"{code}\n_return hold {self._hold_name}", echo=echo)
+                    except Exception as e:
+                        rc = self._parse_rc_from_text(str(e)) or self._get_preserved_rc() or 1
+                        raise
+                    finally:
+                        if trace:
+                            try: self.stata.run("set trace off")
+                            except Exception: pass
+            except Exception as e:
+                sys_error = str(e)
             finally:
-                # FINAL STEP: Restore the user's actual RC so the Stata environment 
-                # remains exactly as it would be without MCP's internal cleanup.
-                # This runs even on failure in one of the cleanup steps.
-                try:
-                    if rc > 0:
-                        self.stata.run(f"capture error {rc}", echo=False)
-                    else:
-                        # Set RC to 0. 'capture' alone is a valid Stata command that does this.
-                        self.stata.run("capture", echo=False)
-                except Exception:
-                    pass
+                if not use_p and log_name: self._close_smcl_log(log_name)
+                self._restore_results_from_hold("_hold_name")
+                # Ensure the final RC is exactly what the command produced
+                self.stata.run(f"capture error {rc}" if rc > 0 else "capture", echo=False)
 
-        # Read SMCL content as the authoritative source
-        if smcl_path:
-            if use_persistent:
-                smcl_content = self._read_persistent_log_chunk(start_offset)
-                # Ensure the returned log_path points to a STANDALONE file containing
-                # only this command results, satisfying the contract.
-                standalone_path = self._create_smcl_log_path(prefix="mcp_standalone_", max_hex=16)
-                try:
-                    with open(standalone_path, "w", encoding="utf-8") as f:
-                        f.write(smcl_content)
-                    smcl_path = standalone_path
-                except Exception as e:
-                    logger.warning("Failed to create standalone log file: %s", e)
-            else:
-                smcl_content = self._read_smcl_file(smcl_path)
-                # Clean up fallback SMCL file
-                self._safe_unlink(smcl_path)
+        # Output extraction
+        smcl_content = self._read_persistent_log_chunk(start_off) if use_p else self._read_smcl_file(smcl_path)
+        if not use_p: self._safe_unlink(smcl_path)
+        
+        stdout = output_buffer.getvalue()
+        stderr = error_buffer.getvalue()
+        success = rc == 0 and sys_error is None
+        
+        error = None
+        if not success:
+            msg, context = self._extract_error_from_smcl(smcl_content, rc) if smcl_content else self._extract_error_and_context(stdout + stderr, rc)
+            error = ErrorEnvelope(message=msg, context=context, rc=rc, command=code, stdout=stdout, stderr=stderr)
+
+        return CommandResponse(
+            command=code, rc=rc, stdout=stdout, stderr=stderr,
+            smcl_output=smcl_content, log_path=smcl_path if use_p else None,
+            success=success, error=error
+        )
 
         stdout_content = output_buffer.getvalue()
         stderr_content = error_buffer.getvalue()
@@ -1906,92 +1837,60 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             error=error,
         )
 
-    def _exec_no_capture_silent(self, code: str, echo: bool = False, trace: bool = False) -> CommandResponse:
-        """Execute Stata code while suppressing stdout/stderr output."""
-        if not self._initialized:
-            self.init()
+    def _get_preserved_rc(self) -> int:
+        """Fetch current RC without mutating it."""
+        try:
+            from sfi import Scalar
+            return int(float(Scalar.getValue("c(rc)") or 0))
+        except Exception:
+            return 0
 
-        exc: Optional[Exception] = None
-        ret_text: Optional[str] = None
-        rc = 0
+    def _restore_state(self, hold_name: Optional[str], rc: int) -> None:
+        """Restores return results and RC in a single block."""
+        code = ""
+        if hold_name:
+            code += f"capture _return restore {hold_name}\n"
         
-        # Use unique names for isolation
-        import uuid
-        uid = uuid.uuid4().hex[:8]
-        hold_name = f"_mcp_hold_{uid}"
+        if rc > 0:
+            code += f"capture error {rc}\n"
+        else:
+            code += "capture\n"
+            
+        try:
+            self.stata.run(code, echo=False)
+            self._last_results = None
+        except Exception:
+            pass
 
-        with self._exec_lock:
-            # Capture the current RC first using SFI (non-mutating)
+    def _exec_no_capture_silent(self, code: str, echo: bool = False, trace: bool = False) -> CommandResponse:
+        """Executes code silently, preserving ALL state (RC, r, e, s)."""
+        hold_name = f"_mcp_sh_{uuid.uuid4().hex[:8]}"
+        preserved_rc = self._get_preserved_rc()
+        output_buffer, error_buffer = StringIO(), StringIO()
+        rc = 0
+
+        with self._exec_lock, self._redirect_io(output_buffer, error_buffer):
             try:
-                from sfi import Scalar
-                preserved_rc = int(float(Scalar.getValue("c(rc)") or 0))
-            except Exception:
-                preserved_rc = 0
-
-            try:
-                if trace:
-                    self.stata.run("set trace on")
-                
-                # Protect global return results from internal commands
-                self.stata.run(f"capture _return hold {hold_name}", echo=False)
-
-                output_log = StringIO()
-                with redirect_stdout(output_log), redirect_stderr(output_log):
-                    ret = self.stata.run(code, echo=echo)
-                
-                if isinstance(ret, str) and ret:
-                    ret_text = ret
-                    # Try to parse RC from the output text. 
-                    parsed_rc = self._parse_rc_from_text(ret_text)
-                    if parsed_rc is not None:
-                        rc = parsed_rc
-            except SystemError as e:
-                import traceback
-                traceback.print_exc()
-                exc = e
-                rc = 1
+                # Bundle everything to minimize round-trips
+                full_cmd = (
+                    f"capture _return hold {hold_name}\n"
+                    f"capture noisily {code}\n"
+                    f"local mcp_rc = _rc\n"
+                    f"capture _return restore {hold_name}\n"
+                    f"capture error {preserved_rc}"
+                )
+                self.stata.run(full_cmd, echo=echo)
+                from sfi import Macro
+                try: rc = int(float(Macro.getLocal("mcp_rc") or 0))
+                except: rc = 0
             except Exception as e:
-                exc = e
-                rc = 1
-            finally:
-                # Restore global state
-                try:
-                    # Restore r() results
-                    self.stata.run(f"capture _return restore {hold_name}", echo=False)
-                    # Restore the original RC via error command
-                    if preserved_rc > 0:
-                        self.stata.run(f"capture error {preserved_rc}", echo=False)
-                    else:
-                        self.stata.run("capture", echo=False)
-                except Exception:
-                    pass
-
-                if trace:
-                    try:
-                        self.stata.run("set trace off")
-                    except Exception as e:
-                        logger.warning("Failed to turn off Stata trace mode: %s", e)
-
-        stdout = ""
-        stderr = ""
-        success = rc == 0 and exc is None
-        error = None
-        if not success:
-            msg = str(exc) if exc else f"Stata error r({rc})"
-            error = ErrorEnvelope(
-                message=msg,
-                rc=rc,
-                command=code,
-                stdout=ret_text,
-            )
-
+                rc = self._parse_rc_from_text(str(e)) or 1
+            
         return CommandResponse(
-            command=code,
-            rc=rc,
-            stdout=ret_text or "",
-            stderr=None,
-            success=success,
-            error=error,
+            command=code, rc=rc,
+            stdout=output_buffer.getvalue(),
+            stderr=error_buffer.getvalue(),
+            success=rc == 0
         )
 
     def exec_lightweight(self, code: str) -> CommandResponse:
@@ -3300,43 +3199,51 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 from sfi import Scalar, Macro
                 results = {"r": {}, "e": {}, "s": {}}
                 
-                for rclass in ["r", "e", "s"]:
-                    # Restore with 'hold' to peek at results without losing them from the hold
-                    # Note: Stata 18+ supports 'restore ..., hold' which is ideal.
-                    self.stata.run(f"capture _return restore {hold_name}, hold", echo=False)
-                    
-                    # Fetch names using backtick expansion (which we verified works better than colon)
-                    # and avoid leading underscores which were causing syntax errors with 'global'
-                    self.stata.run(f"macro define mcp_scnames `: {rclass}(scalars)'", echo=False)
-                    self.stata.run(f"macro define mcp_macnames `: {rclass}(macros)'", echo=False)
-                    
-                    # 1. Capture Scalars
-                    names_str = Macro.getGlobal("mcp_scnames")
-                    if names_str:
-                        for name in names_str.split():
-                            try:
-                                val = Scalar.getValue(f"{rclass}({name})")
-                                results[rclass][name] = val
-                            except Exception:
-                                pass
-                                
-                    # 2. Capture Macros (strings)
-                    macros_str = Macro.getGlobal("mcp_macnames")
-                    if macros_str:
-                        for name in macros_str.split():
-                            try:
-                                # Restore/Hold again to be safe before fetching each macro
-                                self.stata.run(f"capture _return restore {hold_name}, hold", echo=False)
-                                # Capture the string value into a macro
-                                self.stata.run(f"macro define mcp_mval `{rclass}({name})'", echo=False)
-                                val = Macro.getGlobal("mcp_mval")
-                                results[rclass][name] = val
-                            except Exception:
-                                pass
+                # Bundle the name fetching into one block
+                # We fetch scalars and macros for r, e, and s in one go
+                fetch_names_block = (
+                    f"capture _return restore {hold_name}, hold\n"
+                    "macro define mcp_r_sc `: r(scalars)'\n"
+                    "macro define mcp_r_ma `: r(macros)'\n"
+                    "macro define mcp_e_sc `: e(scalars)'\n"
+                    "macro define mcp_e_ma `: e(macros)'\n"
+                    "macro define mcp_s_sc `: s(scalars)'\n"
+                    "macro define mcp_s_ma `: s(macros)'\n"
+                )
+                self.stata.run(fetch_names_block, echo=False)
                 
-                # Cleanup
-                self.stata.run("macro drop mcp_scnames mcp_macnames mcp_mval", echo=False)
-                self.stata.run(f"capture _return restore {hold_name}", echo=False) # Restore one last time to leave Stata in correct state
+                for rclass in ["r", "e", "s"]:
+                    sc_names = (Macro.getGlobal(f"mcp_{rclass}_sc") or "").split()
+                    ma_names = (Macro.getGlobal(f"mcp_{rclass}_ma") or "").split()
+                    
+                    # 1. Fetch Scalars (always valid via Scalar.getValue)
+                    for name in sc_names:
+                        try:
+                            # Scalar.getValue(r(mean)) works directly in SFI
+                            val = Scalar.getValue(f"{rclass}({name})")
+                            results[rclass][name] = val
+                        except Exception:
+                            pass
+                    
+                    # 2. Fetch Macros - this is the slow part if done one by one
+                    if ma_names:
+                        # Create a block to copy all macros to globals
+                        # Use a prefix to avoid collisions
+                        copy_block = f"capture _return restore {hold_name}, hold\n"
+                        for name in ma_names:
+                            # global mcp_rclass_name `rclass(name)'
+                            copy_block += f"global mcp_m_{rclass}_{name} `{rclass}({name})'\n"
+                        
+                        self.stata.run(copy_block, echo=False)
+                        
+                        for name in ma_names:
+                            results[rclass][name] = Macro.getGlobal(f"mcp_m_{rclass}_{name}")
+                            # Clean up as we go to save macro space? Or at the end.
+                            
+                # Final Cleanup of all temporary globals
+                self.stata.run("macro drop mcp_* mcp_m_*", echo=False)
+                
+                self.stata.run(f"capture _return restore {hold_name}", echo=False) 
                 
                 # Restore the original RC
                 if preserved_rc > 0:
