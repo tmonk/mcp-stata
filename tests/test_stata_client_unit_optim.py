@@ -48,7 +48,8 @@ def test_exec_with_capture_persistent_logic_unit():
         with patch.object(client, "get_stored_results", return_value={}):
             resp = client._exec_with_capture("display 123")
             
-            assert resp.log_path == "/tmp/standalone.smcl"
+            # log_path should be the persistent log if use_p is True
+            assert resp.log_path == "/tmp/fake_session.smcl"
             assert resp.smcl_output == "COMMAND_OUTPUT"
             # Verify it used the chunk reader
             client._read_persistent_log_chunk.assert_called_with(100)

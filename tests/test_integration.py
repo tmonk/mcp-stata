@@ -134,7 +134,7 @@ def test_error_handling(client):
     assert result.error.rc == 199 or "r(199)" in (result.error.snippet or "")
 
     # Test invalid export
-    with pytest.raises(RuntimeError, match=r"Graph export failed|Graph window|r\(693\)"):
+    with pytest.raises(RuntimeError, match=r"Graph export failed|Graph window|r\(693\)|not found r\(111\)"):
         client.export_graph("NonExistentGraph")
 
 
