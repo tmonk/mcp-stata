@@ -1,14 +1,16 @@
 import stata_setup
 stata_setup.config("/Applications/StataNow/", "mp")
 from pystata import stata
-import tempfile
 import os
+import uuid
+from .utils import get_writable_temp_dir
 
 print("=== Testing multiple concurrent logs ===\n")
 
-# Create temp files for logs
-log1_path = tempfile.mktemp(suffix='.smcl')
-log2_path = tempfile.mktemp(suffix='.smcl')
+# Create temp files for logs in a writable directory
+temp_dir = get_writable_temp_dir()
+log1_path = os.path.join(temp_dir, f"test_log1_{uuid.uuid4().hex[:8]}.smcl")
+log2_path = os.path.join(temp_dir, f"test_log2_{uuid.uuid4().hex[:8]}.smcl")
 
 stata.run("sysuse auto, clear")
 

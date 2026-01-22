@@ -5,6 +5,7 @@ import inspect
 import json
 import logging
 import os
+import pathlib
 import platform
 import re
 import subprocess
@@ -37,6 +38,7 @@ from .smcl.smcl2html import smcl_to_markdown
 from .streaming_io import FileTeeIO, TailBuffer
 from .graph_detector import StreamingGraphCache
 from .native_ops import fast_scan_log, compute_filter_indices
+from .utils import get_writable_temp_dir, register_temp_file, register_temp_dir
 
 logger = logging.getLogger("mcp_stata")
 
@@ -225,10 +227,12 @@ class StataClient:
         base_dir: Optional[str] = None,
     ) -> str:
         hex_id = uuid.uuid4().hex if max_hex is None else uuid.uuid4().hex[:max_hex]
-        base = os.path.realpath(tempfile.gettempdir())
-        smcl_path = os.path.join(base, f"{prefix}{hex_id}.smcl")
-        self._safe_unlink(smcl_path)
-        return smcl_path
+        # Use provided base_dir if any, otherwise fall back to validated temp dir
+        base = pathlib.Path(base_dir) if base_dir else pathlib.Path(get_writable_temp_dir())
+        smcl_path = base / f"{prefix}{hex_id}.smcl"
+        register_temp_file(smcl_path)
+        self._safe_unlink(str(smcl_path))
+        return str(smcl_path)
 
     @staticmethod
     def _make_smcl_log_name() -> str:
@@ -361,6 +365,7 @@ class StataClient:
         log_file = tempfile.NamedTemporaryFile(
             prefix="mcp_stata_",
             suffix=".log",
+            dir=get_writable_temp_dir(),
             delete=False,
             mode="w",
             encoding="utf-8",
@@ -368,6 +373,7 @@ class StataClient:
             buffering=1,
         )
         log_path = log_file.name
+        register_temp_file(log_path)
         tail = TailBuffer(max_chars=200000 if trace else 20000)
         tee = FileTeeIO(log_file, tail)
         return log_file, log_path, tail, tee
@@ -1245,7 +1251,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 raise RuntimeError(error_msg)
 
             # Cache the binary path for later use (e.g., PNG export on Windows)
-            self._stata_exec_path = os.path.abspath(stata_exec_path)
+            self._stata_exec_path = pathlib.Path(stata_exec_path).absolute()
 
             try:
                 sys.stderr.write("[mcp_stata] DEBUG: Importing pystata and warming up...\n")
@@ -2929,24 +2935,28 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         if not filename:
             suffix = f".{fmt}"
-            with tempfile.NamedTemporaryFile(prefix="mcp_stata_", suffix=suffix, delete=False) as tmp:
+            # Use validated temp dir to avoid Windows write permission errors
+            with tempfile.NamedTemporaryFile(prefix="mcp_stata_", suffix=suffix, dir=get_writable_temp_dir(), delete=False) as tmp:
                 filename = tmp.name
+            register_temp_file(filename)
         else:
             # Ensure fresh start
-            if os.path.exists(filename):
+            p_filename = pathlib.Path(filename)
+            if p_filename.exists():
                 try:
-                    os.remove(filename)
+                    p_filename.unlink()
                 except Exception:
                     pass
 
-        # Keep the user-facing path as a normal absolute Windows path
-        user_filename = os.path.abspath(filename)
+        # Keep the user-facing path as a normal absolute path
+        user_filename = pathlib.Path(filename).absolute()
 
         if fmt == "png" and os.name == "nt":
             # 1) Save graph to a .gph file from the embedded session
-            with tempfile.NamedTemporaryFile(prefix="mcp_stata_graph_", suffix=".gph", delete=False) as gph_tmp:
-                gph_path = gph_tmp.name
-            gph_path_for_stata = gph_path.replace("\\", "/")
+            with tempfile.NamedTemporaryFile(prefix="mcp_stata_graph_", suffix=".gph", dir=get_writable_temp_dir(), delete=False) as gph_tmp:
+                gph_path = pathlib.Path(gph_tmp.name)
+            register_temp_file(gph_path)
+            gph_path_for_stata = gph_path.as_posix()
             # Make the target graph current, then save without name() (which isn't accepted there)
             if graph_name:
                 self._exec_no_capture_silent(f'quietly graph display "{graph_name}"', echo=False)
@@ -2957,24 +2967,26 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 raise RuntimeError(msg)
 
             # 2) Prepare a do-file to export PNG externally
-            user_filename_fwd = user_filename.replace("\\", "/")
+            user_filename_fwd = user_filename.as_posix()
             do_lines = [
                 f'quietly graph use "{gph_path_for_stata}"',
                 f'quietly graph export "{user_filename_fwd}", replace as(png)',
                 "exit",
             ]
-            with tempfile.NamedTemporaryFile(prefix="mcp_stata_export_", suffix=".do", delete=False, mode="w", encoding="ascii") as do_tmp:
+            with tempfile.NamedTemporaryFile(prefix="mcp_stata_export_", suffix=".do", dir=get_writable_temp_dir(), delete=False, mode="w", encoding="ascii") as do_tmp:
                 do_tmp.write("\n".join(do_lines))
-                do_path = do_tmp.name
+                do_path = pathlib.Path(do_tmp.name)
+            register_temp_file(do_path)
 
             stata_exe = getattr(self, "_stata_exec_path", None)
-            if not stata_exe or not os.path.exists(stata_exe):
+            if not stata_exe or not pathlib.Path(stata_exe).exists():
                 raise RuntimeError("Stata executable path unavailable for PNG export")
 
-            workdir = os.path.dirname(do_path) or None
-            log_path = os.path.splitext(do_path)[0] + ".log"
+            workdir = do_path.parent
+            log_path = do_path.with_suffix(".log")
+            register_temp_file(log_path)
 
-            cmd = [stata_exe, "/e", "do", do_path]
+            cmd = [str(stata_exe), "/e", "do", str(do_path)]
             try:
                 completed = subprocess.run(
                     cmd,
@@ -2987,19 +2999,19 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 raise RuntimeError("External Stata export timed out")
             finally:
                 try:
-                    os.remove(do_path)
+                    do_path.unlink()
                 except Exception:
                     # Ignore errors during temporary do-file cleanup (file may not exist or be locked)
                     logger.warning("Failed to remove temporary do-file: %s", do_path, exc_info=True)
 
                 try:
-                    os.remove(gph_path)
+                    gph_path.unlink()
                 except Exception:
                     logger.warning("Failed to remove temporary graph file: %s", gph_path, exc_info=True)
 
                 try:
-                    if os.path.exists(log_path):
-                        os.remove(log_path)
+                    if log_path.exists():
+                        log_path.unlink()
                 except Exception:
                     logger.warning("Failed to remove temporary log file: %s", log_path, exc_info=True)
 
@@ -3009,7 +3021,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         else:
             # Stata prefers forward slashes in its command parser on Windows
-            filename_for_stata = user_filename.replace("\\", "/")
+            filename_for_stata = user_filename.as_posix()
 
             if graph_name:
                 resolved = self._resolve_graph_name_for_stata(graph_name)
@@ -3031,9 +3043,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     raise RuntimeError(msg)
                 resp = resp_retry
 
-        if os.path.exists(user_filename):
+        if user_filename.exists():
             try:
-                size = os.path.getsize(user_filename)
+                size = user_filename.stat().st_size
                 if size == 0:
                     raise RuntimeError(f"Graph export failed: produced empty file {user_filename}")
                 if size > self.MAX_GRAPH_BYTES:
@@ -3043,11 +3055,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             except Exception as size_err:
                 # Clean up oversized or unreadable files
                 try:
-                    os.remove(user_filename)
+                    user_filename.unlink()
                 except Exception:
                     pass
                 raise size_err
-            return user_filename
+            return str(user_filename)
 
         # If file missing, it failed. Check output for details.
         msg = resp.error.message if resp.error else "graph export failed: file missing"
@@ -3188,7 +3200,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     self._total_cache_size = 0  # Track total cache size in bytes
                     # Use unique identifier to avoid conflicts
                     unique_id = f"preemptive_cache_{uuid.uuid4().hex[:8]}_{os.getpid()}"
-                    self._preemptive_cache_dir = tempfile.mkdtemp(prefix=unique_id)
+                    self._preemptive_cache_dir = tempfile.mkdtemp(prefix=unique_id, dir=get_writable_temp_dir())
+                    register_temp_dir(self._preemptive_cache_dir)
                     self._cache_lock = threading.Lock()
                     self._cache_initialized = True
                     
@@ -3201,7 +3214,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     not self._preemptive_cache_dir or
                     not os.path.isdir(self._preemptive_cache_dir)):
                     unique_id = f"preemptive_cache_{uuid.uuid4().hex[:8]}_{os.getpid()}"
-                    self._preemptive_cache_dir = tempfile.mkdtemp(prefix=unique_id)
+                    self._preemptive_cache_dir = tempfile.mkdtemp(prefix=unique_id, dir=get_writable_temp_dir())
+                    register_temp_dir(self._preemptive_cache_dir)
     
     def _cleanup_cache(self) -> None:
         """Clean up cache directory and files."""
@@ -3351,7 +3365,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         def _export_svg_bytes(name: str) -> bytes:
             resolved = self._resolve_graph_name_for_stata(name)
 
-            temp_dir = tempfile.gettempdir()
+            temp_dir = get_writable_temp_dir()
             safe_temp_name = self._sanitize_filename(name)
             unique_filename = f"{safe_temp_name}_{uuid.uuid4().hex[:8]}_{os.getpid()}_{int(time.time())}.svg"
             svg_path = os.path.join(temp_dir, unique_filename)
@@ -3457,9 +3471,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     # Still return the result even if caching fails
                     # Create temp file for immediate use
                     safe_name = self._sanitize_filename(name)
-                    temp_path = os.path.join(tempfile.gettempdir(), f"{safe_name}_{uuid.uuid4().hex[:8]}.svg")
+                    temp_path = os.path.join(get_writable_temp_dir(), f"{safe_name}_{uuid.uuid4().hex[:8]}.svg")
                     with open(temp_path, 'wb') as f:
                         f.write(result)
+                    register_temp_file(temp_path)
                     exports.append(GraphExport(name=name, file_path=temp_path))
         
         # Log errors if any occurred

@@ -47,7 +47,20 @@ export STATA_PATH="/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
 set STATA_PATH="C:\Program Files\Stata18\StataMP-64.exe"
 ```
 
-If you prefer, add `STATA_PATH` to your MCP config's `env` for any IDE shown below. It's optional and only needed when discovery cannot find Stata.
+If you encounter write permission issues with temporary files (common on Windows), you can override the temporary directory location by setting `MCP_STATA_TEMP`:
+
+```bash
+# Example
+export MCP_STATA_TEMP="/path/to/writable/temp"
+```
+
+The server will automatically try the following locations in order of preference:
+1. `MCP_STATA_TEMP` environment variable
+2. System temporary directory
+3. `~/.mcp-stata/temp`
+4. Current working directory subdirectory (`.tmp/`)
+
+If you prefer, add these variables to your MCP config's `env` for any IDE shown below. It's optional and only needed when discovery cannot find Stata.
 
 Optional `env` example (add inside your MCP server entry):
 
