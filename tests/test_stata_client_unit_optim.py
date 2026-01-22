@@ -1,7 +1,28 @@
 import os
 import tempfile
+import sys
 import pytest
 from unittest.mock import MagicMock, patch
+
+@pytest.fixture(autouse=True)
+def mock_sfi_manager():
+    """Surgical SFI mock that cleans up after each test."""
+    mock = MagicMock()
+    # Save original if it exists
+    old_sfi = sys.modules.get("sfi")
+    sys.modules["sfi"] = mock
+    
+    # We also need to mock mcp_stata.stata_client.Scalar/Macro if they were already imported
+    # but since they are imported inside methods, sys.modules is enough.
+    
+    yield mock
+    
+    # Restore
+    if old_sfi:
+        sys.modules["sfi"] = old_sfi
+    else:
+        sys.modules.pop("sfi", None)
+
 from mcp_stata.stata_client import StataClient
 
 def test_read_persistent_log_chunk_unit():
@@ -27,7 +48,7 @@ def test_read_persistent_log_chunk_unit():
         if os.path.exists(log_path):
             os.unlink(log_path)
 
-def test_exec_with_capture_persistent_logic_unit():
+def test_exec_with_capture_persistent_logic_unit(mock_sfi_manager):
     """Verify the flow of _exec_with_capture when using persistent logs."""
     client = StataClient()
     client.stata = MagicMock()
@@ -35,46 +56,55 @@ def test_exec_with_capture_persistent_logic_unit():
     
     # Setup persistent state
     client._persistent_log_path = "/tmp/fake_session.smcl"
+    client._persistent_log_name = "_mcp_session"
     
     # Mock OS/file operations
     with patch("os.path.exists", return_value=True), \
          patch("os.path.getsize", return_value=100), \
          patch.object(client, "_read_persistent_log_chunk", return_value="COMMAND_OUTPUT"), \
-         patch.object(client, "_create_smcl_log_path", return_value="/tmp/standalone.smcl"), \
-         patch.dict("sys.modules", {"sfi": MagicMock()}), \
+         patch.object(client, "_create_smcl_log_path", side_effect=["/tmp/mcp_chunk_123.smcl", "/tmp/standalone.smcl"]), \
          patch("builtins.open", MagicMock()):
+        
+        mock_sfi_manager.Scalar.getValue.return_value = 0
         
         # We don't want it to actually run Stata
         with patch.object(client, "get_stored_results", return_value={}):
             resp = client._exec_with_capture("display 123")
             
-            # log_path should be the persistent log if use_p is True
-            assert resp.log_path == "/tmp/fake_session.smcl"
+            # log_path should be the chunk log (isolated) if use_p is True
+            assert "/tmp/mcp_chunk_" in resp.log_path
             assert resp.smcl_output == "COMMAND_OUTPUT"
             # Verify it used the chunk reader
             client._read_persistent_log_chunk.assert_called_with(100)
+            
+            # Verify bundle had log off/on for flushing
+            found_flush = False
+            for call in client.stata.run.call_args_list:
+                if "log off _mcp_session" in call.args[0] and "log on _mcp_session" in call.args[0]:
+                    found_flush = True
+            assert found_flush
 
-def test_open_smcl_log_surgical_unit():
+def test_open_smcl_log_surgical_unit(mock_sfi_manager):
     """Verify that _open_smcl_log uses named closure instead of _all."""
     client = StataClient()
     client.stata = MagicMock()
     client._initialized = True
     
-    # Mock log query to return success
-    query_mock = MagicMock()
-    query_mock.getvalue.return_value = "Log: ... ON ... SMCL"
+    # Mock Scalar to return success (rc=0)
+    mock_sfi_manager.Scalar.getValue.return_value = 0
     
-    with patch("mcp_stata.stata_client.StringIO", return_value=query_mock), \
-         patch("mcp_stata.stata_client.redirect_stdout"), \
-         patch("mcp_stata.stata_client.redirect_stderr"):
-        
-        client._open_smcl_log("/path/to/log.smcl", "my_special_log")
-        
-        # Check that it tried to close ONLY the named log
-        client.stata.run.assert_any_call("capture log close my_special_log", echo=False)
-        # Verify it DID NOT call close _all
-        for call in client.stata.run.call_args_list:
-            assert "close _all" not in call.args[0]
+    client._open_smcl_log("/path/to/log.smcl", "my_special_log")
+    
+    # Check that it tried to close the named log (part of the bundle)
+    found_close = False
+    for call in client.stata.run.call_args_list:
+        if "capture quietly log close my_special_log" in call.args[0]:
+            found_close = True
+    assert found_close
+    
+    # Verify it DID NOT call close _all
+    for call in client.stata.run.call_args_list:
+        assert "close _all" not in call.args[0]
 
 def test_init_persistent_log_setup_unit():
     """Verify that init() sets up the persistent log correctly."""

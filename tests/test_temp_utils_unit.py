@@ -42,8 +42,8 @@ def test_get_writable_temp_dir_system_fallback(tmp_path):
         del os.environ["MCP_STATA_TEMP"]
         
     path = get_writable_temp_dir()
-    # On most systems this will be tempfile.gettempdir()
-    assert path == str(pathlib.Path(tempfile.gettempdir()).resolve())
+    # Resolve both to handle macOS /private/var symlink
+    assert pathlib.Path(path).resolve() == pathlib.Path(tempfile.gettempdir()).resolve()
 
 def test_get_writable_temp_dir_unwritable_system_fallback(tmp_path):
     """Test fallback when system temp is unwritable."""

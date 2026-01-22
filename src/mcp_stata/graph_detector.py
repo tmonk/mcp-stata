@@ -14,6 +14,8 @@ import threading
 import time
 from typing import List, Set, Callable, Dict, Any
 import logging
+import uuid
+import shlex
 
 
 # SFI is always available
@@ -54,6 +56,78 @@ class GraphCreationDetector:
         # detected when a new command starts. Within a single command, the 
         # detected_graphs set in the cache will prevent duplicates.
         return f"{graph_name}_{cmd_idx}"
+
+    def _get_graph_inventory(self) -> tuple[List[str], Dict[str, str]]:
+        """Get both the list of graphs and their timestamps in a single Stata call."""
+        if not self._stata_client or not hasattr(self._stata_client, "stata"):
+            return [], {}
+            
+        try:
+            # Use the lock from client to prevent concurrency issues with pystata
+            exec_lock = getattr(self._stata_client, "_exec_lock", None)
+            ctx = exec_lock if exec_lock else contextlib.nullcontext()
+            
+            with ctx:
+                hold_name = f"_mcp_detector_inv_{int(time.time() * 1000 % 1000000)}"
+                from sfi import Macro
+                
+                # Bundle to get everything in one round trip
+                # 1. Hold results
+                # 2. Get list of graphs in memory
+                # 3. Store list in global
+                # 4. Loop over list to get timestamps
+                # 5. Restore results
+                bundle = [
+                    f"capture _return hold {hold_name}",
+                    "quietly graph dir, memory",
+                    "local list `r(list)'",
+                    "macro define mcpinvlist \"`r(list)'\"",
+                    "local i = 0",
+                    "foreach g of local list {",
+                    "  capture quietly graph describe `g'",
+                    "  macro define mcpinvts`i' \"`r(command_date)'_`r(command_time)'\"",
+                    "  local i = `i' + 1",
+                    "}",
+                    "macro define mcpinvcount \"`i'\"",
+                    f"capture _return restore {hold_name}"
+                ]
+                
+                self._stata_client.stata.run("\n".join(bundle), echo=False)
+                
+                # Fetch result list
+                raw_list_str = Macro.getGlobal("mcpinvlist")
+                count_str = Macro.getGlobal("mcpinvcount")
+                
+                if not raw_list_str:
+                    return [], {}
+                    
+                # Handle quoted names if any (spaces in names)
+                try:
+                    graph_names = shlex.split(raw_list_str)
+                except Exception:
+                    graph_names = raw_list_str.split()
+                
+                # Map internal names back to user-facing names if aliases exist
+                reverse = getattr(self._stata_client, "_graph_name_reverse", {})
+                user_names = [reverse.get(n, n) for n in graph_names]
+                
+                # Fetch timestamps and map them to user names
+                count = int(float(count_str)) if count_str else 0
+                
+                timestamps = {}
+                for i in range(count):
+                    ts = Macro.getGlobal(f"mcpinvts{i}")
+                    if ts and i < len(user_names):
+                        # Use user_names to match what the rest of the system expects
+                        timestamps[user_names[i]] = ts
+                        
+                return user_names, timestamps
+        except Exception as e:
+            logger.debug(f"Inventory fetch failed: {e}")
+            return [], {}
+        except Exception as e:
+            logger.debug(f"Inventory fetch failed: {e}")
+            return [], {}
 
     def _get_graph_timestamp(self, graph_name: str) -> str:
         """Get the creation/modification timestamp of a graph using graph describe.
@@ -106,9 +180,9 @@ class GraphCreationDetector:
         
         with self._lock:
             try:
-                # Get current graph state using pystata's sfi interface
-                current_graphs = self._get_current_graphs_from_pystata()
+                # Get current graph state - this now uses a single bundle (1 round trip)
                 current_state = self._get_graph_state_from_pystata()
+                current_graphs = list(current_state.keys())
                 
                 # Compare with last known state to detect new graphs
                 new_graphs = []
@@ -192,12 +266,9 @@ class GraphCreationDetector:
         graph_state = {}
         
         try:
-            current_graphs = self._get_current_graphs_from_pystata()
+            # Combined fetch for both list and timestamps (1 round trip)
+            current_graphs, timestamps = self._get_graph_inventory()
             cmd_idx = getattr(self._stata_client, "_command_idx", 0)
-            
-            # PRE-FETCH: Get timestamps for all current graphs in a single batch
-            # to minimize Stata-Python boundary crossings.
-            timestamps = self._get_graph_timestamps(current_graphs)
             
             for graph_name in current_graphs:
                 try:

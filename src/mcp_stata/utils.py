@@ -65,7 +65,9 @@ def _signal_handler(signum, frame):
 
 # Register signal handlers for graceful cleanup on termination
 try:
-    if threading.current_thread() is threading.main_thread():
+    # Avoid hijacking signals if we are running in a test environment or not in main thread
+    is_pytest = "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
+    if threading.current_thread() is threading.main_thread() and not is_pytest:
         signal.signal(signal.SIGTERM, _signal_handler)
         signal.signal(signal.SIGINT, _signal_handler)
 except (ValueError, RuntimeError):

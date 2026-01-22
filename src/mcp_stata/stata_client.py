@@ -245,65 +245,86 @@ class StataClient:
     def _make_smcl_log_name() -> str:
         return f"_mcp_smcl_{uuid.uuid4().hex[:8]}"
 
+    def _run_internal(self, code: str, echo: bool = False) -> str:
+        """Run Stata code while strictly ensuring NO output reaches stdout."""
+        if not self._initialized:
+            self.init()
+        with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
+            return self.stata.run(code, echo=echo)
+
     def _open_smcl_log(self, smcl_path: str, log_name: str, *, quiet: bool = False) -> bool:
         path_for_stata = smcl_path.replace("\\", "/")
         base_cmd = f"log using \"{path_for_stata}\", replace smcl name({log_name})"
         
-        # We no longer use "capture log close _all" because it would close the session log.
-        # Instead, we surgically close only the log name we intend to use.
+        # In multi-threaded environments (like pytest-xdist), we must be extremely
+        # careful with the singleton Stata instance.
+        from sfi import Scalar
+        
         try:
-            self.stata.run(f"capture log close {log_name}", echo=False)
-        except Exception:
-            pass
+            # Bundle both close and open to minimize roundtrips
+            # Use a unique scalar to capture the RC of the log using command
+            log_rc_scalar = f"_mcp_log_rc_{uuid.uuid4().hex[:8]}"
+            bundle = (
+                f"capture quietly log close {log_name}\n"
+                f"capture {'quietly ' if quiet else ''}{base_cmd}\n"
+                f"scalar {log_rc_scalar} = _rc"
+            )
+            logger.debug(f"Opening SMCL log with bundle: {bundle}")
+            self._run_internal(bundle, echo=False)
             
-        cmd = f"{'quietly ' if quiet else ''}{base_cmd}"
-        try:
-            output_buf = StringIO()
-            with redirect_stdout(output_buf), redirect_stderr(output_buf):
-                try:
-                    # In some environments, name() option in 'log using' 
-                    # can r(603) if many logs are open.
-                    self.stata.run(cmd, echo=False)
-                except SystemError:
-                    import traceback
-                    sys.stderr.write(traceback.format_exc())
-                    sys.stderr.flush()
-                    raise
+            try:
+                rc_val = Scalar.getValue(log_rc_scalar)
+                logger.debug(f"Log RC: {rc_val}")
+                # Clean up scalar
+                self._run_internal(f"capture scalar drop {log_rc_scalar}", echo=False)
+                if rc_val == 0:
+                    self._last_smcl_log_named = True
+                    return True
+            except Exception as e:
+                logger.debug(f"Failed to get log scalar {log_rc_scalar}: {e}")
+                pass
             
-            cmd_out = output_buf.getvalue()
-            # If the log was refused, we attempt to clear non-session logs and retry.
-            if "smcl refused log request" in cmd_out.lower() or "r(603)" in cmd_out:
-                logger.debug("SMCL named log refused, clearing and retrying.")
-                self.stata.run('local logs : list clean c(logs)\nforeach l in `logs\' {\n  if "`l\'" != "_mcp_session" {\n    capture log close `l\'\n  }\n}', echo=False)
-                # Also try to close unnamed log if it's open and blocking
-                self.stata.run("capture log close", echo=False)
-                # Retry once
-                self.stata.run(cmd, echo=False)
-
-            # Verify success via log query
-            query_buf = StringIO()
-            with redirect_stdout(query_buf), redirect_stderr(query_buf):
-                self.stata.run("log query", echo=False)
+            # If still not open, try clearing other logs and retry
+            log_rc_scalar = f"_mcp_log_rc_retry_{uuid.uuid4().hex[:8]}"
+            bundle = (
+                "capture quietly log close\n"
+                f"capture {'quietly ' if quiet else ''}{base_cmd}\n"
+                f"scalar {log_rc_scalar} = _rc"
+            )
+            logger.debug(f"Retrying SMCL log with bundle: {bundle}")
+            self._run_internal(bundle, echo=False)
             
-            query_ret = query_buf.getvalue().strip().lower()
-            if "log:" in query_ret and "smcl" in query_ret and " on" in query_ret:
-                self._last_smcl_log_named = True
-                return True
-            else:
-                logger.warning("SMCL log query failed. Output: %s", query_ret)
+            try:
+                rc_val = Scalar.getValue(log_rc_scalar)
+                logger.debug(f"Retry Log RC: {rc_val}")
+                # Clean up scalar
+                self._run_internal(f"capture scalar drop {log_rc_scalar}", echo=False)
+                if rc_val == 0:
+                    self._last_smcl_log_named = True
+                    return True
+            except Exception as e:
+                logger.debug(f"Failed to get retry log scalar {log_rc_scalar}: {e}")
+                pass
                 
         except Exception as e:
             logger.warning("SMCL log open exception: %s", e)
             
+        return False
+            
         # Fallback to unnamed log
         try:
             unnamed_cmd = f"{'quietly ' if quiet else ''}log using \"{path_for_stata}\", replace smcl"
-            self.stata.run("capture log close", echo=False)
-            self.stata.run(unnamed_cmd, echo=False)
-            self._last_smcl_log_named = False
-            return True
+            self._run_internal(f"capture quietly log close", echo=False)
+            self._run_internal(f"capture {unnamed_cmd}", echo=False)
+            try:
+                if Scalar.getValue("c(log)") == "on":
+                    self._last_smcl_log_named = False
+                    return True
+            except:
+                pass
         except Exception:
-            return False
+            pass
+        return False
 
     def _close_smcl_log(self, log_name: str) -> None:
         if log_name == "_mcp_session":
@@ -311,9 +332,9 @@ class StataClient:
         try:
             use_named = getattr(self, "_last_smcl_log_named", None)
             if use_named is False:
-                self.stata.run("capture log close", echo=False)
+                self._run_internal("capture quietly log close", echo=False)
             else:
-                self.stata.run(f"capture log close {log_name}", echo=False)
+                self._run_internal(f"capture quietly log close {log_name}", echo=False)
         except Exception:
             pass
 
@@ -322,7 +343,7 @@ class StataClient:
             return
         hold_name = getattr(self, hold_attr)
         try:
-            self.stata.run(f"capture _return restore {hold_name}", echo=False)
+            self._run_internal(f"capture _return restore {hold_name}", echo=False)
             self._last_results = None # Invalidate cache instead of fetching
         except Exception:
             pass
@@ -554,6 +575,7 @@ class StataClient:
         exc: Optional[Exception] = None
         with self._exec_lock:
             self._is_executing = True
+            self._last_results = None # Invalidate results cache
             try:
                 from sfi import Scalar, SFIToolkit  # Import SFI tools
                 with self._temp_cwd(cwd):
@@ -582,39 +604,32 @@ class StataClient:
                                 try:
                                     if trace:
                                         self.stata.run("set trace on")
-                                    logger.debug("running Stata command echo=%s: %s", echo, command)
-                                    try:
-                                        ret = self.stata.run(command, echo=echo)
-                                        rc = 0
-                                    except SystemError as e:
-                                        # Capture RC from error message
-                                        rc_parsed = self._parse_rc_from_text(str(e))
-                                        if rc_parsed is not None:
-                                            rc = rc_parsed
-                                        else:
-                                            rc = self._get_rc_from_scalar(Scalar)
-                                            if rc == 0: rc = 1 # Fallback
-                                        raise
                                     
-                                    if ret:
-                                        logger.debug("stata.run output: %s", ret)
-
-                                    # Success path: rc is definitely 0.
-                                    rc = 0
-
-                                    setattr(self, hold_attr, f"mcp_hold_{uuid.uuid4().hex[:8]}")
+                                    # Optimization: Combined bundle for streaming too.
+                                    # Consolidates hold and potentially flush into one call.
+                                    self._hold_name_stream = f"mcp_hold_{uuid.uuid4().hex[:8]}"
+                                    flush_cmd = "\ncapture quietly log off _mcp_session\ncapture quietly log on _mcp_session" if self._persistent_log_path else ""
+                                    
+                                    # Initialization logic for locals can be sensitive.
+                                    # Since each run() in pystata starts a new context for locals unless it's a file,
+                                    # we use a global scalar for the return code.
+                                    bundle = (
+                                        f"capture noisily {command}\n"
+                                        f"scalar _mcp_rc = _rc\n"
+                                        f"capture _return hold {self._hold_name_stream}{flush_cmd}"
+                                    )
+                                    
+                                    logger.debug("running Stata bundle echo=%s", echo)
+                                    # Using direct stata.run because tee redirection is already active
+                                    ret = self.stata.run(bundle, echo=echo)
+                                    
+                                    # Retrieve RC via SFI for accuracy
                                     try:
-                                        self.stata.run(
-                                            f"capture _return hold {getattr(self, hold_attr)}",
-                                            echo=False,
-                                        )
-                                    except SystemError:
-                                        import traceback
-                                        h_name = getattr(self, hold_attr)
-                                        sys.stderr.write(traceback.format_exc())
-                                        sys.stderr.flush()
-                                        raise
-
+                                        rc_val = Scalar.getValue("_mcp_rc")
+                                        rc = int(float(rc_val)) if rc_val is not None else 0
+                                    except:
+                                        rc = 0
+                                        
                                     if isinstance(ret, str) and ret:
                                         try:
                                             tee.write(ret)
@@ -622,13 +637,13 @@ class StataClient:
                                             pass
                                 except Exception as e:
                                     exc = e
-                                    logger.error("stata.run failed: %r", e)
+                                    logger.error("stata.run bundle failed: %r", e)
                                     if rc in (-1, 0):
                                         rc = 1
                                 finally:
                                     if trace:
                                         try:
-                                            self.stata.run("set trace off")
+                                            self._run_internal("set trace off")
                                         except Exception:
                                             pass
                         finally:
@@ -637,10 +652,8 @@ class StataClient:
                             
                             # Final state restoration (invisibility)
                             try:
-                                if rc > 0:
-                                    self.stata.run(f"capture error {rc}", echo=False)
-                                else:
-                                    self.stata.run("capture", echo=False)
+                                # Set c(rc) for the environment
+                                self._run_internal(f"capture error {rc}" if rc > 0 else "capture", echo=False)
                             except Exception:
                                 pass
                         return rc, exc
@@ -758,45 +771,45 @@ class StataClient:
                 f.seek(start_offset)
                 content = f.read()
 
-            # Try to match the header anywhere in the content we just read.
-            # SMCL log start pattern for named logs often looks like:
-            # {smcl}\n{txt}{sf}{ul off}{.-}\n      name:  {res}_mcp_session\n...
-            # Note: The {smcl} tag might be missing if we seeked into the middle of it.
-            header_pattern = r"(?:\{smcl\}\r?\n?)?\{txt\}\{sf\}\{ul off\}\{\.-\}\r?\n\s+name:\s+\{res\}"
+            if not content:
+                return ""
+
+            # Simplification: SMCL logs always start headers with {smcl} or {txt}{sf}
+            # and end them with {.-}. We want to strip these.
             
-            # Use finditer to get ALL headers and strip them all
+            # 1. Identify all header blocks
+            # A header block starts with {smcl} or {txt}{sf}{ul off}{.-} 
+            # and ends with {.-}
+            finished_content = content
+            
+            # We look for the common pattern of a log header
+            # {smcl}\n{txt}{sf}{ul off}{.-}\n      name: ... \n{.-}
+            # Using a greedy approach to find the LAST {.-} of a header block
+            header_start_pattern = r"(?:\{smcl\}\r?\n?)?\{txt\}\{sf\}\{ul off\}\{\.-\}"
+            
             pieces = []
-            last_idx = 0
-            # Explicitly match name: _mcp_session but be more flexible with whitespace and name length
-            header_pattern = r"(?:\{smcl\}\r?\n?)?\{txt\}\{sf\}\{ul off\}\{\.-\}\r?\n\s+name:\s+\{res\}_mcp_session"
-            
-            for m in re.finditer(header_pattern, content):
-                # Save what we had before this header
-                chunk_before = content[last_idx:m.start()]
-                
-                # Check for {smcl} right before if we matched the shorter pattern
-                # (Pattern already handles {smcl} optionally, but let's be rigorous)
-                pieces.append(chunk_before)
-                
-                # Skip the header block. Find the closing {.-}
-                header_end = content.find("{.-}", m.end())
+            curr_pos = 0
+            for match in re.finditer(header_start_pattern, content):
+                # Add any content before this header
+                pieces.append(content[curr_pos:match.start()])
+                # Find the end of this header block
+                header_end = content.find("{.-}", match.end())
                 if header_end != -1:
-                    last_idx = header_end + 4
+                    curr_pos = header_end + 4
                 else:
-                    last_idx = m.end()
+                    curr_pos = match.end()
             
-            # Add the final piece
-            pieces.append(content[last_idx:])
+            # Add remaining content
+            pieces.append(content[curr_pos:])
             res_content = "".join(pieces)
             
-            # If the user is getting content they shouldn't (leakage from previous command),
-            # it might be because start_offset was calculated incorrectly or the file 
-            # hasn't flushed. We'll strip any leading data that looks like a command block 
-            # if we see CMD1... but we're looking for CMD2. 
-            # However, the most likely culprit is the {smcl} tag at the very top of the 
-            # file which we might be hitting if start_offset is 0 or low.
+            # Final cleanup: If we seeked into the middle of a command, we might see 
+            # some residual SMCL tags at the very beginning.
+            res_content = res_content.lstrip()
+            if res_content.startswith("{smcl}"):
+                res_content = res_content[6:]
             
-            return res_content.lstrip()
+            return res_content
         except PermissionError:
             if os.name == "nt":
                 try:
@@ -837,9 +850,25 @@ class StataClient:
         error_lines = []
         error_start_idx = -1
         
+        # Skip the very last few lines if they contain our cleanup noise
+        # like "capture error 111" or "log flush invalid"
+        internal_noise_patterns = [
+            "flush invalid",
+            "capture error",
+            "search r(",
+            "r(198);",
+            "r(111);"
+        ]
+        
         for i in range(len(lines) - 1, -1, -1):
             line = lines[i]
             if '{err}' in line:
+                # Is this internal noise?
+                is_noise = any(p in line.lower() for p in internal_noise_patterns)
+                if is_noise and error_start_idx == -1:
+                    # If we only have noise at the very end, we should keep looking back
+                    continue
+
                 if error_start_idx == -1:
                     error_start_idx = i
                 # Walk backwards to find consecutive {err} lines
@@ -1718,6 +1747,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         """Executes a command and returns results in a structured envelope."""
         if not self._initialized: self.init()
         self._increment_command_idx()
+        self._last_results = None # Invalidate results cache
         
         code = self._maybe_rewrite_graph_name_in_command(code)
 
@@ -1733,39 +1763,49 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             # Flush before seeking to get accurate file size for offset
             if use_p:
                 try: 
-                    self.stata.run("quietly log flush _mcp_session", echo=False)
+                    self.stata.run("capture quietly log flush _mcp_session", echo=False)
                 except: pass
                 
             start_off = os.path.getsize(smcl_path) if use_p else 0
             if not use_p: self._open_smcl_log(smcl_path, log_name)
 
+            rc = 0
+            sys_error = None
             try:
-                from sfi import Scalar
+                from sfi import Scalar, Macro
                 with self._temp_cwd(cwd), self._redirect_io(output_buffer, error_buffer):
                     try:
                         if trace: self.stata.run("set trace on")
                         self._hold_name = f"mcp_hold_{uuid.uuid4().hex[:12]}"
-                        inner_cmd = f"{{\n{code}\n}}" if "\n" in code.strip() else code
-                        # Bundled Shield: Capture RC and hold results in one bridge crossing.
-                        # This ensures invisibility even if the user command fails.
-                        bundle = (
-                            f"capture noisily {inner_cmd}\n"
-                            f"local _mcp_rc = _rc\n"
-                            f"capture _return hold {self._hold_name}\n"
-                            f"capture error `_mcp_rc'"
-                        )
-                        self.stata.run(bundle, echo=echo)
-                        # Flush again after
-                        if use_p:
-                            try: self.stata.run("quietly log flush _mcp_session", echo=False)
-                            except: pass
+                        rc_scalar = f"_mcp_rc_{uuid.uuid4().hex[:8]}"
                         
-                        from sfi import Macro
+                        # Optimization: Single bundle to handle execution, RC capture, and result holding.
+                        # We use a unique global scalar for RC to ensure isolation and bypass local scope.
+                        # Wrapping code in braces ensures multi-line code is captured as a block.
+                        bundle = (
+                            f"capture noisily {{\n{code}\n}}\n"
+                            f"scalar {rc_scalar} = _rc\n"
+                            f"capture _return hold {self._hold_name}"
+                        )
+                        
+                        if use_p:
+                            # Use classic log off/on trick for reliable flushing.
+                            # We append this to the bundle so it happens in the same roundtrip.
+                            bundle += f"\ncapture quietly log off {self._persistent_log_name}"
+                            bundle += f"\ncapture quietly log on {self._persistent_log_name}"
+                        
+                        self.stata.run(bundle, echo=echo)
+                        
                         try:
-                            l_rc = Macro.getLocal("_mcp_rc")
-                            rc = int(float(l_rc)) if l_rc else 0
-                        except:
-                            rc = 0
+                            rc_val = Scalar.getValue(rc_scalar)
+                            if rc_val is not None:
+                                rc = int(float(rc_val))
+                            else:
+                                rc = 1 # Scalar not found
+                            # Clean up
+                            self.stata.run(f"scalar drop {rc_scalar}", echo=False)
+                        except Exception:
+                            rc = 1
                     except Exception as e:
                         rc = self._parse_rc_from_text(str(e)) or self._get_preserved_rc() or 1
                         raise
@@ -1777,16 +1817,26 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 sys_error = str(e)
             finally:
                 if not use_p and log_name: self._close_smcl_log(log_name)
-                self._restore_results_from_hold("_hold_name")
-                # Ensure the final RC is exactly what the command produced
-                # We do this here as a safety measure, though the bundle tries to do it inside.
-                self.stata.run(f"capture error {rc}" if rc > 0 else "capture", echo=False)
+                # Restore results and set final RC state
+                if hasattr(self, "_hold_name"):
+                    try:
+                        cleanup_bundle = f"capture _return restore {self._hold_name}\n"
+                        if rc > 0:
+                            cleanup_bundle += f"capture error {rc}"
+                        self.stata.run(cleanup_bundle, echo=False)
+                    except Exception: pass
+                    delattr(self, "_hold_name")
 
         # Output extraction
         smcl_content = self._read_persistent_log_chunk(start_off) if use_p else self._read_smcl_file(smcl_path)
         if not use_p: self._safe_unlink(smcl_path)
     
-        stdout = output_buffer.getvalue()
+        # Use SMCL as authoritative source for stdout
+        if smcl_content:
+            stdout = self._smcl_to_text(smcl_content)
+        else:
+            stdout = output_buffer.getvalue()
+            
         stderr = error_buffer.getvalue()
         success = rc == 0 and sys_error is None
         error = None
@@ -1794,14 +1844,44 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if not success:
             msg, context = self._extract_error_from_smcl(smcl_content, rc) if smcl_content else self._extract_error_and_context(stdout + stderr, rc)
             error = ErrorEnvelope(message=msg, context=context, rc=rc, command=code, stdout=stdout, stderr=stderr, snippet=context)
+            # In error case, we often want to isolate the error msg in stderr
+            # but keep stdout for context if provided.
             stdout = "" 
-            
-        # Persistence isolation logic
+        elif echo:
+            # Clean up stdout if it contains internal bundle commands
+            # Remove lines starting with . or {com}. followed by our internal commands
+            internal_patterns = [
+                r"^\. (?:scalar _mcp_rc|scalar drop _mcp_rc|capture _return hold|capture quietly log).*",
+                r"^\{com\}\. (?:scalar _mcp_rc|scalar drop _mcp_rc|capture _return hold|capture quietly log).*",
+                r"^\{com\}\. capture noisily \{" ,
+                r"^\. capture noisily \{" ,
+                r"^\. \}" ,
+                r"^\{com\}\. \}" ,
+            ]
+            lines = stdout.splitlines()
+            filtered = []
+            for line in lines:
+                skip = False
+                for p in internal_patterns:
+                    if re.match(p, line):
+                        skip = True
+                        break
+                if not skip:
+                    filtered.append(line)
+            stdout = "\n".join(filtered)
+        # Persistence isolation: Ensure isolated log_path for tests and clarity
         if use_p:
-            # 1. Final safety: If the user explicitly requested CMD2_... and we see CMD1_...
+            # Create a temporary chunk file to fulfill the isolated log_path contract
+            chunk_file = self._create_smcl_log_path(prefix="mcp_chunk_")
+            try:
+                with open(chunk_file, "w", encoding="utf-8") as f:
+                    f.write(smcl_content)
+                smcl_path = chunk_file
+            except Exception:
+                pass
+
+            # Final safety: If the user explicitly requested CMD2_... and we see CMD1_...
             # then the extraction definitely failed to isolate at the file level.
-            # We perform a surgical cut at the last {com}. marker before our intended target.
-            
             # Identify the target UUID in the content
             target_id = None
             if "CMD2_" in code:
@@ -2532,21 +2612,20 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             frame = "default"
             sortlist = ""
             changed = False
+            # Use a combined fetch for dataset state to minimize roundtrips
             try:
-                frame = str(Macro.getGlobal("frame") or "default")
+                state_bundle = (
+                    "macro define mcp_frame \"`c(frame)'\"\n"
+                    "macro define mcp_sortlist \"`c(sortlist)'\"\n"
+                    "macro define mcp_changed \"`c(changed)'\""
+                )
+                self.stata.run(state_bundle, echo=False)
+                frame = str(Macro.getGlobal("mcp_frame") or "default")
+                sortlist = str(Macro.getGlobal("mcp_sortlist") or "")
+                changed = bool(int(float(Macro.getGlobal("mcp_changed") or "0")))
+                self.stata.run("macro drop mcp_frame mcp_sortlist mcp_changed", echo=False)
             except Exception:
-                logger.debug("Failed to get 'frame' macro", exc_info=True)
-                frame = "default"
-            try:
-                sortlist = str(Macro.getGlobal("sortlist") or "")
-            except Exception:
-                logger.debug("Failed to get 'sortlist' macro", exc_info=True)
-                sortlist = ""
-            try:
-                changed = bool(int(float(Macro.getGlobal("changed") or "0")))
-            except Exception:
-                logger.debug("Failed to get 'changed' macro", exc_info=True)
-                changed = False
+                logger.debug("Failed to get dataset state macros", exc_info=True)
 
         return {"frame": frame, "n": n, "k": k, "sortlist": sortlist, "changed": changed}
 
@@ -3017,10 +3096,13 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     raise
                 
                 try:
-                    self.stata.run("macro define mcp_graph_list \"\"", echo=False)
-                    self.stata.run("quietly graph dir, memory", echo=False)
+                    bundle = (
+                        "macro define mcp_graph_list \"\"\n"
+                        "quietly graph dir, memory\n"
+                        "macro define mcp_graph_list \"`r(list)'\""
+                    )
+                    self.stata.run(bundle, echo=False)
                     from sfi import Macro  # type: ignore[import-not-found]
-                    self.stata.run("macro define mcp_graph_list `r(list)'", echo=False)
                     graph_list_str = Macro.getGlobal("mcp_graph_list")
                 finally:
                     try:
@@ -3228,12 +3310,14 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         with self._exec_lock:
             # Try to locate the .sthlp help file
-            # We use 'capture' to avoid crashing if not found
-            self.stata.run(f"capture findfile {topic}.sthlp")
-
-            # Retrieve the found path from r(fn)
+            # We use 'capture' to avoid crashing if not found.
+            # Combined into a single bundle to prevent r(fn) from being cleared.
             from sfi import Macro  # type: ignore[import-not-found]
-            self.stata.run("global mcp_help_file `r(fn)'")
+            bundle = (
+                f"capture findfile {topic}.sthlp\n"
+                "macro define mcp_help_file \"`r(fn)'\""
+            )
+            self.stata.run(bundle, echo=False)
             fn = Macro.getGlobal("mcp_help_file")
 
         if fn and os.path.exists(fn):
@@ -3264,30 +3348,22 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         with self._exec_lock:
             # Capture the current RC first using SFI (non-mutating)
             try:
-                from sfi import Scalar
+                from sfi import Scalar, Macro
                 preserved_rc = int(float(Scalar.getValue("c(rc)") or 0))
             except Exception:
                 preserved_rc = 0
 
-            # We must be extremely careful not to clobber r()/e() while fetching their names.
-            # We use a hold to peek at the results.
-            hold_name = f"mcp_peek_{uuid.uuid4().hex[:8]}"
-            self.stata.run(f"capture _return hold {hold_name}", echo=False)
+            results = {"r": {}, "e": {}, "s": {}}
             
             try:
-                from sfi import Scalar, Macro
-                results = {"r": {}, "e": {}, "s": {}}
-                
-                # Bundle the name fetching into one block
-                # We fetch scalars and macros for r, e, and s in one go
+                # Fetch lists of names. macro define `: ...' is non-mutating for results.
                 fetch_names_block = (
-                    f"capture _return restore {hold_name}, hold\n"
-                    "macro define mcp_r_sc `: r(scalars)'\n"
-                    "macro define mcp_r_ma `: r(macros)'\n"
-                    "macro define mcp_e_sc `: e(scalars)'\n"
-                    "macro define mcp_e_ma `: e(macros)'\n"
-                    "macro define mcp_s_sc `: s(scalars)'\n"
-                    "macro define mcp_s_ma `: s(macros)'\n"
+                    "macro define mcp_r_sc \"`: r(scalars)'\"\n"
+                    "macro define mcp_r_ma \"`: r(macros)'\"\n"
+                    "macro define mcp_e_sc \"`: e(scalars)'\"\n"
+                    "macro define mcp_e_ma \"`: e(macros)'\"\n"
+                    "macro define mcp_s_sc \"`: s(scalars)'\"\n"
+                    "macro define mcp_s_ma \"`: s(macros)'\"\n"
                 )
                 self.stata.run(fetch_names_block, echo=False)
                 
@@ -3295,36 +3371,30 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     sc_names = (Macro.getGlobal(f"mcp_{rclass}_sc") or "").split()
                     ma_names = (Macro.getGlobal(f"mcp_{rclass}_ma") or "").split()
                     
-                    # 1. Fetch Scalars (always valid via Scalar.getValue)
+                    # Fetch Scalars via SFI (fast, non-mutating)
                     for name in sc_names:
                         try:
-                            # Scalar.getValue(r(mean)) works directly in SFI
                             val = Scalar.getValue(f"{rclass}({name})")
                             results[rclass][name] = val
                         except Exception:
                             pass
                     
-                    # 2. Fetch Macros - this is the slow part if done one by one
+                    # Fetch Macros via global expansion
                     if ma_names:
-                        # Create a block to copy all macros to globals
-                        # Use a prefix to avoid collisions
-                        copy_block = f"capture _return restore {hold_name}, hold\n"
+                        # Bundle macro copying to minimize roundtrips
+                        # We use global macros as a transfer area
+                        copy_block = ""
                         for name in ma_names:
-                            # global mcp_rclass_name `rclass(name)'
-                            copy_block += f"global mcp_m_{rclass}_{name} `{rclass}({name})'\n"
+                            copy_block += f"macro define mcp_m_{rclass}_{name} \"`{rclass}({name})'\"\n"
                         
-                        self.stata.run(copy_block, echo=False)
-                        
-                        for name in ma_names:
-                            results[rclass][name] = Macro.getGlobal(f"mcp_m_{rclass}_{name}")
-                            # Clean up as we go to save macro space? Or at the end.
-                            
-                # Final Cleanup of all temporary globals
-                self.stata.run("macro drop mcp_* mcp_m_*", echo=False)
+                        if copy_block:
+                            self.stata.run(copy_block, echo=False)
+                            for name in ma_names:
+                                results[rclass][name] = Macro.getGlobal(f"mcp_m_{rclass}_{name}")
                 
-                self.stata.run(f"capture _return restore {hold_name}", echo=False) 
+                # Cleanup and Restore state
+                self.stata.run("macro drop mcp_*", echo=False)
                 
-                # Restore the original RC
                 if preserved_rc > 0:
                     self.stata.run(f"capture error {preserved_rc}", echo=False)
                 else:
@@ -3334,16 +3404,6 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 return results
             except Exception as e:
                 logger.error(f"SFI-based get_stored_results failed: {e}")
-                # Try to clean up hold if we failed
-                try:
-                    self.stata.run(f"capture _return drop {hold_name}", echo=False)
-                    # Even on error, try to restore the original RC
-                    if preserved_rc > 0:
-                        self.stata.run(f"capture error {preserved_rc}", echo=False)
-                    else:
-                        self.stata.run("capture", echo=False)
-                except Exception:
-                    pass
                 return {"r": {}, "e": {}}
 
     def invalidate_graph_cache(self, graph_name: str = None) -> None:
