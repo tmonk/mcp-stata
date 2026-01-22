@@ -172,6 +172,10 @@ def test_server_tools(init_server):
     tmp.write_text('display "ok"\n')
     try:
         do_resp = json.loads(_run_do_file_sync(str(tmp), as_json=True))
+        if do_resp["rc"] != 0:
+            print(f"DEBUG: do_file failed. Response: {do_resp}")
+            if "log_path" in do_resp and Path(do_resp["log_path"]).exists():
+                print(f"DEBUG: Log content: {Path(do_resp['log_path']).read_text()}")
         assert do_resp["rc"] == 0
         assert do_resp["stdout"] == ""
         assert do_resp.get("log_path")

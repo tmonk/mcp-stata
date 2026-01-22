@@ -157,16 +157,27 @@ class GraphCreationDetector:
                     with ctx:
                         try:
                             from sfi import Macro
-                            hold_name = f"_mcp_detector_hold_{int(time.time() * 1000 % 1000000)}"
+                            hold_name = f"_mcp_det_{int(time.time() * 1000 % 1000000)}"
                             self._stata_client.stata.run(f"capture _return hold {hold_name}", echo=False)
                             try:
-                                self._stata_client.stata.run("macro define mcp_graph_list \"\"", echo=False)
+                                # Run graph dir quietly
                                 self._stata_client.stata.run("quietly graph dir, memory", echo=False)
-                                self._stata_client.stata.run("macro define mcp_graph_list `r(list)'", echo=False)
-                                graph_list_str = Macro.getGlobal("mcp_graph_list")
+                                # Get r(list) DIRECTLY via SFI Macro interface to avoid parsing issues 
+                                # and syntax errors with empty results.
+                                self._stata_client.stata.run("macro define mcp_detector_list `r(list)'", echo=False)
+                                graph_list_str = Macro.getGlobal("mcp_detector_list")
                             finally:
                                 self._stata_client.stata.run(f"capture _return restore {hold_name}", echo=False)
-                            return graph_list_str.split() if graph_list_str else []
+                            
+                            if not graph_list_str:
+                                return []
+                            
+                            # Handle quoted names from r(list) - Stata quotes names with spaces
+                            import shlex
+                            try:
+                                return shlex.split(graph_list_str)
+                            except Exception:
+                                return graph_list_str.split()
                         except ImportError:
                             logger.warning("sfi.Macro not available for fallback graph detection")
                             return []

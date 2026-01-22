@@ -164,6 +164,7 @@ class StataClient:
         self._initialized = False
         self._persistent_log_path = None
         self._persistent_log_name = None
+        self._last_results = None
         from .graph_detector import GraphCreationDetector
         self._graph_detector = GraphCreationDetector(self)
 
@@ -172,8 +173,10 @@ class StataClient:
         inst._exec_lock = threading.RLock()
         inst._is_executing = False
         inst._command_idx = 0
+        inst._initialized = False
         inst._persistent_log_path = None
         inst._persistent_log_name = None
+        inst._last_results = None
         from .graph_detector import GraphCreationDetector
         inst._graph_detector = GraphCreationDetector(inst)
         return inst
@@ -257,8 +260,18 @@ class StataClient:
         try:
             output_buf = StringIO()
             with redirect_stdout(output_buf), redirect_stderr(output_buf):
-                self.stata.run(cmd, echo=False)
+                try:
+                    self.stata.run(cmd, echo=False)
+                except SystemError:
+                    import traceback
+                    sys.stderr.write(traceback.format_exc())
+                    sys.stderr.flush()
+                    raise
             
+            cmd_out = output_buf.getvalue()
+            if "r(" in cmd_out:
+                logger.warning("SMCL log open command failed with output: %s", cmd_out.strip())
+
             # Verify success via log query
             query_buf = StringIO()
             with redirect_stdout(query_buf), redirect_stderr(query_buf):
@@ -268,9 +281,11 @@ class StataClient:
             if "log:" in query_ret and "smcl" in query_ret and " on" in query_ret:
                 self._last_smcl_log_named = True
                 return True
+            else:
+                logger.warning("SMCL log query failed. Output: %s", query_ret)
                 
         except Exception as e:
-            logger.warning("SMCL log open failed: %s", e)
+            logger.warning("SMCL log open exception: %s", e)
             
         # Fallback to unnamed log
         try:
@@ -283,6 +298,8 @@ class StataClient:
             return False
 
     def _close_smcl_log(self, log_name: str) -> None:
+        if log_name == "_mcp_session":
+            return
         try:
             use_named = getattr(self, "_last_smcl_log_named", None)
             if use_named is False:
@@ -450,8 +467,9 @@ class StataClient:
         notify_log: Callable[[str], Awaitable[None]],
         done: anyio.Event,
         on_chunk: Optional[Callable[[str], Awaitable[None]]] = None,
+        start_offset: int = 0,
     ) -> None:
-        last_pos = 0
+        last_pos = start_offset
         emitted_debug_chunks = 0
         # Wait for Stata to create the SMCL file
         while not done.is_set() and not os.path.exists(smcl_path):
@@ -538,7 +556,10 @@ class StataClient:
                         os.getcwd(),
                     )
                     try:
-                        log_opened = self._open_smcl_log(smcl_path, smcl_log_name, quiet=True)
+                        if self._persistent_log_path and smcl_path == self._persistent_log_path:
+                            log_opened = True
+                        else:
+                            log_opened = self._open_smcl_log(smcl_path, smcl_log_name, quiet=True)
                     except Exception as e:
                         log_opened = False
                         logger.warning("_open_smcl_log raised: %r", e)
@@ -554,25 +575,43 @@ class StataClient:
                                     if trace:
                                         self.stata.run("set trace on")
                                     logger.debug("running Stata command echo=%s: %s", echo, command)
-                                    ret = self.stata.run(command, echo=echo)
+                                    try:
+                                        ret = self.stata.run(command, echo=echo)
+                                        rc = 0
+                                    except SystemError as e:
+                                        # Capture RC from error message
+                                        rc_parsed = self._parse_rc_from_text(str(e))
+                                        if rc_parsed is not None:
+                                            rc = rc_parsed
+                                        else:
+                                            rc = self._get_rc_from_scalar(Scalar)
+                                            if rc == 0: rc = 1 # Fallback
+                                        raise
+                                    
                                     if ret:
                                         logger.debug("stata.run output: %s", ret)
 
+                                    # Success path: rc is definitely 0.
+                                    rc = 0
+
                                     setattr(self, hold_attr, f"mcp_hold_{uuid.uuid4().hex[:8]}")
-                                    self.stata.run(
-                                        f"capture _return hold {getattr(self, hold_attr)}",
-                                        echo=False,
-                                    )
+                                    try:
+                                        self.stata.run(
+                                            f"capture _return hold {getattr(self, hold_attr)}",
+                                            echo=False,
+                                        )
+                                    except SystemError:
+                                        import traceback
+                                        h_name = getattr(self, hold_attr)
+                                        sys.stderr.write(traceback.format_exc())
+                                        sys.stderr.flush()
+                                        raise
 
                                     if isinstance(ret, str) and ret:
                                         try:
                                             tee.write(ret)
                                         except Exception:
                                             pass
-                                    try:
-                                        rc = self._get_rc_from_scalar(Scalar)
-                                    except Exception:
-                                        pass
                                 except Exception as e:
                                     exc = e
                                     logger.error("stata.run failed: %r", e)
@@ -614,8 +653,8 @@ class StataClient:
             )
 
         effective_path = path
-        if cwd is not None and not os.path.isabs(path):
-            effective_path = os.path.abspath(os.path.join(cwd, path))
+        if not os.path.isabs(path):
+            effective_path = os.path.abspath(os.path.join(cwd or os.getcwd(), path))
 
         if not os.path.exists(effective_path):
             return None, None, CommandResponse(
@@ -1324,18 +1363,25 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         return pat.sub(repl, code)
 
     def _get_rc_from_scalar(self, Scalar=None) -> int:
-        """Safely get return code, handling None values."""
+        """Safely get return code using sfi.Scalar access to c(rc)."""
+        if Scalar is None:
+            from sfi import Scalar
         try:
-            from sfi import Macro
-            # In PyStata, the last return code is stored in the _rc macro
-            # We first ensure it's copied to a known global macro for reliable retrieval
-            self.stata.run("macro define mcp_last_rc = _rc", echo=False)
-            rc_val = Macro.getGlobal("mcp_last_rc")
+            # c(rc) is the built-in system constant for the last return code.
+            # Accessing it via Scalar.getValue is direct and does not reset it.
+            rc_val = Scalar.getValue("c(rc)")
             if rc_val is None:
-                return -1
+                return 0
             return int(float(rc_val))
         except Exception:
-            return -1
+            # Fallback to macro if Scalar fails
+            try:
+                from sfi import Macro
+                self.stata.run("global _mcp_last_rc = _rc", echo=False)
+                rc_str = Macro.getGlobal("_mcp_last_rc")
+                return int(float(rc_str)) if rc_str else 0
+            except Exception:
+                return -1
 
     def _parse_rc_from_text(self, text: str) -> Optional[int]:
         """Parse return code from plain text using structural patterns."""
@@ -1641,55 +1687,90 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         with self._exec_lock:
             try:
-                from sfi import Scalar, SFIToolkit
-                with self._temp_cwd(cwd):
-                    start_offset = 0
-                    log_name = None
-                    
-                    if use_persistent:
-                        smcl_path = self._persistent_log_path
-                        start_offset = os.path.getsize(smcl_path)
-                    else:
-                        # Create fallback SMCL log for authoritative output capture
-                        smcl_path = self._create_smcl_log_path(prefix="mcp_", max_hex=16)
-                        log_name = self._make_smcl_log_name()
-                        self._open_smcl_log(smcl_path, log_name)
-                    
-                    try:
-                        with self._redirect_io(output_buffer, error_buffer):
-                            try:
-                                if trace:
-                                    self.stata.run("set trace on")
-
-                                # Hold name including high-entropy suffix for XDist safety
-                                self._hold_name = f"mcp_hold_{uuid.uuid4().hex[:12]}"
-                                
-                                # Optimize: bundle command with hold to save round-trips
-                                # We wrap the command in capture to ensure we get the RC and then hold
-                                combined_command = f"{code}\n_return hold {self._hold_name}"
-                                
-                                # Run the user code combined with hold
-                                self.stata.run(combined_command, echo=echo)
-                                
-                            finally:
-                                if trace:
-                                    try:
-                                        self.stata.run("set trace off")
-                                    except Exception:
-                                        pass
-                    finally:
-                        if not use_persistent and log_name:
-                            # Close fallback SMCL log
-                            self._close_smcl_log(log_name)
+                try:
+                    from sfi import Scalar, SFIToolkit
+                    with self._temp_cwd(cwd):
+                        start_offset = 0
+                        log_name = None
                         
-                        # Restore results from hold while still inside the lock
-                        self._restore_results_from_hold("_hold_name")
+                        if use_persistent:
+                            smcl_path = self._persistent_log_path
+                            start_offset = os.path.getsize(smcl_path)
+                        else:
+                            # Create fallback SMCL log for authoritative output capture
+                            smcl_path = self._create_smcl_log_path(prefix="mcp_", max_hex=16)
+                            log_name = self._make_smcl_log_name()
+                            self._open_smcl_log(smcl_path, log_name)
+                        
+                        try:
+                            with self._redirect_io(output_buffer, error_buffer):
+                                try:
+                                    if trace:
+                                        self.stata.run("set trace on")
 
-            except Exception as e:
-                sys_error = str(e)
-                # Try to parse RC from exception message
-                parsed_rc = self._parse_rc_from_text(sys_error)
-                rc = parsed_rc if parsed_rc is not None else 1
+                                    # Hold name including high-entropy suffix for XDist safety
+                                    self._hold_name = f"mcp_hold_{uuid.uuid4().hex[:12]}"
+                                    
+                                    # Optimize: bundle command with hold to save round-trips
+                                    # We wrap the command in capture to ensure we get the RC and then hold
+                                    combined_command = f"{code}\n_return hold {self._hold_name}"
+                                    
+                                    # Run the user code combined with hold
+                                    self.stata.run(combined_command, echo=echo)
+                                    
+                                except Exception as e:
+                                    # Capture the user's RC IMMEDIATELY before finally blocks run
+                                    # PyStata's Scalar.getValue('c(rc)') often returns 0 after a SystemError,
+                                    # so we MUST parse the error message itself first.
+                                    rc_parsed = self._parse_rc_from_text(str(e))
+                                    if rc_parsed is not None:
+                                        rc = rc_parsed
+                                    else:
+                                        try:
+                                            from sfi import Scalar as SFI_Scalar
+                                            rc = int(float(SFI_Scalar.getValue("c(rc)") or 1))
+                                        except Exception:
+                                            rc = 1
+                                    raise
+                                finally:
+                                    if trace:
+                                        try:
+                                            self.stata.run("set trace off")
+                                        except Exception:
+                                            pass
+                        finally:
+                            if not use_persistent and log_name:
+                                # Close fallback SMCL log
+                                self._close_smcl_log(log_name)
+                            
+                            # Restore results from hold while still inside the lock
+                            # This may fail if the command above failed before hold, but that's okay
+                            # as we've already captured the RC.
+                            self._restore_results_from_hold("_hold_name")
+
+                except Exception as e:
+                    sys_error = str(e)
+                    # If rc wasn't captured in the inner block, try again
+                    if rc == 0:
+                        try:
+                            from sfi import Scalar as SFI_Scalar2
+                            rc = int(float(SFI_Scalar2.getValue("c(rc)") or 1))
+                        except Exception:
+                            # Fallback to parsing text
+                            parsed_rc = self._parse_rc_from_text(sys_error)
+                            rc = parsed_rc if parsed_rc is not None else 1
+            finally:
+                # FINAL STEP: Restore the user's actual RC so the Stata environment 
+                # remains exactly as it would be without MCP's internal cleanup.
+                # This runs even on failure in one of the cleanup steps.
+                try:
+                    if rc > 0:
+                        self.stata.run(f"capture error {rc}", echo=False)
+                    else:
+                        # Set RC to 0. 'capture' alone is a valid Stata command that does this.
+                        self.stata.run("capture", echo=False)
+                except Exception:
+                    pass
 
         # Read SMCL content as the authoritative source
         if smcl_path:
@@ -1824,26 +1905,58 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         exc: Optional[Exception] = None
         ret_text: Optional[str] = None
         rc = 0
+        
+        # Use unique names for isolation
+        import uuid
+        uid = uuid.uuid4().hex[:8]
+        hold_name = f"_mcp_hold_{uid}"
 
         with self._exec_lock:
+            # Capture the current RC first using SFI (non-mutating)
             try:
-                from sfi import Scalar  # Import SFI tools
+                from sfi import Scalar
+                preserved_rc = int(float(Scalar.getValue("c(rc)") or 0))
+            except Exception:
+                preserved_rc = 0
+
+            try:
                 if trace:
                     self.stata.run("set trace on")
-                output_buf = StringIO()
-                with redirect_stdout(output_buf), redirect_stderr(output_buf):
+                
+                # Protect global return results from internal commands
+                self.stata.run(f"capture _return hold {hold_name}", echo=False)
+
+                output_log = StringIO()
+                with redirect_stdout(output_log), redirect_stderr(output_log):
                     ret = self.stata.run(code, echo=echo)
+                
                 if isinstance(ret, str) and ret:
                     ret_text = ret
                     # Try to parse RC from the output text. 
-                    # Many Stata commands emit 'r(N);' on failure even when quietly.
                     parsed_rc = self._parse_rc_from_text(ret_text)
                     if parsed_rc is not None:
                         rc = parsed_rc
+            except SystemError as e:
+                import traceback
+                traceback.print_exc()
+                exc = e
+                rc = 1
             except Exception as e:
                 exc = e
                 rc = 1
             finally:
+                # Restore global state
+                try:
+                    # Restore r() results
+                    self.stata.run(f"capture _return restore {hold_name}", echo=False)
+                    # Restore the original RC via error command
+                    if preserved_rc > 0:
+                        self.stata.run(f"capture error {preserved_rc}", echo=False)
+                    else:
+                        self.stata.run("capture", echo=False)
+                except Exception:
+                    pass
+
                 if trace:
                     try:
                         self.stata.run("set trace off")
@@ -1892,6 +2005,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
              with self._redirect_io(output_buffer, error_buffer):
                 try:
                     self.stata.run(code, echo=False)
+                except SystemError as e:
+                    import traceback
+                    traceback.print_exc()
+                    exc = e
+                    rc = 1
                 except Exception as e:
                     exc = e
                     rc = 1
@@ -1956,8 +2074,17 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
 
         # Create SMCL log path for authoritative output capture
-        smcl_path = self._create_smcl_log_path()
-        smcl_log_name = self._make_smcl_log_name()
+        start_offset = 0
+        if self._persistent_log_path:
+            smcl_path = self._persistent_log_path
+            smcl_log_name = self._persistent_log_name
+            try:
+                start_offset = os.path.getsize(smcl_path)
+            except OSError:
+                start_offset = 0
+        else:
+            smcl_path = self._create_smcl_log_path()
+            smcl_log_name = self._make_smcl_log_name()
 
         # Inform the MCP client immediately where to read/tail the output.
         await notify_log(json.dumps({"event": "log_path", "path": smcl_path}))
@@ -1998,6 +2125,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                             notify_log=notify_log,
                             done=done,
                             on_chunk=on_chunk_for_graphs if graph_cache else None,
+                            start_offset=start_offset,
                         )
                     except Exception as exc:
                         logger.debug("SMCL streaming failed: %s", exc)
@@ -2178,6 +2306,14 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         smcl_path = self._create_smcl_log_path()
         smcl_log_name = self._make_smcl_log_name()
+        start_offset = 0
+        if self._persistent_log_path:
+            smcl_path = self._persistent_log_path
+            smcl_log_name = self._persistent_log_name
+            try:
+                start_offset = os.path.getsize(smcl_path)
+            except OSError:
+                start_offset = 0
 
         # Inform the MCP client immediately where to read/tail the output.
         await notify_log(json.dumps({"event": "log_path", "path": smcl_path}))
@@ -2221,6 +2357,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                             notify_log=notify_log,
                             done=done,
                             on_chunk=on_chunk_callback,
+                            start_offset=start_offset,
                         )
                     except Exception as exc:
                         logger.debug("SMCL streaming failed: %s", exc)
@@ -2726,8 +2863,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         is_string_vars = []
         if vars_used:
-            from sfi import Variable # type: ignore
-            is_string_vars = [Variable.isString(v) for v in vars_used]
+            try:
+                from sfi import Variable  # type: ignore
+                is_string_vars = [Variable.isString(v) for v in vars_used]
+            except (ImportError, AttributeError):
+                # Stata 19+ compatibility
+                is_string_vars = [Data.isVarTypeString(v) for v in vars_used]
 
         indices: List[int] = []
         for start in range(0, n, chunk_size):
@@ -2885,7 +3026,13 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 # automatically after every user command (e.g., during streaming).
                 import time
                 hold_name = f"_mcp_ghold_{int(time.time() * 1000 % 1000000)}"
-                self.stata.run(f"capture _return hold {hold_name}", echo=False)
+                try:
+                    self.stata.run(f"capture _return hold {hold_name}", echo=False)
+                except SystemError:
+                    import traceback
+                    sys.stderr.write(traceback.format_exc())
+                    sys.stderr.flush()
+                    raise
                 
                 try:
                     self.stata.run("macro define mcp_graph_list \"\"", echo=False)
@@ -2894,7 +3041,13 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     self.stata.run("macro define mcp_graph_list `r(list)'", echo=False)
                     graph_list_str = Macro.getGlobal("mcp_graph_list")
                 finally:
-                    self.stata.run(f"capture _return restore {hold_name}", echo=False)
+                    try:
+                        self.stata.run(f"capture _return restore {hold_name}", echo=False)
+                    except SystemError:
+                        import traceback
+                        sys.stderr.write(traceback.format_exc())
+                        sys.stderr.flush()
+                        raise
 
                 raw_list = graph_list_str.split() if graph_list_str else []
 
@@ -2972,7 +3125,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             gph_path_for_stata = gph_path.as_posix()
             # Make the target graph current, then save without name() (which isn't accepted there)
             if graph_name:
-                self._exec_no_capture_silent(f'quietly graph display "{graph_name}"', echo=False)
+                self._exec_no_capture_silent(f'quietly graph display {graph_name}', echo=False)
             save_cmd = f'quietly graph save "{gph_path_for_stata}", replace'
             save_resp = self._exec_no_capture_silent(save_cmd, echo=False)
             if not save_resp.success:
@@ -3040,7 +3193,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 resolved = self._resolve_graph_name_for_stata(graph_name)
                 # Use display + export without name() for maximum compatibility.
                 # name(NAME) often fails in PyStata for non-active graphs (r(693)).
-                self._exec_no_capture_silent(f'quietly graph display "{resolved}"', echo=False)
+                # Graph identifiers must NOT be quoted in 'graph display'.
+                self._exec_no_capture_silent(f'quietly graph display {resolved}', echo=False)
             
             cmd = f'quietly graph export "{filename_for_stata}", replace as({fmt})'
 
@@ -3119,6 +3273,13 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             self.init()
 
         with self._exec_lock:
+            # Capture the current RC first using SFI (non-mutating)
+            try:
+                from sfi import Scalar
+                preserved_rc = int(float(Scalar.getValue("c(rc)") or 0))
+            except Exception:
+                preserved_rc = 0
+
             # We must be extremely careful not to clobber r()/e() while fetching their names.
             # We use a hold to peek at the results.
             hold_name = f"mcp_peek_{uuid.uuid4().hex[:8]}"
@@ -3166,6 +3327,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 self.stata.run("macro drop mcp_scnames mcp_macnames mcp_mval", echo=False)
                 self.stata.run(f"capture _return restore {hold_name}", echo=False) # Restore one last time to leave Stata in correct state
                 
+                # Restore the original RC
+                if preserved_rc > 0:
+                    self.stata.run(f"capture error {preserved_rc}", echo=False)
+                else:
+                    self.stata.run("capture", echo=False)
+
                 self._last_results = results
                 return results
             except Exception as e:
@@ -3173,6 +3340,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 # Try to clean up hold if we failed
                 try:
                     self.stata.run(f"capture _return drop {hold_name}", echo=False)
+                    # Even on error, try to restore the original RC
+                    if preserved_rc > 0:
+                        self.stata.run(f"capture error {preserved_rc}", echo=False)
+                    else:
+                        self.stata.run("capture", echo=False)
                 except Exception:
                     pass
                 return {"r": {}, "e": {}}
@@ -3385,11 +3557,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             svg_path_for_stata = svg_path.replace("\\", "/")
 
             try:
-                export_cmd = f'quietly graph export "{svg_path_for_stata}", name({resolved}) replace as(svg)'
+                # Use quotes around the graph name in case it contains spaces or special characters
+                export_cmd = f'quietly graph export "{svg_path_for_stata}", name("{resolved}") replace as(svg)'
                 export_resp = self._exec_no_capture_silent(export_cmd, echo=False)
 
                 if not export_resp.success:
-                    display_cmd = f'quietly graph display {resolved}'
+                    display_cmd = f'quietly graph display "{resolved}"'
                     display_resp = self._exec_no_capture_silent(display_cmd, echo=False)
                     if display_resp.success:
                         export_cmd2 = f'quietly graph export "{svg_path_for_stata}", replace as(svg)'
@@ -3559,7 +3732,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             # PyStata background tasks:
             # 1. Ensure the specific graph is active in the Stata engine via 'graph display'.
             # 2. Export with the explicit name() option to ensure isolation.
-            # We use name() without quotes as it's an internal Stata name.
+            # Graph names in Stata should NOT be quoted.
             self._exec_no_capture_silent(f'graph display {safe_name}', echo=False)
             export_cmd = f'graph export "{cache_path_for_stata}", name({safe_name}) replace as(svg)'
             resp = self._exec_no_capture_silent(export_cmd, echo=False)
