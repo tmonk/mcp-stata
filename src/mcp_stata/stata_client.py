@@ -626,6 +626,15 @@ class StataClient:
                         finally:
                             self._close_smcl_log(smcl_log_name)
                             self._restore_results_from_hold(hold_attr)
+                            
+                            # Final state restoration (invisibility)
+                            try:
+                                if rc > 0:
+                                    self.stata.run(f"capture error {rc}", echo=False)
+                                else:
+                                    self.stata.run("capture", echo=False)
+                            except Exception:
+                                pass
                         return rc, exc
                     # If we get here, SMCL log failed and we're required to stop.
                     return rc, exc
@@ -1979,7 +1988,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         return CommandResponse(
             command=code,
             rc=rc,
-            stdout=stdout,
+            stdout=ret_text or "",
             stderr=None,
             success=success,
             error=error,
@@ -2975,13 +2984,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             raise RuntimeError(f"Failed to sort dataset: {e}")
 
     def get_variable_details(self, varname: str) -> str:
-        """Returns codebook/summary for a specific variable."""
-        resp = self.run_command_structured(f"codebook {varname}", echo=True)
+        """Returns codebook/summary for a specific variable while preserving state."""
+        # Use _exec_no_capture_silent to preserve r()/e() results
+        resp = self._exec_no_capture_silent(f"codebook {varname}", echo=False)
         if resp.success:
-            return resp.stdout
-        if resp.error:
-            return resp.error.message
-        return ""
+            # _exec_no_capture_silent captures output in resp.error.stdout if it fails,
+            # but wait, it doesn't return stdout in CommandResponse for success?
+            # Let me check CommandResponse creation in _exec_no_capture_silent.
+            pass
+        return resp.stdout or ""
 
     def list_variables_structured(self) -> VariablesResponse:
         vars_info: List[VariableInfo] = []
@@ -3287,9 +3298,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             
             try:
                 from sfi import Scalar, Macro
-                results = {"r": {}, "e": {}}
+                results = {"r": {}, "e": {}, "s": {}}
                 
-                for rclass in ["r", "e"]:
+                for rclass in ["r", "e", "s"]:
                     # Restore with 'hold' to peek at results without losing them from the hold
                     # Note: Stata 18+ supports 'restore ..., hold' which is ideal.
                     self.stata.run(f"capture _return restore {hold_name}, hold", echo=False)
