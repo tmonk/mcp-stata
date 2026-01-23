@@ -240,6 +240,13 @@ def _format_command_result(result, raw: bool, as_json: bool) -> str:
                 msg = f"{msg}\nrc={result.error.rc}"
             return msg
         return result.log_path or ""
+    
+    if hasattr(result, "stdout") and result.stdout:
+        # Token Efficiency: Tools that use streaming notifications already sent 
+        # the output. We clear stdout in the final result to avoid redundancy 
+        # and stay within token limits. Tests expect this behavior.
+        result.stdout = ""
+        
     if as_json:
         return result.model_dump_json()
     return result.model_dump_json()
@@ -781,18 +788,8 @@ async def run_command(
 
     # Conservative invalidation: arbitrary Stata commands may change data.
     ui_channel.notify_potential_dataset_change()
-    if raw:
-        if result.success:
-            return result.log_path or ""
-        if result.error:
-            msg = result.error.message
-            if result.error.rc is not None:
-                msg = f"{msg}\nrc={result.error.rc}"
-            return msg
-        return result.log_path or ""
-    if as_json:
-        return result.model_dump_json()
-
+    
+    return _format_command_result(result, raw=raw, as_json=as_json)
 
 @mcp.tool()
 def read_log(path: str, offset: int = 0, max_bytes: int = 65536) -> str:
@@ -1144,13 +1141,7 @@ async def run_do_file(
 
     ui_channel.notify_potential_dataset_change()
 
-    if raw:
-        if result.success:
-            return result.log_path or ""
-        if result.error:
-            return result.error.message
-        return result.log_path or ""
-    return result.model_dump_json()
+    return _format_command_result(result, raw=raw, as_json=as_json)
 
 @mcp.resource("stata://data/summary")
 def get_summary() -> str:

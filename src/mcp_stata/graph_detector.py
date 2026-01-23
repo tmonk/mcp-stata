@@ -38,23 +38,24 @@ class GraphCreationDetector:
     def _describe_graph_signature(self, graph_name: str) -> str:
         """Return a stable signature for a graph.
 
-        We avoid using Stata calls like 'graph describe' here because they are slow 
-        (each call takes ~35ms) and would be called for every graph on every poll,
-        bottlenecking the streaming output.
-        
-        Instead, we use name-based tracking tied to the Stata command execution 
-        context. The signature is stable within a single command execution but 
-        changes when a new command starts, allowing us to detect modifications 
-        between commands without any Stata overhead.
+        We use name-based tracking tied to the Stata command execution 
+        context, enriched with timestamps where available.
         """
         if not self._stata_client:
             return ""
         
-        # Access command_idx from stata_client if available
+        # Try to find timestamp in client's cache first for cross-command stability
+        cache = getattr(self._stata_client, "_list_graphs_cache", None)
+        if cache:
+            for g in cache:
+                # Cache might contain GraphInfo objects
+                name = getattr(g, "name", g if isinstance(g, str) else None)
+                created = getattr(g, "created", None)
+                if name == graph_name and created:
+                    return f"{graph_name}_{created}"
+
+        # Fallback to command_idx
         cmd_idx = getattr(self._stata_client, "_command_idx", 0)
-        # Always include command_idx to ensure modifications to named graphs are 
-        # detected when a new command starts. Within a single command, the 
-        # detected_graphs set in the cache will prevent duplicates.
         return f"{graph_name}_{cmd_idx}"
 
     def _get_graph_inventory(self) -> tuple[List[str], Dict[str, str]]:
@@ -301,23 +302,16 @@ class GraphCreationDetector:
                     sig = fast_sig
                     
                     if prev and prev.get("cmd_idx") == cmd_idx:
-                        # Already processed in this command. Keep the signature we decided on.
+                        # Already processed in this command context. 
+                        # Deduplicate by reusing our previous decision for this specific command.
                         sig = prev.get("signature")
-                    elif prev and prev.get("cmd_idx") != cmd_idx:
-                        # Command jumped. We need to know if it's a REAL modification.
-                        # We use the timestamp from graph describe.
-                        if timestamp:
-                            prev_ts = prev.get("timestamp_val")
-                            if prev_ts and prev_ts == timestamp:
-                                # Timestamp match! Reuse the OLD signature to avoid 
-                                # reporting a modification just because cmd_idx jumped.
-                                sig = prev.get("signature")
-                            else:
-                                # Timestamp changed or was missing. Use new fast_sig.
-                                sig = fast_sig
-                        else:
-                            # Failed to get timestamp, fall back to fast_sig (safe default)
-                            sig = fast_sig
+                    else:
+                        # This is a new command or we have no history. 
+                        # Use the fresh signature (name + cmd_idx). 
+                        # We don't suppress based on timestamp alone across different 
+                        # commands because the user expects a notification for each 
+                        # explicit graphing tool call.
+                        sig = fast_sig
                     
                     state_info = {
                         "name": graph_name,
@@ -471,8 +465,9 @@ class StreamingGraphCache:
         if self.stata_client:
             try:
                 # Get current state and check for new graphs
-
-                pystata_detected = self.detector._detect_graphs_via_pystata()
+                # _detect_graphs_via_pystata is sync and uses _exec_lock, must run in thread
+                import anyio
+                pystata_detected = await anyio.to_thread.run_sync(self.detector._detect_graphs_via_pystata)
                 
                 # Add any newly detected graphs to cache queue
                 for graph_name in pystata_detected:
@@ -489,7 +484,9 @@ class StreamingGraphCache:
         
         # Get current graph list for verification
         try:
-            current_graphs = self.stata_client.list_graphs()
+            # list_graphs is sync and uses _exec_lock, must run in thread
+            import anyio
+            current_graphs = await anyio.to_thread.run_sync(self.stata_client.list_graphs)
         except Exception as e:
             logger.warning(f"Failed to get current graph list: {e}")
             return cached_names
@@ -526,7 +523,9 @@ class StreamingGraphCache:
         
         # Get current graph list for verification
         try:
-            current_graphs = self.stata_client.list_graphs()
+            # list_graphs is sync and uses _exec_lock, must run in thread
+            import anyio
+            current_graphs = await anyio.to_thread.run_sync(self.stata_client.list_graphs)
         except Exception as e:
             logger.warning(f"Failed to get current graph list: {e}")
             return cached_names

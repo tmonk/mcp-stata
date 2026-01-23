@@ -47,6 +47,7 @@ class VariablesResponse(BaseModel):
 class GraphInfo(BaseModel):
     name: str
     active: bool = False
+    created: Optional[str] = None
 
 
 class GraphListResponse(BaseModel):

@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
+import functools
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from importlib.metadata import PackageNotFoundError, version
 from io import StringIO
@@ -165,6 +166,7 @@ class StataClient:
         self._initialized = False
         self._persistent_log_path = None
         self._persistent_log_name = None
+        self._last_emitted_graph_signatures: Dict[str, str] = {}
         self._last_results = None
         from .graph_detector import GraphCreationDetector
         self._graph_detector = GraphCreationDetector(self)
@@ -250,8 +252,9 @@ class StataClient:
         """Run Stata code while strictly ensuring NO output reaches stdout."""
         if not self._initialized:
             self.init()
-        with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
-            return self.stata.run(code, echo=echo)
+        with self._exec_lock:
+            with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
+                return self.stata.run(code, echo=echo)
 
     def _open_smcl_log(self, smcl_path: str, log_name: str, *, quiet: bool = False) -> bool:
         path_for_stata = smcl_path.replace("\\", "/")
@@ -496,6 +499,7 @@ class StataClient:
         done: anyio.Event,
         on_chunk: Optional[Callable[[str], Awaitable[None]]] = None,
         start_offset: int = 0,
+        tee: Optional[FileTeeIO] = None,
     ) -> None:
         last_pos = start_offset
         emitted_debug_chunks = 0
@@ -512,6 +516,7 @@ class StataClient:
                 except PermissionError:
                     if os.name == "nt":
                         try:
+                            # Use 'type' on Windows to bypass exclusive lock
                             res = subprocess.run(f'type "{smcl_path}"', shell=True, capture_output=True)
                             full_content = res.stdout.decode("utf-8", errors="replace")
                             if len(full_content) > last_pos:
@@ -527,10 +532,21 @@ class StataClient:
                 chunk = await anyio.to_thread.run_sync(_read_content)
                 if chunk:
                     last_pos += len(chunk)
-                    try:
-                        await notify_log(chunk)
-                    except Exception as exc:
-                        logger.debug("notify_log failed: %s", exc)
+                    # Clean chunk before sending to log channel to suppress maintenance leakage
+                    cleaned_chunk = self._clean_internal_smcl(chunk, strip_output=False)
+                    if cleaned_chunk:
+                        try:
+                            await notify_log(cleaned_chunk)
+                        except Exception as exc:
+                            logger.debug("notify_log failed: %s", exc)
+                        
+                        if tee:
+                            try:
+                                # Write text version to tee so log_path is useful
+                                tee.write(self._smcl_to_text(cleaned_chunk))
+                            except Exception:
+                                pass
+
                     if on_chunk is not None:
                         try:
                             await on_chunk(chunk)
@@ -538,7 +554,23 @@ class StataClient:
                             logger.debug("on_chunk callback failed: %s", exc)
                 await anyio.sleep(0.05)
 
+            # Final check for any remaining content
             chunk = await anyio.to_thread.run_sync(_read_content)
+            if chunk:
+                last_pos += len(chunk)
+                cleaned_chunk = self._clean_internal_smcl(chunk, strip_output=False)
+                if cleaned_chunk:
+                    try:
+                        await notify_log(cleaned_chunk)
+                    except Exception as exc:
+                        logger.debug("final notify_log failed: %s", exc)
+                    
+                    if tee:
+                        try:
+                            tee.write(self._smcl_to_text(cleaned_chunk))
+                        except Exception:
+                            pass
+            
             if on_chunk is not None:
                 # Final check even if last chunk is empty, to ensure 
                 # graphs created at the very end are detected.
@@ -546,13 +578,6 @@ class StataClient:
                     await on_chunk(chunk or "")
                 except Exception as exc:
                     logger.debug("final on_chunk check failed: %s", exc)
-            
-            if chunk:
-                last_pos += len(chunk)
-                try:
-                    await notify_log(chunk)
-                except Exception as exc:
-                    logger.debug("notify_log failed: %s", exc)
 
         except Exception as e:
             logger.warning(f"Log streaming failed: {e}")
@@ -607,15 +632,15 @@ class StataClient:
                                     # Optimization: Combined bundle for streaming too.
                                     # Consolidates hold and potentially flush into one call.
                                     self._hold_name_stream = f"mcp_hold_{uuid.uuid4().hex[:8]}"
-                                    flush_cmd = "\ncapture quietly log off _mcp_session\ncapture quietly log on _mcp_session" if self._persistent_log_path else ""
                                     
                                     # Initialization logic for locals can be sensitive.
                                     # Since each run() in pystata starts a new context for locals unless it's a file,
                                     # we use a global scalar for the return code.
                                     bundle = (
-                                        f"capture noisily {command}\n"
+                                        f"capture noisily {{\n{command}\n}}\n"
                                         f"scalar _mcp_rc = _rc\n"
-                                        f"capture _return hold {self._hold_name_stream}{flush_cmd}"
+                                        f"capture _return hold {self._hold_name_stream}\n"
+                                        "capture quietly log flush _mcp_session"
                                     )
                                     
                                     logger.debug("running Stata bundle echo=%s", echo)
@@ -796,42 +821,8 @@ class StataClient:
             if not content:
                 return ""
 
-            # Simplification: SMCL logs always start headers with {smcl} or {txt}{sf}
-            # and end them with {.-}. We want to strip these.
-            
-            # 1. Identify all header blocks
-            # A header block starts with {smcl} or {txt}{sf}{ul off}{.-} 
-            # and ends with {.-}
-            finished_content = content
-            
-            # We look for the common pattern of a log header
-            # {smcl}\n{txt}{sf}{ul off}{.-}\n      name: ... \n{.-}
-            # Using a greedy approach to find the LAST {.-} of a header block
-            header_start_pattern = r"(?:\{smcl\}\r?\n?)?\{txt\}\{sf\}\{ul off\}\{\.-\}"
-            
-            pieces = []
-            curr_pos = 0
-            for match in re.finditer(header_start_pattern, content):
-                # Add any content before this header
-                pieces.append(content[curr_pos:match.start()])
-                # Find the end of this header block
-                header_end = content.find("{.-}", match.end())
-                if header_end != -1:
-                    curr_pos = header_end + 4
-                else:
-                    curr_pos = match.end()
-            
-            # Add remaining content
-            pieces.append(content[curr_pos:])
-            res_content = "".join(pieces)
-            
-            # Final cleanup: If we seeked into the middle of a command, we might see 
-            # some residual SMCL tags at the very beginning.
-            res_content = res_content.lstrip()
-            if res_content.startswith("{smcl}"):
-                res_content = res_content[6:]
-            
-            return res_content
+            # Use refined cleaning logic to strip internal headers and maintenance
+            return self._clean_internal_smcl(content)
         except PermissionError:
             if os.name == "nt":
                 try:
@@ -1039,6 +1030,11 @@ class StataClient:
         emitted = 0
         for graph_name in graph_names:
             signature = self._get_graph_signature(graph_name)
+            
+            # Persistent suppression across commands: skip if already emitted with this signature.
+            if self._last_emitted_graph_signatures.get(graph_name) == signature:
+                continue
+
             try:
                 export_path = None
                 if fmt == "svg":
@@ -1068,6 +1064,7 @@ class StataClient:
                 }
                 await notify_log(json.dumps(payload))
                 emitted += 1
+                self._last_emitted_graph_signatures[graph_name] = signature
                 if graph_ready_initial is not None:
                     graph_ready_initial[graph_name] = signature
             except Exception as e:
@@ -1149,12 +1146,20 @@ class StataClient:
 
         if not current_graphs:
             return 0
+            
         emitted = 0
         for graph_name in current_graphs:
             signature = self._get_graph_signature(graph_name)
+            
+            # 1. Delta check against command start
             previous = initial_graphs.get(graph_name)
             if previous is not None and previous == signature:
                 continue
+            
+            # 2. Persistent suppression across commands
+            if self._last_emitted_graph_signatures.get(graph_name) == signature:
+                continue
+                
             try:
                 export_path = None
                 if export_format == "svg":
@@ -1174,7 +1179,10 @@ class StataClient:
                     },
                 }
                 await notify_log(json.dumps(payload))
+                
+                # Update tracking
                 initial_graphs[graph_name] = signature
+                self._last_emitted_graph_signatures[graph_name] = signature
                 emitted += 1
             except Exception as e:
                 logger.warning("graph_ready export failed for %s: %s", graph_name, e)
@@ -1182,15 +1190,22 @@ class StataClient:
 
     def _get_graph_signature(self, graph_name: str) -> str:
         """
-        Get a stable signature for a graph without calling Stata.
-        Consistent with GraphCreationDetector implementation.
+        Get a stable signature for a graph without calling Stata directly.
+        Uses cached timestamps from list_graphs for stability across commands.
         """
         if not graph_name:
             return ""
+            
+        # Try to find timestamp in cache
+        with self._list_graphs_cache_lock:
+            if self._list_graphs_cache:
+                for g in self._list_graphs_cache:
+                    if hasattr(g, "name") and g.name == graph_name and g.created:
+                        # Use timestamp for a truly stable signature across commands
+                        return f"{graph_name}_{g.created}"
+        
+        # Fallback to command index if timestamp not available
         cmd_idx = getattr(self, "_command_idx", 0)
-        # Include command index for all graphs to detect re-creation/modification 
-        # between commands. The detector's internal set will handle deduplication 
-        # within a single command execution stream.
         return f"{graph_name}_{cmd_idx}"
 
     def _request_break_in(self) -> None:
@@ -1793,7 +1808,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
     def _smcl_to_text(self, smcl: str) -> str:
         """Convert simple SMCL markup into plain text for LLM-friendly help."""
-        # First, keep inline directive content if present (e.g., {bf:word} -> word)
+        # First, clean internal maintenance
+        smcl = self._clean_internal_smcl(smcl)
+        
+        # Keep inline directive content if present (e.g., {bf:word} -> word)
         cleaned = re.sub(r"\{[^}:]+:([^}]*)\}", r"\1", smcl)
         # Remove remaining SMCL brace commands like {smcl}, {vieweralsosee ...}, {txt}, {p}
         cleaned = re.sub(r"\{[^}]*\}", "", cleaned)
@@ -1801,6 +1819,49 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         cleaned = cleaned.replace("\r", "")
         lines = [line.rstrip() for line in cleaned.splitlines()]
         return "\n".join(lines).strip()
+
+    def _clean_internal_smcl(self, content: str, strip_output: bool = True) -> str:
+        """
+        Aggressively strips internal maintenance and log headers/footers from SMCL.
+        """
+        if not content:
+            return ""
+
+        # 1. Strip SMCL log headers and footers
+        header_pattern = r"(?:\{smcl\}\r?\n?)?\{txt\}\{sf\}\{ul off\}\{\.-\}.*?\{\.-\}\r?\n?"
+        content = re.sub(header_pattern, "", content, flags=re.DOTALL)
+        
+        footer_pattern = r"\{\.-\}\r?\n?(?:\{smcl\})?\{txt\}\{sf\}\{ul off\}.*?log closed on.*$"
+        content = re.sub(footer_pattern, "", content, flags=re.DOTALL)
+
+        # 2. Strip internal file notifications (often from graph exports or preemptive caching)
+        file_save_pattern = r"\r?\n?\{res\}\(file (?:\{txt\})?.*?mcp_(?:stata|hold|ghold|det)_.*?(?:\{res\})? saved\)\r?\n?"
+        content = re.sub(file_save_pattern, "", content)
+        
+        file_not_found_pattern = r"\r?\n?\{res\}\(file (?:\{txt\})?.*?mcp_(?:stata|hold|ghold|det)_.*?(?:\{res\})? not found\)\r?\n?"
+        content = re.sub(file_not_found_pattern, "", content)
+
+        # 3. Strip internal scalar/macro/log commands
+        # Matches lines starting with prompt variations (, . , {com}. , {txt}. )
+        # followed by our internal maintenance commands or result-holding artifacts.
+        internal_cmd_pattern = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:capture )?(?:quietly )?(?:scalar|macro|log|graph|_return) (?:drop|display|export|save|hold|on|off).*?\r?\n?"
+        content = re.sub(internal_cmd_pattern, "", content)
+
+        # 4. Strip the bundle wrapper echoes
+        # Handle both raw braces { and potential escaped artifacts like c -(}
+        bundle_wrapper = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:capture noisily )?(?:\{|c\s+-\(}).*?\r?\n?"
+        content = re.sub(bundle_wrapper, "", content)
+        bundle_end = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:\}|c\s+\)-}).*?\r?\n?"
+        content = re.sub(bundle_end, "", content)
+        
+        # Also handle artifacts that might appear inline after commands (like 10c )-} )
+        content = re.sub(r"c\s*-?\(?\}", "", content)
+        content = re.sub(r"c\s*\)-?\}", "", content)
+
+        # 5. Strip any residual empty {res} or {txt} tags that might result from stripping
+        content = re.sub(r'^\{(?:res|txt|com)\}\r?\n?', '', content, flags=re.MULTILINE)
+        
+        return content.strip() if strip_output else content
 
     def _extract_error_and_context(self, log_content: str, rc: int) -> Tuple[str, str]:
         """
@@ -1967,12 +2028,14 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             # Clean up stdout if it contains internal bundle commands
             # Remove lines starting with . or {com}. followed by our internal commands
             internal_patterns = [
-                r"^\. (?:scalar _mcp_rc|scalar drop _mcp_rc|capture _return hold|capture quietly log).*",
-                r"^\{com\}\. (?:scalar _mcp_rc|scalar drop _mcp_rc|capture _return hold|capture quietly log).*",
-                r"^\{com\}\. capture noisily \{" ,
-                r"^\. capture noisily \{" ,
-                r"^\. \}" ,
-                r"^\{com\}\. \}" ,
+                r"^(?:\{com\}|\{txt\})?\. (?:capture noisily )?\{.*$",
+                r"^(?:\{com\}|\{txt\})?\. \}.*$",
+                r"^(?:\{com\}|\{txt\})?\. scalar (?:drop )?_mcp_rc.*$",
+                r"^(?:\{com\}|\{txt\})?\. (?:capture )?_return (?:hold|restore) (?:mcp_hold|_mcp_).*$",
+                r"^(?:\{com\}|\{txt\})?\. capture quietly log.*$",
+                r"^(?:\{com\}|\{txt\})?\. log flush _mcp_session.*$",
+                r"^(?:\{com\}|\{txt\})?\. \r?$",
+                r"^\. \r?$",
             ]
             lines = stdout.splitlines()
             filtered = []
@@ -1984,7 +2047,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                         break
                 if not skip:
                     filtered.append(line)
-            stdout = "\n".join(filtered)
+            stdout = "\n".join(filtered).strip()
         # Persistence isolation: Ensure isolated log_path for tests and clarity
         if use_p:
             # Create a temporary chunk file to fulfill the isolated log_path contract
@@ -2018,13 +2081,25 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             
             # 2. Aggressive multi-pattern header stripping for any remaining headers
             patterns = [
-                r"\{smcl\}(?:\r?\n)?\{txt\}\{sf\}\{ul off\}\{\.-\}(?:\r?\n)?\s+name:\s+\{res\}_mcp_session.*?\{.-\}\r?\n",
-                r"\{txt\}\{sf\}\{ul off\}\{\.-\}(?:\r?\n)?\s+name:\s+\{res\}_mcp_session.*?\{.-\}\r?\n",
+                r"\{smcl\}(?:\r?\n)?\{txt\}\{sf\}\{ul off\}\{\.-\}(?:\r?\n)?.*?name:\s+\{res\}_mcp_session.*?\{.-\}\r?\n",
+                r"\{txt\}\{sf\}\{ul off\}\{\.-\}(?:\r?\n)?.*?name:\s+\{res\}_mcp_session.*?\{.-\}\r?\n",
+                r"\(file \{bf\}.*?\{rm\} not found\)\r?\n",
+                r"\{p 0 4 2\}\r?\n\(file \{bf\}.*?\{rm\}\r?\nnot found\)\r?\n\{p_end\}\r?\n",
                 r"\{smcl\}",
             ]
             for p in patterns:
                 smcl_content = re.sub(p, "", smcl_content, flags=re.DOTALL)
                 
+            # 3. Suppress internal maintenance leaks that sometimes escape quietly/echo=False
+            leaks = [
+                r"\{com\}\. capture quietly log (?:off|on) _mcp_session\r?\n",
+                r"\{com\}\. capture _return hold mcp_hold_[a-f0-9]+\r?\n",
+                r"\{com\}\. scalar _mcp_rc = _rc\r?\n",
+                r"\{com\}\. \{txt\}\r?\n",
+            ]
+            for p in leaks:
+                smcl_content = re.sub(p, "", smcl_content)
+
             # Second pass - if we see MANY headers or missed one due to whitespace
             while "_mcp_session" in smcl_content:
                 m = re.search(r"(?:\{smcl\}\r?\n?)?\{txt\}\{sf\}\{ul off\}\{\.-\}\r?\n\s+name:\s+\{res\}_mcp_session", smcl_content)
@@ -2294,6 +2369,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                             done=done,
                             on_chunk=on_chunk_for_graphs if graph_cache else None,
                             start_offset=start_offset,
+                            tee=tee,
                         )
                     except Exception as exc:
                         logger.debug("SMCL streaming failed: %s", exc)
@@ -2389,8 +2465,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         combined = self._build_combined_log(tail, smcl_path, rc, trace, exc, start_offset=start_offset)
         
-        # Use SMCL content as primary source for RC detection
-        if not exc or rc in (1, -1):
+        # Use SMCL content as primary source for RC detection if pystata RC is ambiguous
+        if not exc or rc in (0, 1, -1):
             parsed_rc = self._parse_rc_from_smcl(smcl_content)
             if parsed_rc is not None and parsed_rc != 0:
                 rc = parsed_rc
@@ -2405,6 +2481,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         stderr_final = None
         error = None
         
+        # authoritative output (plain text version of SMCL)
+        stdout_final = self._smcl_to_text(smcl_content) if smcl_content else combined
+        # Clean the final output of internal maintenance artifacts
+        stdout_final = self._clean_internal_smcl(stdout_final)
+        
+        # Consistent with server.py: if log_path is set and success, redundant stdout is cleared
+        if success and log_path:
+            stdout_final = ""
+
         if not success:
             # Use SMCL as authoritative source for error extraction
             if smcl_content:
@@ -2422,12 +2507,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 snippet=smcl_content[-800:] if smcl_content else combined[-800:],
                 smcl_output=smcl_content,
             )
-            # Token Efficiency: clear stdout on error
+            # Put summary in stderr
             stderr_final = context
-            stdout_final = ""
-        else:
-            stdout_final = ""
-
+        
         duration = time.time() - start_time
         logger.info(
             "stata.run(stream) rc=%s success=%s trace=%s duration_ms=%.2f code_preview=%s",
@@ -2533,38 +2615,44 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         
         graph_poll_state = [0.0]
 
-        async def on_chunk_for_graphs(_chunk: str) -> None:
-            # Background the graph check so we don't block SMCL streaming or task completion
-            asyncio.create_task(
-                self._maybe_cache_graphs_on_chunk(
-                    graph_cache=graph_cache,
-                    emit_graph_ready=emit_graph_ready,
-                    notify_log=notify_log,
-                    graph_ready_task_id=graph_ready_task_id,
-                    graph_ready_format=graph_ready_format,
-                    graph_ready_initial=graph_ready_initial,
-                    last_check=graph_poll_state,
-                )
-            )
-
-        on_chunk_callback = on_chunk_for_progress
-        if graph_cache:
-            async def on_chunk_callback(chunk: str) -> None:
-                await on_chunk_for_progress(chunk)
-                await on_chunk_for_graphs(chunk)
-
         done = anyio.Event()
 
         try:
             async with anyio.create_task_group() as tg:
+                async def on_chunk_for_graphs(_chunk: str) -> None:
+                    # Background the graph check so we don't block SMCL streaming or task completion.
+                    # Use tg.start_soon instead of asyncio.create_task to ensure all checks 
+                    # finish before the command is considered complete.
+                    tg.start_soon(
+                        functools.partial(
+                            self._maybe_cache_graphs_on_chunk,
+                            graph_cache=graph_cache,
+                            emit_graph_ready=emit_graph_ready,
+                            notify_log=notify_log,
+                            graph_ready_task_id=graph_ready_task_id,
+                            graph_ready_format=graph_ready_format,
+                            graph_ready_initial=graph_ready_initial,
+                            last_check=graph_poll_state,
+                        )
+                    )
+
+                async def actual_on_chunk(chunk: str) -> None:
+                    # Inform progress tracker
+                    await on_chunk_for_progress(chunk)
+                    
+                    # Background graph detection
+                    if graph_cache:
+                        await on_chunk_for_graphs(chunk)
+
                 async def stream_smcl() -> None:
                     try:
                         await self._stream_smcl_log(
                             smcl_path=smcl_path,
                             notify_log=notify_log,
                             done=done,
-                            on_chunk=on_chunk_callback,
+                            on_chunk=actual_on_chunk,
                             start_offset=start_offset,
+                            tee=tee,
                         )
                     except Exception as exc:
                         logger.debug("SMCL streaming failed: %s", exc)
@@ -2664,8 +2752,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         combined = self._build_combined_log(tail, smcl_path, rc, trace, exc, start_offset=start_offset)
         
-        # Use SMCL content as primary source for RC detection
-        if not exc or rc in (1, -1):
+        # Use SMCL content as primary source for RC detection if pystata RC is ambiguous
+        if not exc or rc in (0, 1, -1):
             parsed_rc = self._parse_rc_from_smcl(smcl_content)
             if parsed_rc is not None and parsed_rc != 0:
                 rc = parsed_rc
@@ -2680,6 +2768,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         stderr_final = None
         error = None
         
+        # authoritative output (plain text version of SMCL)
+        stdout_final = self._smcl_to_text(smcl_content) if smcl_content else combined
+        # Clean the final output of internal maintenance artifacts
+        stdout_final = self._clean_internal_smcl(stdout_final)
+        
+        # Consistent with server.py: if log_path is set and success, redundant stdout is cleared
+        if success and log_path:
+            stdout_final = ""
+
         if not success:
             # Use SMCL as authoritative source for error extraction
             if smcl_content:
@@ -2697,12 +2794,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 snippet=smcl_content[-800:] if smcl_content else combined[-800:],
                 smcl_output=smcl_content,
             )
-            # Token Efficiency: clear stdout on error
+            # Put summary in stderr
             stderr_final = context
-            stdout_final = ""
-        else:
-            stdout_final = ""
-
+            # Token Efficiency optimization: we keep stdout for local users/tests
+            # but if it's very large, we might truncate it later
+        
         duration = time.time() - start_time
         logger.info(
             "stata.run(do stream) rc=%s success=%s trace=%s duration_ms=%.2f path=%s",
@@ -3258,6 +3354,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             with self._list_graphs_cache_lock:
                 if self._list_graphs_cache is not None:
                     logger.debug("Recursive list_graphs call prevented, returning cached value")
+                    if self._list_graphs_cache and hasattr(self._list_graphs_cache[0], "name"):
+                        return [g.name for g in self._list_graphs_cache]
                     return self._list_graphs_cache
                 else:
                     logger.debug("Recursive list_graphs call prevented, returning empty list")
@@ -3268,6 +3366,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         with self._list_graphs_cache_lock:
             if (not force_refresh and self._list_graphs_cache is not None and
                 current_time - self._list_graphs_cache_time < self.LIST_GRAPHS_TTL):
+                if self._list_graphs_cache and hasattr(self._list_graphs_cache[0], "name"):
+                    return [g.name for g in self._list_graphs_cache]
                 return self._list_graphs_cache
 
         # Cache miss or expired, fetch fresh data
@@ -3286,14 +3386,25 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     raise
                 
                 try:
+                    # Bundle name listing and metadata retrieval into one Stata call for efficiency
                     bundle = (
                         "macro define mcp_graph_list \"\"\n"
+                        "global mcp_graph_details \"\"\n"
                         "quietly graph dir, memory\n"
-                        "macro define mcp_graph_list \"`r(list)'\""
+                        "macro define mcp_graph_list \"`r(list)'\"\n"
+                        "if \"`r(list)'\" != \"\" {\n"
+                        "  foreach g in `r(list)' {\n"
+                        "    quietly graph describe `g'\n"
+                        "    global mcp_graph_details \"$mcp_graph_details `g'|`r(command_date)' `r(command_time)';\"\n"
+                        "  }\n"
+                        "}"
                     )
                     self.stata.run(bundle, echo=False)
                     from sfi import Macro  # type: ignore[import-not-found]
                     graph_list_str = Macro.getGlobal("mcp_graph_list")
+                    details_str = Macro.getGlobal("mcp_graph_details")
+                    # Cleanup global to keep Stata environment tidy
+                    self.stata.run("macro drop mcp_graph_details", echo=False)
                 finally:
                     try:
                         self.stata.run(f"capture _return restore {hold_name}", echo=False)
@@ -3304,33 +3415,66 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                         raise
 
                 raw_list = graph_list_str.split() if graph_list_str else []
+                
+                # Parse details: "name1|date time; name2|date time;"
+                details_map = {}
+                if details_str:
+                    for item in details_str.split(';'):
+                        if '|' in item:
+                            parts = item.strip().split('|', 1)
+                            if len(parts) == 2:
+                                gname, ts = parts
+                                details_map[gname] = ts
 
                 # Map internal Stata names back to user-facing names when we have an alias.
                 reverse = getattr(self, "_graph_name_reverse", {})
-                graph_list = [reverse.get(n, n) for n in raw_list]
+                
+                graph_infos = []
+                for n in raw_list:
+                    graph_infos.append(GraphInfo(
+                        name=reverse.get(n, n),
+                        active=False,
+                        created=details_map.get(n)
+                    ))
 
-                result = graph_list
+                # Prune emitted signatures map for graphs that are gone
+                existing_names = {g.name for g in graph_infos}
+                to_remove = [n for n in self._last_emitted_graph_signatures if n not in existing_names]
+                for n in to_remove:
+                    del self._last_emitted_graph_signatures[n]
 
                 # Update cache
                 with self._list_graphs_cache_lock:
-                    self._list_graphs_cache = result
+                    self._list_graphs_cache = graph_infos
                     self._list_graphs_cache_time = time.time()
                 
-                return result
+                return [g.name for g in graph_infos]
                 
             except Exception as e:
                 # On error, return cached result if available, otherwise empty list
                 with self._list_graphs_cache_lock:
                     if self._list_graphs_cache is not None:
                         logger.warning(f"list_graphs failed, returning cached result: {e}")
+                        if self._list_graphs_cache and hasattr(self._list_graphs_cache[0], "name"):
+                            return [g.name for g in self._list_graphs_cache]
                         return self._list_graphs_cache
                 logger.warning(f"list_graphs failed, no cache available: {e}")
                 return []
 
     def list_graphs_structured(self) -> GraphListResponse:
-        names = self.list_graphs()
-        active_name = names[-1] if names else None
-        graphs = [GraphInfo(name=n, active=(n == active_name)) for n in names]
+        self.list_graphs()
+        
+        with self._list_graphs_cache_lock:
+            if not self._list_graphs_cache:
+                return GraphListResponse(graphs=[])
+            
+            # The cache now contains GraphInfo objects
+            graphs = [g.model_copy() for g in self._list_graphs_cache]
+        
+        if graphs:
+            # Most recently created/displayed graph is active in Stata
+            graphs[-1].active = True
+            
         return GraphListResponse(graphs=graphs)
 
     def invalidate_list_graphs_cache(self) -> None:
@@ -3989,9 +4133,13 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             # 1. Ensure the specific graph is active in the Stata engine via 'graph display'.
             # 2. Export with the explicit name() option to ensure isolation.
             # Graph names in Stata should NOT be quoted.
-            self._exec_no_capture_silent(f'graph display {safe_name}', echo=False)
-            export_cmd = f'graph export "{cache_path_for_stata}", name({safe_name}) replace as(svg)'
-            resp = self._exec_no_capture_silent(export_cmd, echo=False)
+            
+            maintenance = [
+                f"quietly graph display {safe_name}",
+                f"quietly graph export \"{cache_path_for_stata}\", name({safe_name}) replace as(svg)"
+            ]
+            
+            resp = self._exec_no_capture_silent("\n".join(maintenance), echo=False)
             
             if resp.success and os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
                 # Read the data to compute hash
