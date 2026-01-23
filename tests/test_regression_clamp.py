@@ -21,10 +21,12 @@ async def test_regression_graph_emission_and_log_cleaning(client: StataClient):
     client._graph_signature_cache = {}
     client._graph_signature_cache_cmd_idx = None
     
-    # Track graph_ready events
+    # Track all notify_log events (chunks and control events)
+    all_notified_chunks = []
     graph_ready_events = []
     
     async def notify_log(msg: str):
+        all_notified_chunks.append(msg)
         try:
             data = json.loads(msg)
             if data.get("event") == "graph_ready":
@@ -91,10 +93,30 @@ async def test_regression_graph_emission_and_log_cleaning(client: StataClient):
         smcl = resp.smcl_output
         stdout = resp.stdout
         
+        # Check the file at log_path
+        if resp.log_path and os.path.exists(resp.log_path):
+            with open(resp.log_path, "r") as f:
+                log_content = f.read()
+        else:
+            log_content = ""
+
         for indicator in pollution_indicators:
             assert indicator not in smcl, f"Pollution '{indicator}' found in SMCL output for command {i+1}:\n{smcl}"
+            assert indicator not in log_content, f"Pollution '{indicator}' found in log_path file for command {i+1}:\n{log_content}"
             if indicator != "stata_client.py": # python paths might naturally occur in stdout if user asked for it, but not our internal ones
                 assert indicator not in stdout, f"Pollution '{indicator}' found in STDOUT for command {i+1}:\n{stdout}"
+
+    # --- VERIFICATION 3: Streaming Chunks ---
+    for chunk in all_notified_chunks:
+        # Check if it's a JSON event, ignore those for cleaning check
+        try:
+            json.loads(chunk)
+            continue
+        except json.JSONDecodeError:
+            pass
+            
+        for indicator in pollution_indicators:
+            assert indicator not in chunk, f"Pollution '{indicator}' found in NOTIFIED chunk:\n{chunk}"
 
     # Clean up
     client.stata.run("capture log close _all", echo=False)

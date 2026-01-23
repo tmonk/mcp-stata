@@ -632,7 +632,12 @@ class StataClient:
                         rc = 1
                     if exc is None:
                         try:
-                            with self._redirect_io_streaming(tee, tee):
+                            # Use an internal buffer to capture the direct output of pystata
+                            # rather than writing it raw to the 'tee' (and log_path). 
+                            # We rely on _stream_smcl_log to populate the 'tee' with 
+                            # cleaned content from the SMCL log.
+                            direct_buf = io.StringIO()
+                            with self._redirect_io_streaming(direct_buf, direct_buf):
                                 try:
                                     if trace:
                                         self.stata.run("set trace on")
@@ -663,10 +668,10 @@ class StataClient:
                                         rc = 0
                                         
                                     if isinstance(ret, str) and ret:
-                                        try:
-                                            tee.write(ret)
-                                        except Exception:
-                                            pass
+                                        # If for some reason SMCL log wasn't working, we can 
+                                        # fall back to the raw output, but otherwise we 
+                                        # avoid writing raw data to the tee.
+                                        pass
                                 except Exception as e:
                                     exc = e
                                     logger.error("stata.run bundle failed: %r", e)
@@ -2400,7 +2405,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             smcl_log_name = self._make_smcl_log_name()
 
         # Inform the MCP client immediately where to read/tail the output.
-        await notify_log(json.dumps({"event": "log_path", "path": smcl_path}))
+        # We provide the cleaned plain-text log_path as the primary 'path' to satisfy 
+        # requirements for clean logs without maintenance boilerplate.
+        await notify_log(json.dumps({"event": "log_path", "path": log_path, "smcl_path": smcl_path}))
 
         rc = -1
         path_for_stata = code.replace("\\", "/")
@@ -2685,7 +2692,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 start_offset = 0
 
         # Inform the MCP client immediately where to read/tail the output.
-        await notify_log(json.dumps({"event": "log_path", "path": smcl_path}))
+        # We provide the cleaned plain-text log_path as the primary 'path' to satisfy 
+        # requirements for clean logs without maintenance boilerplate.
+        await notify_log(json.dumps({"event": "log_path", "path": log_path, "smcl_path": smcl_path}))
 
         rc = -1
         graph_ready_initial = self._capture_graph_state(graph_cache, emit_graph_ready)
