@@ -1,6 +1,7 @@
 import anyio
 import pytest
 import json
+import os
 from pathlib import Path
 
 
@@ -139,6 +140,64 @@ def test_run_do_file_streaming_with_cwd_and_relative_paths(tmp_path, client):
         assert "parent-ok" in text
 
     anyio.run(main)
+
+
+def test_streaming_graph_ready_dedup_no_log_pollution(client):
+    commands = [
+        "sysuse auto, clear",
+        "reg price mpg",
+        "twoway scatter price mpg, name(scatter1, replace)",
+        "twoway scatter mpg price",
+    ]
+
+    graph_ready_events: list[dict] = []
+    log_pollution: list[str] = []
+
+    async def notify_log(msg: str) -> None:
+        if "mcp_" in msg and ("saved" in msg or "found" in msg or "opened" in msg):
+            if '"event": "graph_ready"' not in msg:
+                log_pollution.append(msg)
+        try:
+            data = json.loads(msg)
+            if data.get("event") == "graph_ready":
+                graph_ready_events.append(data)
+        except Exception:
+            pass
+
+    async def main() -> None:
+        client._last_emitted_graph_signatures = {}
+        client._run_internal("capture log close _all", echo=False)
+        log_path = client._create_smcl_log_path()
+        client._persistent_log_path = log_path
+        client._persistent_log_name = "_mcp_session"
+        client._run_internal(f'log using "{log_path}", name(_mcp_session) smcl replace', echo=False)
+
+        try:
+            for cmd in commands:
+                resp = await client.run_command_streaming(
+                    cmd,
+                    notify_log=notify_log,
+                    emit_graph_ready=True,
+                    auto_cache_graphs=True,
+                )
+                assert resp.rc == 0
+                smcl_output = resp.smcl_output or ""
+                if "mcp_" in smcl_output and ("saved" in smcl_output or "found" in smcl_output or "opened" in smcl_output):
+                    log_pollution.append(smcl_output)
+        finally:
+            client._run_internal("capture log close _mcp_session", echo=False)
+            client._persistent_log_path = None
+            client._persistent_log_name = None
+            if os.path.exists(log_path):
+                try:
+                    os.remove(log_path)
+                except Exception:
+                    pass
+
+    anyio.run(main)
+
+    assert len(graph_ready_events) == 2
+    assert not log_pollution
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

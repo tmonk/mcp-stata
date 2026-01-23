@@ -292,25 +292,21 @@ class GraphCreationDetector:
             
             for graph_name in current_graphs:
                 try:
-                    # Signature logic: 
-                    # 1. Start with name+cmd_idx (fast)
+                    # Signature logic:
+                    # Prefer stable timestamps across commands to avoid duplicate notifications.
                     fast_sig = self._describe_graph_signature(graph_name)
-                    
-                    # 2. If it's a new command for this graph, verify with timestamp
+
                     prev = self._last_graph_state.get(graph_name)
                     timestamp = timestamps.get(graph_name)
-                    sig = fast_sig
-                    
+
                     if prev and prev.get("cmd_idx") == cmd_idx:
-                        # Already processed in this command context. 
-                        # Deduplicate by reusing our previous decision for this specific command.
+                        # Already processed in this command context.
                         sig = prev.get("signature")
+                    elif timestamp:
+                        # Use timestamp-stable signature across commands when available.
+                        sig = f"{graph_name}_{timestamp}"
                     else:
-                        # This is a new command or we have no history. 
-                        # Use the fresh signature (name + cmd_idx). 
-                        # We don't suppress based on timestamp alone across different 
-                        # commands because the user expects a notification for each 
-                        # explicit graphing tool call.
+                        # Fallback to command-index-based signature.
                         sig = fast_sig
                     
                     state_info = {
