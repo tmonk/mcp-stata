@@ -180,16 +180,34 @@ def _install_stdout_filter() -> None:
                     line, buffer = buffer.split(b"\n", 1)
                     line_with_nl = line + b"\n"
                     stripped = line.lstrip()
-                    if stripped.startswith(b"{") or stripped.startswith(b"["):
-                        os.write(original_stdout_fd, line_with_nl)
-                    elif stripped:
-                        os.write(2, line_with_nl)
+                    if stripped:
+                        try:
+                            payload = json.loads(stripped)
+                            if isinstance(payload, dict) and payload.get("jsonrpc"):
+                                os.write(original_stdout_fd, line_with_nl)
+                            elif isinstance(payload, list) and any(
+                                isinstance(item, dict) and item.get("jsonrpc") for item in payload
+                            ):
+                                os.write(original_stdout_fd, line_with_nl)
+                            else:
+                                os.write(2, line_with_nl)
+                        except Exception:
+                            os.write(2, line_with_nl)
             if buffer:
                 stripped = buffer.lstrip()
-                if stripped.startswith(b"{") or stripped.startswith(b"["):
-                    os.write(original_stdout_fd, buffer)
-                else:
-                    os.write(2, buffer)
+                if stripped:
+                    try:
+                        payload = json.loads(stripped)
+                        if isinstance(payload, dict) and payload.get("jsonrpc"):
+                            os.write(original_stdout_fd, buffer)
+                        elif isinstance(payload, list) and any(
+                            isinstance(item, dict) and item.get("jsonrpc") for item in payload
+                        ):
+                            os.write(original_stdout_fd, buffer)
+                        else:
+                            os.write(2, buffer)
+                    except Exception:
+                        os.write(2, buffer)
 
             try:
                 os.close(read_fd)

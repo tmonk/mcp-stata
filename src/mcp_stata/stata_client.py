@@ -43,6 +43,7 @@ from .utils import get_writable_temp_dir, register_temp_file, register_temp_dir
 logger = logging.getLogger("mcp_stata")
 
 _POLARS_AVAILABLE: Optional[bool] = None
+_GRAPH_NAME_PATTERN = re.compile(r"name\(\s*(\"[^\"]+\"|'[^']+'|[^,\)\s]+)", re.IGNORECASE)
 
 def _check_polars_available() -> bool:
     """
@@ -389,27 +390,25 @@ class StataClient:
         emit_graph_ready: bool,
     ) -> Optional[dict[str, str]]:
         # Capture initial graph state BEFORE execution starts
+        graph_names: List[str] = []
+        if graph_cache or emit_graph_ready:
+            try:
+                graph_names = list(self.list_graphs(force_refresh=True))
+            except Exception as e:
+                logger.debug("Failed to capture initial graph state: %s", e)
+                graph_names = []
+
         if graph_cache:
             # Clear detection state for the new command (detected/removed sets)
             # but preserve _last_graph_state signatures for modification detection.
             graph_cache.detector.clear_detection_state()
-            try:
-                graph_cache._initial_graphs = set(self.list_graphs(force_refresh=True))
-                logger.debug(f"Initial graph state captured: {graph_cache._initial_graphs}")
-            except Exception as e:
-                logger.debug(f"Failed to capture initial graph state: {e}")
-                graph_cache._initial_graphs = set()
+            graph_cache._initial_graphs = set(graph_names)
+            logger.debug(f"Initial graph state captured: {graph_cache._initial_graphs}")
 
         graph_ready_initial = None
         if emit_graph_ready:
-            try:
-                graph_ready_initial = {}
-                for graph_name in self.list_graphs(force_refresh=True):
-                    graph_ready_initial[graph_name] = self._get_graph_signature(graph_name)
-                logger.debug("Graph-ready initial state captured: %s", set(graph_ready_initial))
-            except Exception as e:
-                logger.debug("Failed to capture graph-ready state: %s", e)
-                graph_ready_initial = {}
+            graph_ready_initial = {name: self._get_graph_signature(name) for name in graph_names}
+            logger.debug("Graph-ready initial state captured: %s", set(graph_ready_initial))
         return graph_ready_initial
 
     async def _cache_new_graphs(
@@ -1045,9 +1044,19 @@ class StataClient:
                 if fmt == "svg":
                     export_path = self._get_cached_graph_path(graph_name)
                 if not export_path:
-                    export_path = await anyio.to_thread.run_sync(
-                        lambda: self.export_graph(graph_name, format=fmt)
-                    )
+                    last_exc = None
+                    for attempt in range(6):
+                        try:
+                            export_path = await anyio.to_thread.run_sync(
+                                lambda: self.export_graph(graph_name, format=fmt)
+                            )
+                            break
+                        except Exception as exc:
+                            last_exc = exc
+                            if attempt < 5:
+                                await anyio.sleep(0.05)
+                                continue
+                            raise last_exc
                 payload = {
                     "event": "graph_ready",
                     "task_id": task_id,
@@ -1069,8 +1078,7 @@ class StataClient:
     def _extract_named_graphs(text: str) -> List[str]:
         if not text:
             return []
-        pattern = re.compile(r"name\(\s*(\"[^\"]+\"|'[^']+'|[^,\)\s]+)", re.IGNORECASE)
-        matches = pattern.findall(text)
+        matches = _GRAPH_NAME_PATTERN.findall(text)
         if not matches:
             return []
         out = []
@@ -1124,16 +1132,24 @@ class StataClient:
         notify_log: Callable[[str], Awaitable[None]],
         task_id: Optional[str],
         export_format: str,
-    ) -> None:
-        try:
-            current_graphs = list(self.list_graphs(force_refresh=True))
-        except Exception as e:
-            logger.warning("graph_ready: list_graphs failed: %s", e)
-            return
+    ) -> int:
+        current_graphs: List[str] = []
+        for _ in range(5):
+            if self._is_executing:
+                await anyio.sleep(0.05)
+                continue
+            try:
+                current_graphs = list(self.list_graphs(force_refresh=True))
+            except Exception as e:
+                logger.warning("graph_ready: list_graphs failed: %s", e)
+                return 0
+            if current_graphs:
+                break
+            await anyio.sleep(0.05)
 
         if not current_graphs:
-            return
-
+            return 0
+        emitted = 0
         for graph_name in current_graphs:
             signature = self._get_graph_signature(graph_name)
             previous = initial_graphs.get(graph_name)
@@ -1159,8 +1175,10 @@ class StataClient:
                 }
                 await notify_log(json.dumps(payload))
                 initial_graphs[graph_name] = signature
+                emitted += 1
             except Exception as e:
                 logger.warning("graph_ready export failed for %s: %s", graph_name, e)
+        return emitted
 
     def _get_graph_signature(self, graph_name: str) -> str:
         """
@@ -2345,20 +2363,27 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     last_check=graph_poll_state,
                     force=True,
                 )
+        if emit_graph_ready and not graph_ready_emitted and graph_ready_initial is not None:
+            try:
+                graph_ready_emitted = await self._emit_graph_ready_events(
+                    graph_ready_initial,
+                    notify_log,
+                    graph_ready_task_id,
+                    graph_ready_format,
+                )
+            except Exception as exc:
+                logger.debug("graph_ready fallback emission failed: %s", exc)
         if emit_graph_ready and not graph_ready_emitted:
             try:
                 fallback_names = self._extract_named_graphs(code)
                 if fallback_names:
-                    current_graphs = set(self.list_graphs(force_refresh=True))
-                    to_emit = [name for name in fallback_names if name in current_graphs]
-                    if to_emit:
-                        await self._emit_graph_ready_for_graphs(
-                            to_emit,
-                            notify_log=notify_log,
-                            task_id=graph_ready_task_id,
-                            export_format=graph_ready_format,
-                            graph_ready_initial=graph_ready_initial,
-                        )
+                    await self._emit_graph_ready_for_graphs(
+                        list(dict.fromkeys(fallback_names)),
+                        notify_log=notify_log,
+                        task_id=graph_ready_task_id,
+                        export_format=graph_ready_format,
+                        graph_ready_initial=graph_ready_initial,
+                    )
             except Exception as exc:
                 logger.debug("graph_ready fallback emission failed: %s", exc)
 
@@ -2609,6 +2634,16 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     last_check=graph_poll_state,
                     force=True,
                 )
+        if emit_graph_ready and not graph_ready_emitted and graph_ready_initial is not None:
+            try:
+                graph_ready_emitted = await self._emit_graph_ready_events(
+                    graph_ready_initial,
+                    notify_log,
+                    graph_ready_task_id,
+                    graph_ready_format,
+                )
+            except Exception as exc:
+                logger.debug("graph_ready fallback emission failed: %s", exc)
         if emit_graph_ready and not graph_ready_emitted:
             try:
                 try:
@@ -2617,16 +2652,13 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     dofile_text = ""
                 fallback_names = self._extract_named_graphs(dofile_text)
                 if fallback_names:
-                    current_graphs = set(self.list_graphs(force_refresh=True))
-                    to_emit = [name for name in fallback_names if name in current_graphs]
-                    if to_emit:
-                        await self._emit_graph_ready_for_graphs(
-                            to_emit,
-                            notify_log=notify_log,
-                            task_id=graph_ready_task_id,
-                            export_format=graph_ready_format,
-                            graph_ready_initial=graph_ready_initial,
-                        )
+                    await self._emit_graph_ready_for_graphs(
+                        list(dict.fromkeys(fallback_names)),
+                        notify_log=notify_log,
+                        task_id=graph_ready_task_id,
+                        export_format=graph_ready_format,
+                        graph_ready_initial=graph_ready_initial,
+                    )
             except Exception as exc:
                 logger.debug("graph_ready fallback emission failed: %s", exc)
 

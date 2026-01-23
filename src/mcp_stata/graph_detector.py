@@ -220,7 +220,26 @@ class GraphCreationDetector:
         try:
             # Use pystata to get graph list directly
             if self._stata_client and hasattr(self._stata_client, 'list_graphs'):
-                return self._stata_client.list_graphs(force_refresh=True)
+                graphs = self._stata_client.list_graphs(force_refresh=True)
+                if graphs:
+                    return graphs
+                # Fallback to inventory if list_graphs is empty
+                try:
+                    inventory, _timestamps = self._get_graph_inventory()
+                    if inventory:
+                        return inventory
+                except Exception:
+                    return []
+                # Brief retry to allow graph registration to settle
+                time.sleep(0.05)
+                graphs = self._stata_client.list_graphs(force_refresh=True)
+                if graphs:
+                    return graphs
+                try:
+                    inventory, _timestamps = self._get_graph_inventory()
+                    return inventory
+                except Exception:
+                    return []
             else:
                 # Fallback to sfi Macro interface - only if stata is available
                 if self._stata_client and hasattr(self._stata_client, 'stata'):
