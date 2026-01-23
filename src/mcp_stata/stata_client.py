@@ -1034,19 +1034,19 @@ class StataClient:
     ) -> int:
         if not graph_names:
             return 0
+        # Deduplicate requested names while preserving order
+        graph_names = list(dict.fromkeys(graph_names))
         fmt = (export_format or "svg").strip().lower()
         emitted = 0
         for graph_name in graph_names:
-            signature = self._get_graph_signature(graph_name)
-            
-            # Persistent suppression across commands: skip if already emitted with this signature.
-            if self._last_emitted_graph_signatures.get(graph_name) == signature:
+            # Try to determine a stable signature before exporting; prefer cached path if present
+            cached_path = self._get_cached_graph_path(graph_name) if fmt == "svg" else None
+            pre_signature = f"{graph_name}:{cached_path}" if cached_path else self._get_graph_signature(graph_name)
+            if self._last_emitted_graph_signatures.get(graph_name) == pre_signature:
                 continue
 
             try:
-                export_path = None
-                if fmt == "svg":
-                    export_path = self._get_cached_graph_path(graph_name)
+                export_path = cached_path
                 if not export_path:
                     last_exc = None
                     for attempt in range(6):
@@ -1061,6 +1061,9 @@ class StataClient:
                                 await anyio.sleep(0.05)
                                 continue
                             raise last_exc
+                signature = f"{graph_name}:{export_path}" if export_path else pre_signature
+                if self._last_emitted_graph_signatures.get(graph_name) == signature:
+                    continue
                 payload = {
                     "event": "graph_ready",
                     "task_id": task_id,
@@ -1122,14 +1125,22 @@ class StataClient:
             logger.debug("graph_ready polling failed: %s", e)
             return 0
         if emit_graph_ready and cached_names:
-            return await self._emit_graph_ready_for_graphs(
-                cached_names,
-                notify_log=notify_log,
-                task_id=graph_ready_task_id,
-                export_format=graph_ready_format,
-                graph_ready_initial=graph_ready_initial,
-            )
+            async with self._ensure_graph_ready_lock():
+                return await self._emit_graph_ready_for_graphs(
+                    cached_names,
+                    notify_log=notify_log,
+                    task_id=graph_ready_task_id,
+                    export_format=graph_ready_format,
+                    graph_ready_initial=graph_ready_initial,
+                )
         return 0
+
+    def _ensure_graph_ready_lock(self) -> asyncio.Lock:
+        lock = getattr(self, "_graph_ready_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._graph_ready_lock = lock
+        return lock
 
     async def _emit_graph_ready_events(
         self,
@@ -1138,93 +1149,74 @@ class StataClient:
         task_id: Optional[str],
         export_format: str,
     ) -> int:
-        current_graphs: List[str] = []
+        if not initial_graphs:
+            return 0
+        lock = self._ensure_graph_ready_lock()
+
+        fmt = (export_format or "svg").strip().lower()
+        emitted = 0
+
+        # Poll briefly for new graphs after command completion; emit once per batch.
         for _ in range(5):
-            if self._is_executing:
-                await anyio.sleep(0.05)
-                continue
             try:
                 current_graphs = list(self.list_graphs(force_refresh=True))
-            except Exception as e:
-                logger.warning("graph_ready: list_graphs failed: %s", e)
-                return 0
-            if current_graphs:
+            except Exception as exc:
+                logger.debug("graph_ready list_graphs failed: %s", exc)
+                current_graphs = []
+
+            # Determine which graphs are new or changed relative to captured initial state.
+            to_emit: List[str] = []
+            for graph_name in current_graphs:
+                signature = self._get_graph_signature(graph_name)
+                if self._last_emitted_graph_signatures.get(graph_name) == signature:
+                    continue
+                if graph_name not in initial_graphs:
+                    to_emit.append(graph_name)
+                elif initial_graphs.get(graph_name) != signature:
+                    to_emit.append(graph_name)
+
+            if to_emit:
+                async with lock:
+                    emitted += await self._emit_graph_ready_for_graphs(
+                        to_emit,
+                        notify_log=notify_log,
+                        task_id=task_id,
+                        export_format=fmt,
+                        graph_ready_initial=initial_graphs,
+                    )
                 break
+
             await anyio.sleep(0.05)
 
-        if not current_graphs:
-            return 0
-            
-        emitted = 0
-        for graph_name in current_graphs:
-            signature = self._get_graph_signature(graph_name)
-            
-            # 1. Delta check against command start
-            previous = initial_graphs.get(graph_name)
-            if previous is not None and previous == signature:
-                continue
-            
-            # 2. Persistent suppression across commands
-            if self._last_emitted_graph_signatures.get(graph_name) == signature:
-                continue
-                
-            try:
-                export_path = None
-                if export_format == "svg":
-                    export_path = self._get_cached_graph_path(graph_name)
-                
-                if not export_path:
-                    export_path = await anyio.to_thread.run_sync(
-                        lambda: self.export_graph(graph_name, format=export_format)
-                    )
-                payload = {
-                    "event": "graph_ready",
-                    "task_id": task_id,
-                    "graph": {
-                        "name": graph_name,
-                        "path": export_path,
-                        "label": graph_name,
-                    },
-                }
-                await notify_log(json.dumps(payload))
-                
-                # Update tracking
-                initial_graphs[graph_name] = signature
-                self._last_emitted_graph_signatures[graph_name] = signature
-                emitted += 1
-            except Exception as e:
-                logger.warning("graph_ready export failed for %s: %s", graph_name, e)
         return emitted
 
     def _get_graph_signature(self, graph_name: str) -> str:
-        """
-        Get a stable signature for a graph without calling Stata directly.
-        Uses cached timestamps from list_graphs for stability across commands.
-        """
-        if not graph_name:
-            return ""
-
-        cmd_idx = getattr(self, "_command_idx", 0)
-        if self._graph_signature_cache_cmd_idx == cmd_idx:
-            cached = self._graph_signature_cache.get(graph_name)
-            if cached:
-                return cached
-        else:
+        """Return a stable signature for a graph name within the current command."""
+        if self._graph_signature_cache_cmd_idx != self._command_idx:
             self._graph_signature_cache = {}
-            self._graph_signature_cache_cmd_idx = cmd_idx
-            
-        # Try to find timestamp in cache
-        with self._list_graphs_cache_lock:
-            if self._list_graphs_cache:
-                for g in self._list_graphs_cache:
-                    if hasattr(g, "name") and g.name == graph_name and g.created:
-                        # Use timestamp for a truly stable signature across commands
-                        signature = f"{graph_name}_{g.created}"
-                        self._graph_signature_cache[graph_name] = signature
-                        return signature
-        
-        # Fallback to command index if timestamp not available
-        signature = f"{graph_name}_{cmd_idx}"
+            self._graph_signature_cache_cmd_idx = self._command_idx
+
+        cached = self._graph_signature_cache.get(graph_name)
+        if cached:
+            return cached
+
+        cmd_idx = self._command_idx
+        signature = graph_name
+
+        try:
+            # Use cached graph metadata when available (created timestamp is stable).
+            with self._list_graphs_cache_lock:
+                cached_graphs = list(self._list_graphs_cache or [])
+            for g in cached_graphs:
+                if hasattr(g, "name") and g.name == graph_name and getattr(g, "created", None):
+                    signature = f"{graph_name}_{g.created}"
+                    break
+        except Exception:
+            pass
+
+        if signature == graph_name:
+            signature = f"{graph_name}_{cmd_idx}"
+
         self._graph_signature_cache[graph_name] = signature
         return signature
 
@@ -1831,10 +1823,23 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # First, clean internal maintenance
         smcl = self._clean_internal_smcl(smcl)
         
+        # Protect escape sequences for curly braces 
+        # SMCL uses {c -(} for { and {c )-} for }
+        cleaned = smcl.replace("{c -(}", "__L__").replace("{c )-}", "__R__")
+        
+        # Handle SMCL escape variations that might have been partially processed
+        cleaned = cleaned.replace("__G_L__", "__L__").replace("__G_R__", "__R__")
+        
         # Keep inline directive content if present (e.g., {bf:word} -> word)
-        cleaned = re.sub(r"\{[^}:]+:([^}]*)\}", r"\1", smcl)
-        # Remove remaining SMCL brace commands like {smcl}, {vieweralsosee ...}, {txt}, {p}
+        cleaned = re.sub(r"\{[^}:]+:([^}]*)\}", r"\1", cleaned)
+
+        # Remove remaining SMCL tags like {smcl}, {txt}, {res}, {com}, etc.
+        # We use a non-greedy match.
         cleaned = re.sub(r"\{[^}]*\}", "", cleaned)
+        
+        # Convert placeholders back to literal braces
+        cleaned = cleaned.replace("__L__", "{").replace("__R__", "}")
+        
         # Normalize whitespace
         cleaned = cleaned.replace("\r", "")
         lines = [line.rstrip() for line in cleaned.splitlines()]
@@ -1848,39 +1853,45 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             return ""
 
         # 1. Strip SMCL log headers and footers
-        header_pattern = r"(?:\{smcl\}\r?\n?)?\{txt\}\{sf\}\{ul off\}\{\.-\}.*?\{\.-\}\r?\n?"
+        header_pattern = r"(?:\{smcl\}\r?\n?)?\{txt\}\{sf\}\{ul off\}(?:\{.-\})?.*?log:.*?opened on:.*?(?:\{.-\})?\r?\n?(?:\{txt\}\r?\n?)?"
         content = re.sub(header_pattern, "", content, flags=re.DOTALL)
         
-        footer_pattern = r"\{\.-\}\r?\n?(?:\{smcl\})?\{txt\}\{sf\}\{ul off\}.*?log closed on.*$"
+        footer_pattern = r"(?:\r?\n)*\{.-\}\r?\n?(?:\{smcl\})?\{txt\}\{sf\}\{ul off\}.*?log closed on.*$"
         content = re.sub(footer_pattern, "", content, flags=re.DOTALL)
 
         # 2. Strip internal file notifications (often from graph exports or preemptive caching)
-        file_save_pattern = r"\r?\n?\{res\}\(file (?:\{txt\})?.*?mcp_(?:stata|hold|ghold|det)_.*?(?:\{res\})? saved\)\r?\n?"
+        file_save_pattern = r"\r?\n?(?:\{res\}|\{txt\})?\(file (?:\{txt\})?.*?(?:mcp_(?:stata|hold|ghold|det|session)_|preemptive_cache).*?(?:\{res\}|\{txt\})? saved(?: as [^)]+)?\)\r?\n?(?:\{txt\}\r?\n?)?"
         content = re.sub(file_save_pattern, "", content)
         
-        file_not_found_pattern = r"\r?\n?\{res\}\(file (?:\{txt\})?.*?mcp_(?:stata|hold|ghold|det)_.*?(?:\{res\})? not found\)\r?\n?"
+        file_not_found_pattern = r"\r?\n?(?:\{res\}|\{txt\})?\(file (?:\{txt\})?.*?(?:mcp_(?:stata|hold|ghold|det|session)_|preemptive_cache).*?(?:\{res\}|\{txt\})? not found\)\r?\n?(?:\{txt\}\r?\n?)?"
         content = re.sub(file_not_found_pattern, "", content)
 
         # 3. Strip internal scalar/macro/log commands
-        # Matches lines starting with prompt variations (, . , {com}. , {txt}. )
-        # followed by our internal maintenance commands or result-holding artifacts.
-        internal_cmd_pattern = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:capture )?(?:quietly )?(?:scalar|macro|log|graph|_return) (?:drop|display|export|save|hold|on|off).*?\r?\n?"
+        internal_cmd_pattern = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:capture )?(?:quietly )?(?:scalar|macro|log|graph|_return) [^\r\n]*?(?:_mcp_|mcp_hold|mcp_session|mcp_rc|hold_name|hold_attr)[^\r\n]*\r?\n?(?:\{txt\}\r?\n?)?"
         content = re.sub(internal_cmd_pattern, "", content)
 
-        # 4. Strip the bundle wrapper echoes
-        # Handle both raw braces { and potential escaped artifacts like c -(}
-        bundle_wrapper = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:capture noisily )?(?:\{|c\s+-\(}).*?\r?\n?"
-        content = re.sub(bundle_wrapper, "", content)
-        bundle_end = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:\}|c\s+\)-}).*?\r?\n?"
-        content = re.sub(bundle_end, "", content)
-        
-        # Also handle artifacts that might appear inline after commands (like 10c )-} )
-        content = re.sub(r"c\s*-?\(?\}", "", content)
-        content = re.sub(r"c\s*\)-?\}", "", content)
+        # 3b. Strip internal graph export/display commands that reference cache paths
+        internal_graph_cmd_pattern = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:capture )?(?:quietly )?graph (?:export|save|use|display) [^\r\n]*?(?:preemptive_cache|mcp_)[^\r\n]*\r?\n?(?:\{txt\}\r?\n?)?"
+        content = re.sub(internal_graph_cmd_pattern, "", content)
 
-        # 5. Strip any residual empty {res} or {txt} tags that might result from stripping
-        content = re.sub(r'^\{(?:res|txt|com)\}\r?\n?', '', content, flags=re.MULTILINE)
+        # 4. Strip the bundle wrapper echoes
+        # Match capture noisily { and } accurately
+        bundle_wrapper = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:capture noisily )?(?:\{|\{c\s*-\(}|c\s*-\(})[^\r\n]*\r?\n?(?:\{txt\}\r?\n?)?" 
+        content = re.sub(bundle_wrapper, "", content) 
+        bundle_end = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:\}|\{c\s*\)-}|c\s*\)-})[^\r\n]*\r?\n?(?:\{txt\}\r?\n?)?" 
+        content = re.sub(bundle_end, "", content) 
+
+        # 5. Strip specific result artifacts that might persist
+        content = re.sub(r"\r?\n?(?:\{com\}|\{txt\})?\. capture _return hold .*?\r?\n?(?:\{txt\}\r?\n?)?", "", content)
+        content = re.sub(r"\r?\n?(?:\{com\}|\{txt\})?\. scalar _mcp_.*?\r?\n?(?:\{txt\}\r?\n?)?", "", content)
         
+        # 6. Strip residual empty {res} or {txt} tags (very aggressive)
+        content = re.sub(r'\{(?:res|txt|com)\}\s*(?:\r?\n|$)', '', content)
+        
+        # 7. Strip bare prompts at the end of output
+        content = re.sub(r"\r?\n+(?:\{com\}|\{txt\})?\. (?:\{txt\})?\s*$", "", content)
+        
+        # Final trim
         return content.strip() if strip_output else content
 
     def _extract_error_and_context(self, log_content: str, rc: int) -> Tuple[str, str]:
@@ -2464,6 +2475,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path, start_offset=start_offset)
+        # Clean internal maintenance immediately 
+        smcl_content = self._clean_internal_smcl(smcl_content, strip_output=False) 
+
 
         graph_ready_emitted = 0
         if graph_cache:
@@ -2500,13 +2514,14 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             try:
                 fallback_names = self._extract_named_graphs(code)
                 if fallback_names:
-                    await self._emit_graph_ready_for_graphs(
-                        list(dict.fromkeys(fallback_names)),
-                        notify_log=notify_log,
-                        task_id=graph_ready_task_id,
-                        export_format=graph_ready_format,
-                        graph_ready_initial=graph_ready_initial,
-                    )
+                    async with self._ensure_graph_ready_lock():
+                        await self._emit_graph_ready_for_graphs(
+                            list(dict.fromkeys(fallback_names)),
+                            notify_log=notify_log,
+                            task_id=graph_ready_task_id,
+                            export_format=graph_ready_format,
+                            graph_ready_initial=graph_ready_initial,
+                        )
             except Exception as exc:
                 logger.debug("graph_ready fallback emission failed: %s", exc)
 
@@ -2747,6 +2762,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path, start_offset=start_offset)
+        # Clean internal maintenance immediately 
+        smcl_content = self._clean_internal_smcl(smcl_content, strip_output=False) 
+
 
         graph_ready_emitted = 0
         if graph_cache:
@@ -2787,13 +2805,14 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     dofile_text = ""
                 fallback_names = self._extract_named_graphs(dofile_text)
                 if fallback_names:
-                    await self._emit_graph_ready_for_graphs(
-                        list(dict.fromkeys(fallback_names)),
-                        notify_log=notify_log,
-                        task_id=graph_ready_task_id,
-                        export_format=graph_ready_format,
-                        graph_ready_initial=graph_ready_initial,
-                    )
+                    async with self._ensure_graph_ready_lock():
+                        await self._emit_graph_ready_for_graphs(
+                            list(dict.fromkeys(fallback_names)),
+                            notify_log=notify_log,
+                            task_id=graph_ready_task_id,
+                            export_format=graph_ready_format,
+                            graph_ready_initial=graph_ready_initial,
+                        )
             except Exception as exc:
                 logger.debug("graph_ready fallback emission failed: %s", exc)
 
@@ -3483,12 +3502,6 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                         active=False,
                         created=details_map.get(n)
                     ))
-
-                # Prune emitted signatures map for graphs that are gone
-                existing_names = {g.name for g in graph_infos}
-                to_remove = [n for n in self._last_emitted_graph_signatures if n not in existing_names]
-                for n in to_remove:
-                    del self._last_emitted_graph_signatures[n]
 
                 # Update cache
                 with self._list_graphs_cache_lock:
