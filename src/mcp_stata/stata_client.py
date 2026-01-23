@@ -1038,12 +1038,43 @@ class StataClient:
         graph_names = list(dict.fromkeys(graph_names))
         fmt = (export_format or "svg").strip().lower()
         emitted = 0
+
+        # Heuristic: Find active graph to help decide which existing graphs were touched.
+        active_graph = None
+        try:
+            from sfi import Scalar
+            active_graph = Scalar.getValue("c(curgraph)")
+        except Exception:
+            pass
+        code = getattr(self, "_current_command_code", "")
+
         for graph_name in graph_names:
             # Try to determine a stable signature before exporting; prefer cached path if present
             cached_path = self._get_cached_graph_path(graph_name) if fmt == "svg" else None
-            pre_signature = f"{graph_name}:{cached_path}" if cached_path else self._get_graph_signature(graph_name)
+            pre_signature = f"{graph_name}:{cached_path}:{self._command_idx}" if cached_path else self._get_graph_signature(graph_name)
+            
+            # If we already emitted this EXACT signature in THIS command, skip.
             if self._last_emitted_graph_signatures.get(graph_name) == pre_signature:
                 continue
+
+            # RE-EMISSION FILTER: If the graph existed before, only re-emit if likely touched.
+            if graph_ready_initial and graph_name in graph_ready_initial:
+                initial_sig = graph_ready_initial.get(graph_name)
+                if initial_sig == pre_signature:
+                    # No obvious change in memory; only re-emit if high probability it was refreshed
+                    is_default_plot = graph_name == "Graph" and any(k in code.lower() for k in ["twoway", "scatter", "line", "hist", "graph", "plot", "pie", "bar", "dot", "box", "matrix"])
+                    mentioned = graph_name in code or is_default_plot
+                    if graph_name != active_graph and not mentioned:
+                        continue
+                else:
+                    # Signature changed (e.g. command index updated or timestamp changed).
+                    # If it's a fallback signature, we still verify relevance to avoid noise.
+                    is_fallback = pre_signature.endswith(f"_{self._command_idx}")
+                    if is_fallback:
+                        is_default_plot = graph_name == "Graph" and any(k in code.lower() for k in ["twoway", "scatter", "line", "hist", "graph", "plot", "pie", "bar", "dot", "box", "matrix"])
+                        mentioned = graph_name in code or is_default_plot
+                        if graph_name != active_graph and not mentioned:
+                             continue
 
             try:
                 export_path = cached_path
@@ -1061,7 +1092,7 @@ class StataClient:
                                 await anyio.sleep(0.05)
                                 continue
                             raise last_exc
-                signature = f"{graph_name}:{export_path}" if export_path else pre_signature
+                signature = f"{graph_name}:{export_path}:{self._command_idx}" if export_path else pre_signature
                 if self._last_emitted_graph_signatures.get(graph_name) == signature:
                     continue
                 payload = {
@@ -1164,21 +1195,10 @@ class StataClient:
                 logger.debug("graph_ready list_graphs failed: %s", exc)
                 current_graphs = []
 
-            # Determine which graphs are new or changed relative to captured initial state.
-            to_emit: List[str] = []
-            for graph_name in current_graphs:
-                signature = self._get_graph_signature(graph_name)
-                if self._last_emitted_graph_signatures.get(graph_name) == signature:
-                    continue
-                if graph_name not in initial_graphs:
-                    to_emit.append(graph_name)
-                elif initial_graphs.get(graph_name) != signature:
-                    to_emit.append(graph_name)
-
-            if to_emit:
+            if current_graphs:
                 async with lock:
                     emitted += await self._emit_graph_ready_for_graphs(
-                        to_emit,
+                        current_graphs,
                         notify_log=notify_log,
                         task_id=task_id,
                         export_format=fmt,
@@ -1867,12 +1887,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         content = re.sub(file_not_found_pattern, "", content)
 
         # 3. Strip internal scalar/macro/log commands
-        internal_cmd_pattern = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:capture )?(?:quietly )?(?:scalar|macro|log|graph|_return) [^\r\n]*?(?:_mcp_|mcp_hold|mcp_session|mcp_rc|hold_name|hold_attr)[^\r\n]*\r?\n?(?:\{txt\}\r?\n?)?"
+        internal_cmd_pattern = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:capture )?(?:quietly )?(?:scalar|macro|log|graph|_return)\b[^\r\n]*?(?:_mcp_|mcp_hold|mcp_session|mcp_rc|hold_name|hold_attr|preemptive_cache)[^\r\n]*\r?\n?(?:\{txt\}\r?\n?)?"
         content = re.sub(internal_cmd_pattern, "", content)
-
-        # 3b. Strip internal graph export/display commands that reference cache paths
-        internal_graph_cmd_pattern = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:capture )?(?:quietly )?graph (?:export|save|use|display) [^\r\n]*?(?:preemptive_cache|mcp_)[^\r\n]*\r?\n?(?:\{txt\}\r?\n?)?"
-        content = re.sub(internal_graph_cmd_pattern, "", content)
 
         # 4. Strip the bundle wrapper echoes
         # Match capture noisily { and } accurately
@@ -1885,7 +1901,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         content = re.sub(r"\r?\n?(?:\{com\}|\{txt\})?\. capture _return hold .*?\r?\n?(?:\{txt\}\r?\n?)?", "", content)
         content = re.sub(r"\r?\n?(?:\{com\}|\{txt\})?\. scalar _mcp_.*?\r?\n?(?:\{txt\}\r?\n?)?", "", content)
         
-        # 6. Strip residual empty {res} or {txt} tags (very aggressive)
+        # 6. Strip residual empty {res} or {txt} tags
         content = re.sub(r'\{(?:res|txt|com)\}\s*(?:\r?\n|$)', '', content)
         
         # 7. Strip bare prompts at the end of output
@@ -2390,7 +2406,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         path_for_stata = code.replace("\\", "/")
         command = f'{path_for_stata}'
 
+        # Capture initial graph signatures to detect additions/changes
         graph_ready_initial = self._capture_graph_state(graph_cache, emit_graph_ready)
+        self._current_command_code = code
         
         # Increment AFTER capture so detected modifications are based on state BEFORE this command
         self._increment_command_idx()
