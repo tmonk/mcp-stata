@@ -736,6 +736,29 @@ class StataClient:
         finally:
             # Always close our named log
             self._close_smcl_log(log_name)
+            # Ensure the persistent session log is still active after our capture.
+            if self._persistent_log_path and os.path.exists(self._persistent_log_path):
+                try:
+                    from sfi import Scalar  # type: ignore[import-not-found]
+
+                    log_rc_scalar = f"_mcp_log_rc_restore_{uuid.uuid4().hex[:8]}"
+                    # Try to turn the persistent log back on first.
+                    restore_bundle = (
+                        f"capture quietly log on {self._persistent_log_name}\n"
+                        f"scalar {log_rc_scalar} = _rc"
+                    )
+                    self._run_internal(restore_bundle, echo=False)
+                    rc_val = Scalar.getValue(log_rc_scalar)
+                    self._run_internal(f"capture scalar drop {log_rc_scalar}", echo=False)
+                    if rc_val is None or int(float(rc_val)) != 0:
+                        # If log wasn't already open, reopen it in append mode.
+                        path_for_stata = self._persistent_log_path.replace("\\", "/")
+                        reopen_cmd = (
+                            f"capture quietly log using \"{path_for_stata}\", append smcl name({self._persistent_log_name})"
+                        )
+                        self._run_internal(reopen_cmd, echo=False)
+                except Exception:
+                    pass
 
     def _read_smcl_file(self, path: str, start_offset: int = 0) -> str:
         """Read SMCL file contents, handling encoding issues, offsets and Windows file locks."""
@@ -842,7 +865,10 @@ class StataClient:
         native_res = fast_scan_log(smcl_content, rc)
         if native_res:
             error_msg, context, _ = native_res
-            return error_msg, context
+            # If native result is specific, return it. Otherwise fall through to recover
+            # a more descriptive error message from SMCL/text.
+            if error_msg and error_msg != f"Stata error r({rc})":
+                return error_msg, context
 
         lines = smcl_content.splitlines()
         
@@ -895,11 +921,38 @@ class StataClient:
             
             return error_msg, context
         
-        # Fallback: no {err} found, return last 30 lines as context
+        # Fallback: no {err} found, try to extract a meaningful message from text
+        # (some Stata errors do not emit {err} tags in SMCL).
+        try:
+            text_lines = self._smcl_to_text(smcl_content).splitlines()
+        except Exception:
+            text_lines = []
+
+        def _find_error_line() -> Optional[str]:
+            patterns = [
+                r"no variables defined",
+                r"not found",
+                r"variable .* not found",
+                r"no observations",
+            ]
+            for line in reversed(text_lines):
+                lowered = line.lower()
+                for pat in patterns:
+                    if re.search(pat, lowered):
+                        return line.strip()
+            return None
+
+        extracted = _find_error_line()
+        if extracted:
+            error_msg = extracted
+        else:
+            error_msg = f"Stata error r({rc})"
+
+        # Context: last 30 lines of SMCL
         context_start = max(0, len(lines) - 30)
         context = "\n".join(lines[context_start:])
-        
-        return f"Stata error r({rc})", context
+
+        return error_msg, context
 
     def _parse_rc_from_smcl(self, smcl_content: str) -> Optional[int]:
         """Parse return code from SMCL content using specific structural patterns."""
@@ -980,16 +1033,13 @@ class StataClient:
         task_id: Optional[str],
         export_format: str,
         graph_ready_initial: Optional[dict[str, str]],
-    ) -> None:
+    ) -> int:
         if not graph_names:
-            return
+            return 0
         fmt = (export_format or "svg").strip().lower()
+        emitted = 0
         for graph_name in graph_names:
             signature = self._get_graph_signature(graph_name)
-            if graph_ready_initial is not None:
-                previous = graph_ready_initial.get(graph_name)
-                if previous is not None and previous == signature:
-                    continue
             try:
                 export_path = None
                 if fmt == "svg":
@@ -1008,10 +1058,27 @@ class StataClient:
                     },
                 }
                 await notify_log(json.dumps(payload))
+                emitted += 1
                 if graph_ready_initial is not None:
                     graph_ready_initial[graph_name] = signature
             except Exception as e:
                 logger.warning("graph_ready export failed for %s: %s", graph_name, e)
+        return emitted
+
+    @staticmethod
+    def _extract_named_graphs(text: str) -> List[str]:
+        if not text:
+            return []
+        pattern = re.compile(r"name\(\s*(\"[^\"]+\"|'[^']+'|[^,\)\s]+)", re.IGNORECASE)
+        matches = pattern.findall(text)
+        if not matches:
+            return []
+        out = []
+        for raw in matches:
+            name = raw.strip().strip("\"").strip("'").strip()
+            if name:
+                out.append(name)
+        return out
 
     async def _maybe_cache_graphs_on_chunk(
         self,
@@ -1024,31 +1091,32 @@ class StataClient:
         graph_ready_initial: Optional[dict[str, str]],
         last_check: List[float],
         force: bool = False,
-    ) -> None:
+    ) -> int:
         if not graph_cache or not graph_cache.auto_cache:
-            return
+            return 0
         if self._is_executing and not force:
             # Skip polling if Stata is busy; it will block on _exec_lock anyway.
             # During final check (force=True), we know it's safe because _run_streaming_blocking has finished.
-            return
+            return 0
         now = time.monotonic()
         if not force and last_check and now - last_check[0] < 0.25:
-            return
+            return 0
         if last_check:
             last_check[0] = now
         try:
             cached_names = await graph_cache.cache_detected_graphs_with_pystata()
         except Exception as e:
             logger.debug("graph_ready polling failed: %s", e)
-            return
+            return 0
         if emit_graph_ready and cached_names:
-            await self._emit_graph_ready_for_graphs(
+            return await self._emit_graph_ready_for_graphs(
                 cached_names,
                 notify_log=notify_log,
                 task_id=graph_ready_task_id,
                 export_format=graph_ready_format,
                 graph_ready_initial=graph_ready_initial,
             )
+        return 0
 
     async def _emit_graph_ready_events(
         self,
@@ -1363,6 +1431,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 sys.stderr.flush()
                 with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr), self._safe_redirect_fds():
                     from pystata import stata  # type: ignore[import-not-found]
+                    try:
+                        # Disable PyStata streamout to avoid stdout corruption and SystemError
+                        from pystata import config as pystata_config  # type: ignore[import-not-found]
+                        if hasattr(pystata_config, "set_streamout"):
+                            pystata_config.set_streamout("off")
+                        elif hasattr(pystata_config, "stconfig"):
+                            pystata_config.stconfig["streamout"] = "off"
+                    except Exception:
+                        pass
                     # Warm up the engine and swallow any late splash screen output
                     stata.run("display 1", echo=False)
                 self.stata = stata
@@ -1759,6 +1836,27 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             use_p = self._persistent_log_path and os.path.exists(self._persistent_log_path) and cwd is None
             smcl_path = self._persistent_log_path if use_p else self._create_smcl_log_path(prefix="mcp_", max_hex=16)
             log_name = None if use_p else self._make_smcl_log_name()
+            if use_p:
+                # Ensure persistent log is open; reopen in append mode if needed.
+                try:
+                    from sfi import Scalar  # type: ignore[import-not-found]
+
+                    log_rc_scalar = f"_mcp_log_rc_pre_{uuid.uuid4().hex[:8]}"
+                    ensure_bundle = (
+                        f"capture quietly log on {self._persistent_log_name}\n"
+                        f"scalar {log_rc_scalar} = _rc"
+                    )
+                    self._run_internal(ensure_bundle, echo=False)
+                    rc_val = Scalar.getValue(log_rc_scalar)
+                    self._run_internal(f"capture scalar drop {log_rc_scalar}", echo=False)
+                    if rc_val is None or int(float(rc_val)) != 0:
+                        path_for_stata = smcl_path.replace("\\", "/")
+                        self._run_internal(
+                            f"capture quietly log using \"{path_for_stata}\", append smcl name({self._persistent_log_name})",
+                            echo=False,
+                        )
+                except Exception:
+                    pass
             
             # Flush before seeking to get accurate file size for offset
             if use_p:
@@ -2226,6 +2324,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path, start_offset=start_offset)
 
+        graph_ready_emitted = 0
         if graph_cache:
             asyncio.create_task(
                 self._cache_new_graphs(
@@ -2235,6 +2334,33 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     completed_label="Command",
                 )
             )
+            if emit_graph_ready:
+                graph_ready_emitted = await self._maybe_cache_graphs_on_chunk(
+                    graph_cache=graph_cache,
+                    emit_graph_ready=emit_graph_ready,
+                    notify_log=notify_log,
+                    graph_ready_task_id=graph_ready_task_id,
+                    graph_ready_format=graph_ready_format,
+                    graph_ready_initial=graph_ready_initial,
+                    last_check=graph_poll_state,
+                    force=True,
+                )
+        if emit_graph_ready and not graph_ready_emitted:
+            try:
+                fallback_names = self._extract_named_graphs(code)
+                if fallback_names:
+                    current_graphs = set(self.list_graphs(force_refresh=True))
+                    to_emit = [name for name in fallback_names if name in current_graphs]
+                    if to_emit:
+                        await self._emit_graph_ready_for_graphs(
+                            to_emit,
+                            notify_log=notify_log,
+                            task_id=graph_ready_task_id,
+                            export_format=graph_ready_format,
+                            graph_ready_initial=graph_ready_initial,
+                        )
+            except Exception as exc:
+                logger.debug("graph_ready fallback emission failed: %s", exc)
 
         combined = self._build_combined_log(tail, smcl_path, rc, trace, exc, start_offset=start_offset)
         
@@ -2462,6 +2588,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path, start_offset=start_offset)
 
+        graph_ready_emitted = 0
         if graph_cache:
             asyncio.create_task(
                 self._cache_new_graphs(
@@ -2471,6 +2598,37 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     completed_label="Do-file",
                 )
             )
+            if emit_graph_ready:
+                graph_ready_emitted = await self._maybe_cache_graphs_on_chunk(
+                    graph_cache=graph_cache,
+                    emit_graph_ready=emit_graph_ready,
+                    notify_log=notify_log,
+                    graph_ready_task_id=graph_ready_task_id,
+                    graph_ready_format=graph_ready_format,
+                    graph_ready_initial=graph_ready_initial,
+                    last_check=graph_poll_state,
+                    force=True,
+                )
+        if emit_graph_ready and not graph_ready_emitted:
+            try:
+                try:
+                    dofile_text = pathlib.Path(effective_path).read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    dofile_text = ""
+                fallback_names = self._extract_named_graphs(dofile_text)
+                if fallback_names:
+                    current_graphs = set(self.list_graphs(force_refresh=True))
+                    to_emit = [name for name in fallback_names if name in current_graphs]
+                    if to_emit:
+                        await self._emit_graph_ready_for_graphs(
+                            to_emit,
+                            notify_log=notify_log,
+                            task_id=graph_ready_task_id,
+                            export_format=graph_ready_format,
+                            graph_ready_initial=graph_ready_initial,
+                        )
+            except Exception as exc:
+                logger.debug("graph_ready fallback emission failed: %s", exc)
 
         combined = self._build_combined_log(tail, smcl_path, rc, trace, exc, start_offset=start_offset)
         
