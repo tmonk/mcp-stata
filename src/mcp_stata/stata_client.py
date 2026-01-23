@@ -167,6 +167,8 @@ class StataClient:
         self._persistent_log_path = None
         self._persistent_log_name = None
         self._last_emitted_graph_signatures: Dict[str, str] = {}
+        self._graph_signature_cache: Dict[str, str] = {}
+        self._graph_signature_cache_cmd_idx: Optional[int] = None
         self._last_results = None
         from .graph_detector import GraphCreationDetector
         self._graph_detector = GraphCreationDetector(self)
@@ -179,6 +181,8 @@ class StataClient:
         inst._initialized = False
         inst._persistent_log_path = None
         inst._persistent_log_name = None
+        inst._graph_signature_cache = {}
+        inst._graph_signature_cache_cmd_idx = None
         inst._last_results = None
         from .graph_detector import GraphCreationDetector
         inst._graph_detector = GraphCreationDetector(inst)
@@ -187,6 +191,8 @@ class StataClient:
     def _increment_command_idx(self) -> int:
         """Increment and return the command counter."""
         self._command_idx += 1
+        self._graph_signature_cache = {}
+        self._graph_signature_cache_cmd_idx = self._command_idx
         return self._command_idx
 
     @contextmanager
@@ -393,6 +399,8 @@ class StataClient:
         emit_graph_ready: bool,
     ) -> Optional[dict[str, str]]:
         # Capture initial graph state BEFORE execution starts
+        self._graph_signature_cache = {}
+        self._graph_signature_cache_cmd_idx = None
         graph_names: List[str] = []
         if graph_cache or emit_graph_ready:
             try:
@@ -1104,7 +1112,7 @@ class StataClient:
             # During final check (force=True), we know it's safe because _run_streaming_blocking has finished.
             return 0
         now = time.monotonic()
-        if not force and last_check and now - last_check[0] < 0.25:
+        if not force and last_check and now - last_check[0] < 0.75:
             return 0
         if last_check:
             last_check[0] = now
@@ -1195,6 +1203,15 @@ class StataClient:
         """
         if not graph_name:
             return ""
+
+        cmd_idx = getattr(self, "_command_idx", 0)
+        if self._graph_signature_cache_cmd_idx == cmd_idx:
+            cached = self._graph_signature_cache.get(graph_name)
+            if cached:
+                return cached
+        else:
+            self._graph_signature_cache = {}
+            self._graph_signature_cache_cmd_idx = cmd_idx
             
         # Try to find timestamp in cache
         with self._list_graphs_cache_lock:
@@ -1202,11 +1219,14 @@ class StataClient:
                 for g in self._list_graphs_cache:
                     if hasattr(g, "name") and g.name == graph_name and g.created:
                         # Use timestamp for a truly stable signature across commands
-                        return f"{graph_name}_{g.created}"
+                        signature = f"{graph_name}_{g.created}"
+                        self._graph_signature_cache[graph_name] = signature
+                        return signature
         
         # Fallback to command index if timestamp not available
-        cmd_idx = getattr(self, "_command_idx", 0)
-        return f"{graph_name}_{cmd_idx}"
+        signature = f"{graph_name}_{cmd_idx}"
+        self._graph_signature_cache[graph_name] = signature
+        return signature
 
     def _request_break_in(self) -> None:
         """
@@ -2006,6 +2026,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         # Output extraction
         smcl_content = self._read_persistent_log_chunk(start_off) if use_p else self._read_smcl_file(smcl_path)
+        if use_p and not smcl_content:
+            try:
+                self.stata.run(f"capture quietly log flush {self._persistent_log_name}", echo=False)
+                smcl_content = self._read_persistent_log_chunk(start_off)
+            except Exception:
+                pass
         if not use_p: self._safe_unlink(smcl_path)
     
         # Use SMCL as authoritative source for stdout
@@ -2019,7 +2045,24 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         error = None
         
         if not success:
-            msg, context = self._extract_error_from_smcl(smcl_content, rc) if smcl_content else self._extract_error_and_context(stdout + stderr, rc)
+            if smcl_content:
+                msg, context = self._extract_error_from_smcl(smcl_content, rc)
+                if msg == f"Stata error r({rc})":
+                    msg2, context2 = self._extract_error_and_context(stdout + stderr, rc)
+                    if msg2 != f"Stata error r({rc})":
+                        msg, context = msg2, context2
+                    elif use_p and self._persistent_log_path:
+                        try:
+                            with open(self._persistent_log_path, "r", encoding="utf-8", errors="replace") as f:
+                                f.seek(start_off)
+                                raw_chunk = f.read()
+                            msg3, context3 = self._extract_error_from_smcl(raw_chunk, rc)
+                            if msg3 != f"Stata error r({rc})":
+                                msg, context = msg3, context3
+                        except Exception:
+                            pass
+            else:
+                msg, context = self._extract_error_and_context(stdout + stderr, rc)
             error = ErrorEnvelope(message=msg, context=context, rc=rc, command=code, stdout=stdout, stderr=stderr, snippet=context)
             # In error case, we often want to isolate the error msg in stderr
             # but keep stdout for context if provided.
@@ -2342,8 +2385,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         self._increment_command_idx()
 
         graph_poll_state = [0.0]
+        graph_poll_interval = 0.75
 
         async def on_chunk_for_graphs(_chunk: str) -> None:
+            now = time.monotonic()
+            if graph_poll_state and now - graph_poll_state[0] < graph_poll_interval:
+                return
             # Background the graph check so we don't block SMCL streaming or task completion
             asyncio.create_task(
                 self._maybe_cache_graphs_on_chunk(

@@ -34,6 +34,13 @@ class GraphCreationDetector:
         self._unnamed_graph_counter = 0  # Track unnamed graphs for identification
         self._stata_client = stata_client
         self._last_graph_state: Dict[str, Any] = {}  # Track graph state changes
+        self._inventory_cache: Dict[str, Any] = {
+            "timestamp": 0.0,
+            "graphs": [],
+            "timestamps": {},
+        }
+        self._inventory_cache_ttl = 0.5
+        self._inventory_cache_enabled = False
 
     def _describe_graph_signature(self, graph_name: str) -> str:
         """Return a stable signature for a graph.
@@ -58,10 +65,19 @@ class GraphCreationDetector:
         cmd_idx = getattr(self._stata_client, "_command_idx", 0)
         return f"{graph_name}_{cmd_idx}"
 
-    def _get_graph_inventory(self) -> tuple[List[str], Dict[str, str]]:
+    def _get_graph_inventory(self, *, need_timestamps: bool = True) -> tuple[List[str], Dict[str, str]]:
         """Get both the list of graphs and their timestamps in a single Stata call."""
         if not self._stata_client or not hasattr(self._stata_client, "stata"):
             return [], {}
+        if self._inventory_cache_enabled:
+            now = time.monotonic()
+            cached = self._inventory_cache
+            if cached["graphs"] and (now - cached["timestamp"]) < self._inventory_cache_ttl:
+                if need_timestamps:
+                    if cached["timestamps"]:
+                        return list(cached["graphs"]), dict(cached["timestamps"])
+                else:
+                    return list(cached["graphs"]), {}
             
         try:
             # Use the lock from client to prevent concurrency issues with pystata
@@ -84,14 +100,21 @@ class GraphCreationDetector:
                     "local list `r(list)'",
                     "macro define mcpinvlist \"`r(list)'\"",
                     "local i = 0",
-                    "foreach g of local list {",
-                    "  capture quietly graph describe `g'",
-                    "  macro define mcpinvts`i' \"`r(command_date)'_`r(command_time)'\"",
-                    "  local i = `i' + 1",
-                    "}",
-                    "macro define mcpinvcount \"`i'\"",
-                    f"capture _return restore {hold_name}"
                 ]
+
+                if need_timestamps:
+                    bundle.extend([
+                        "foreach g of local list {",
+                        "  capture quietly graph describe `g'",
+                        "  macro define mcpinvts`i' \"`r(command_date)'_`r(command_time)'\"",
+                        "  local i = `i' + 1",
+                        "}",
+                    ])
+
+                bundle.extend([
+                    "macro define mcpinvcount \"`i'\"",
+                    f"capture _return restore {hold_name}",
+                ])
                 
                 self._stata_client.stata.run("\n".join(bundle), echo=False)
                 
@@ -116,11 +139,18 @@ class GraphCreationDetector:
                 count = int(float(count_str)) if count_str else 0
                 
                 timestamps = {}
-                for i in range(count):
-                    ts = Macro.getGlobal(f"mcpinvts{i}")
-                    if ts and i < len(user_names):
-                        # Use user_names to match what the rest of the system expects
-                        timestamps[user_names[i]] = ts
+                if need_timestamps:
+                    for i in range(count):
+                        ts = Macro.getGlobal(f"mcpinvts{i}")
+                        if ts and i < len(user_names):
+                            # Use user_names to match what the rest of the system expects
+                            timestamps[user_names[i]] = ts
+
+                self._inventory_cache = {
+                    "timestamp": time.monotonic(),
+                    "graphs": list(user_names),
+                    "timestamps": dict(timestamps),
+                }
                         
                 return user_names, timestamps
         except Exception as e:
@@ -226,7 +256,7 @@ class GraphCreationDetector:
                     return graphs
                 # Fallback to inventory if list_graphs is empty
                 try:
-                    inventory, _timestamps = self._get_graph_inventory()
+                    inventory, _timestamps = self._get_graph_inventory(need_timestamps=False)
                     if inventory:
                         return inventory
                 except Exception:
@@ -237,7 +267,7 @@ class GraphCreationDetector:
                 if graphs:
                     return graphs
                 try:
-                    inventory, _timestamps = self._get_graph_inventory()
+                    inventory, _timestamps = self._get_graph_inventory(need_timestamps=False)
                     return inventory
                 except Exception:
                     return []
@@ -463,7 +493,11 @@ class StreamingGraphCache:
                 # Get current state and check for new graphs
                 # _detect_graphs_via_pystata is sync and uses _exec_lock, must run in thread
                 import anyio
-                pystata_detected = await anyio.to_thread.run_sync(self.detector._detect_graphs_via_pystata)
+                self.detector._inventory_cache_enabled = True
+                try:
+                    pystata_detected = await anyio.to_thread.run_sync(self.detector._detect_graphs_via_pystata)
+                finally:
+                    self.detector._inventory_cache_enabled = False
                 
                 # Add any newly detected graphs to cache queue
                 for graph_name in pystata_detected:
@@ -477,6 +511,9 @@ class StreamingGraphCache:
         with self._lock:
             graphs_to_process = self._graphs_to_cache.copy()
             self._graphs_to_cache.clear()
+
+        if not graphs_to_process:
+            return cached_names
         
         # Get current graph list for verification
         try:
