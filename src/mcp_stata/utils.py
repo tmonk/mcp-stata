@@ -34,6 +34,10 @@ def register_temp_dir(path: str | pathlib.Path) -> None:
         p = pathlib.Path(path).absolute()
         _dirs_to_cleanup.add(p)
 
+def is_windows() -> bool:
+    """Returns True if the current operating system is Windows."""
+    return os.name == "nt"
+
 def _cleanup_temp_resources():
     """Cleanup registered temporary files and directories."""
     with _temp_dir_lock:

@@ -34,6 +34,9 @@ def _exists_with_retry(path: str, max_attempts: int = 1, delay: float = 0.01) ->
     return False
 
 
+from .utils import is_windows
+
+
 def _exists_fast(path: str) -> bool:
     """Fast existence check without retries for auto-discovery."""
     return os.path.exists(path)
@@ -226,10 +229,10 @@ def _resolve_windows_host_path(path: str, system: str) -> str:
 
 def _detect_system() -> str:
     """
-    Prefer Windows detection via os.name / sys.platform instead of platform.system()
+    Prefer Windows detection via is_windows() / sys.platform instead of platform.system()
     because some environments (e.g., Cygwin/MSYS) do not return "Windows".
     """
-    if os.name == "nt" or sys.platform.startswith(("cygwin", "msys")):
+    if is_windows() or sys.platform.startswith(("cygwin", "msys")):
         return "Windows"
     return platform.system()
 

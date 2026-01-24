@@ -39,7 +39,7 @@ from .smcl.smcl2html import smcl_to_markdown
 from .streaming_io import FileTeeIO, TailBuffer
 from .graph_detector import StreamingGraphCache
 from .native_ops import fast_scan_log, compute_filter_indices
-from .utils import get_writable_temp_dir, register_temp_file, register_temp_dir
+from .utils import get_writable_temp_dir, register_temp_file, register_temp_dir, is_windows
 
 logger = logging.getLogger("mcp_stata")
 
@@ -523,7 +523,7 @@ class StataClient:
                         f.seek(last_pos)
                         return f.read()
                 except PermissionError:
-                    if os.name == "nt":
+                    if is_windows():
                         try:
                             # Use 'type' on Windows to bypass exclusive lock
                             res = subprocess.run(f'type "{smcl_path}"', shell=True, capture_output=True)
@@ -843,7 +843,7 @@ class StataClient:
                     f.seek(start_offset)
                 return f.read()
         except PermissionError:
-            if os.name == "nt":
+            if is_windows():
                 # Windows Fallback: Try to use 'type' command to bypass exclusive lock
                 try:
                     res = subprocess.run(f'type "{path}"', shell=True, capture_output=True)
@@ -875,7 +875,7 @@ class StataClient:
             # Use refined cleaning logic to strip internal headers and maintenance
             return self._clean_internal_smcl(content)
         except PermissionError:
-            if os.name == "nt":
+            if is_windows():
                 try:
                     # Windows fallback for locked persistent log
                     res = subprocess.run(f'type "{self._persistent_log_path}"', shell=True, capture_output=True)
@@ -3825,7 +3825,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # Keep the user-facing path as a normal absolute path
         user_filename = pathlib.Path(filename).absolute()
 
-        if fmt == "png" and os.name == "nt":
+        if fmt == "png" and is_windows():
             # 1) Save graph to a .gph file from the embedded session
             with tempfile.NamedTemporaryFile(prefix="mcp_stata_graph_", suffix=".gph", dir=get_writable_temp_dir(), delete=False) as gph_tmp:
                 gph_path = pathlib.Path(gph_tmp.name)

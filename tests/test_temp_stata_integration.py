@@ -91,24 +91,16 @@ def test_registration_graph_export_complex(mock_temp_dir):
     client = StataClient()
     mcp_stata.utils._files_to_cleanup = set()
     
-    # Force the Windows-like PNG path even on non-Windows for testing registration logic
-    # We must patch pathlib.Path in utils.py to ensure it doesn't try to instantiate WindowsPath on macOS
-    # when os.name is 'nt' (which happens inside register_temp_file).
-    import platform
-    path_patch = pathlib.PosixPath if platform.system() != "Windows" else pathlib.Path
-    
     # Mock response for silent execution
     mock_resp = MagicMock()
     mock_resp.success = True
 
-    with patch("os.name", "nt"), \
-         patch("mcp_stata.utils.pathlib.Path", path_patch), \
-         patch("pathlib.Path", path_patch), \
-         patch.object(path_patch, "exists", return_value=True), \
-         patch.object(path_patch, "stat") as mock_path_stat, \
+    with patch("mcp_stata.stata_client.is_windows", return_value=True), \
+         patch.object(pathlib.Path, "exists", return_value=True), \
+         patch.object(pathlib.Path, "stat") as mock_path_stat, \
          patch.object(client, "_exec_no_capture_silent", return_value=mock_resp), \
          patch.object(client, "_stata_exec_path", "/path/to/stata", create=True), \
-         patch("subprocess.run") as mock_run:
+         patch("mcp_stata.stata_client.subprocess.run") as mock_run:
         
         mock_path_stat.return_value.st_size = 1024
         mock_run.return_value.returncode = 0
