@@ -12,7 +12,10 @@ async def test_regression_graph_emission_and_log_cleaning(client: StataClient):
     2. SMCL log pollution regression: Internal maintenance code (preemptive_cache, save) must be stripped.
     """
     # 1. Setup - Clean Stata state
-    client.stata.run("capture log close _all", echo=False)
+    try:
+        client.stata.run("capture log close _all", echo=False)
+    except Exception:
+        pass
     client.stata.run("graph drop _all", echo=False)
     client.stata.run("sysuse auto, clear", echo=False)
     

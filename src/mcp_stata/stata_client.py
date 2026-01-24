@@ -540,9 +540,14 @@ class StataClient:
             while not done.is_set():
                 chunk = await anyio.to_thread.run_sync(_read_content)
                 if chunk:
+                    is_first_chunk = last_pos == start_offset
                     last_pos += len(chunk)
                     # Clean chunk before sending to log channel to suppress maintenance leakage
-                    cleaned_chunk = self._clean_internal_smcl(chunk, strip_output=False)
+                    cleaned_chunk = self._clean_internal_smcl(
+                        chunk,
+                        strip_output=False,
+                        strip_leading_boilerplate=is_first_chunk,
+                    )
                     if cleaned_chunk:
                         try:
                             await notify_log(cleaned_chunk)
@@ -1098,19 +1103,23 @@ class StataClient:
             # Try to determine a stable signature before exporting; prefer cached path if present
             cached_path = self._get_cached_graph_path(graph_name) if fmt == "svg" else None
             pre_signature = self._get_graph_signature(graph_name)
-            signature = f"{pre_signature}:{self._command_idx}:{fmt}"
+            emit_key = f"{graph_name}:{self._command_idx}:{fmt}"
             
             # If we already emitted this EXACT signature in THIS command, skip.
-            if self._last_emitted_graph_signatures.get(graph_name) == signature:
+            if self._last_emitted_graph_signatures.get(graph_name) == emit_key:
                 continue
 
             # RE-EMISSION FILTER: If the graph existed before, only re-emit if likely touched.
             if graph_ready_initial and graph_name in graph_ready_initial:
+                is_default_plot = graph_name == "Graph" and any(
+                    k in code.lower() for k in ["twoway", "scatter", "line", "hist", "graph", "plot", "pie", "bar", "dot", "box", "matrix"]
+                )
+                mentioned = graph_name in code or is_default_plot
+                if graph_name != active_graph and not mentioned:
+                    continue
                 initial_sig = graph_ready_initial.get(graph_name)
                 if initial_sig == pre_signature:
                     # No obvious change in memory; only re-emit if high probability it was refreshed
-                    is_default_plot = graph_name == "Graph" and any(k in code.lower() for k in ["twoway", "scatter", "line", "hist", "graph", "plot", "pie", "bar", "dot", "box", "matrix"])
-                    mentioned = graph_name in code or is_default_plot
                     if graph_name != active_graph and not mentioned:
                         continue
                 else:
@@ -1118,8 +1127,6 @@ class StataClient:
                     # If it's a fallback signature, we still verify relevance to avoid noise.
                     is_fallback = pre_signature.endswith(f"_{self._command_idx}")
                     if is_fallback:
-                        is_default_plot = graph_name == "Graph" and any(k in code.lower() for k in ["twoway", "scatter", "line", "hist", "graph", "plot", "pie", "bar", "dot", "box", "matrix"])
-                        mentioned = graph_name in code or is_default_plot
                         if not mentioned:
                              continue
 
@@ -1139,7 +1146,7 @@ class StataClient:
                                 await anyio.sleep(0.05)
                                 continue
                             raise last_exc
-                if self._last_emitted_graph_signatures.get(graph_name) == signature:
+                if self._last_emitted_graph_signatures.get(graph_name) == emit_key:
                     continue
                 payload = {
                     "event": "graph_ready",
@@ -1152,7 +1159,7 @@ class StataClient:
                 }
                 await notify_log(json.dumps(payload))
                 emitted += 1
-                self._last_emitted_graph_signatures[graph_name] = signature
+                self._last_emitted_graph_signatures[graph_name] = emit_key
                 if graph_ready_initial is not None:
                     graph_ready_initial[graph_name] = pre_signature
             except Exception as e:
@@ -1911,7 +1918,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         lines = [line.rstrip() for line in cleaned.splitlines()]
         return "\n".join(lines).strip()
 
-    def _clean_internal_smcl(self, content: str, strip_output: bool = True) -> str:
+    def _clean_internal_smcl(
+        self,
+        content: str,
+        strip_output: bool = True,
+        strip_leading_boilerplate: bool = True,
+    ) -> str:
         """
         Conservative cleaning of internal maintenance from SMCL while preserving 
         tags and actual user output.
@@ -1936,19 +1948,20 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         content = re.sub(r"^\s*\{txt\}\{sf\}\{ul off\}\{smcl\}\s*$", "", content, flags=re.MULTILINE)
 
         # Remove leading boilerplate-only lines (blank or SMCL tag-only)
-        lines = content.splitlines()
-        lead = 0
-        while lead < len(lines):
-            line = lines[lead].strip()
-            if not line:
-                lead += 1
-                continue
-            if re.fullmatch(r"(?:\{[^}]+\})+", line):
-                lead += 1
-                continue
-            break
-        if lead:
-            content = "\n".join(lines[lead:])
+        if strip_leading_boilerplate:
+            lines = content.splitlines()
+            lead = 0
+            while lead < len(lines):
+                line = lines[lead].strip()
+                if not line:
+                    lead += 1
+                    continue
+                if re.fullmatch(r"(?:\{[^}]+\})+", line):
+                    lead += 1
+                    continue
+                break
+            if lead:
+                content = "\n".join(lines[lead:])
 
         # 2. Strip our injected capture/noisily blocks
         # We match start-of-line followed by optional tags, prompt, optional tags, 
@@ -1989,8 +2002,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         for p in internal_file_patterns:
             content = re.sub(r"^" + tags + r"\(file " + tags + r".*?" + p + r".*?" + tags + r" (?:saved|not found)(?: as [^)]+)?\).*?(\r?\n|$)", "", content, flags=re.MULTILINE)
 
-        # 5. Strip any lines that are just bare prompts (artifact of our multi-line injection)
-        content = re.sub(r"^" + tags + r"\. " + tags + r"(\s*\r?\n|$)", "", content, flags=re.MULTILINE)
+        # 5. Strip prompt-only lines that include our injected {txt} tag
+        # Preserve native Stata prompts like "{com}." which are part of verbatim output.
+        content = re.sub(r"^" + tags + r"\. " + r"(?:\{txt\})+" + tags + r"(\s*\r?\n|$)", "", content, flags=re.MULTILINE)
 
         # Do not add SMCL tags heuristically; preserve original output.
 

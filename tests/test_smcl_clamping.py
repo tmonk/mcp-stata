@@ -2,6 +2,7 @@ import asyncio
 import json
 import pytest
 import os
+from pathlib import Path
 from mcp_stata.stata_client import StataClient
 
 @pytest.mark.asyncio
@@ -58,20 +59,13 @@ async def test_smcl_perfection_clamp(client: StataClient, tmp_path):
     assert "capture noisily {" not in log_content
     assert "_mcp_rc" not in log_content
 
-    # --- VERIFICATION 3: EXACT FORMAT CHECK ---
-    # The user provided a very specific format. 
-    # ". do \"...\"\n{txt}\n{com}. sysuse auto, clear\n{txt}(1978 automobile data)\n..."
-    # We'll check for key sequences.
-    
-    # Note: The exact path in the . do command will vary, so we search for the suffix
-    assert ". do" in log_content
-    assert "{com}. sysuse auto, clear" in log_content
-    assert "{txt}(1978 automobile data)" in log_content
-    assert "reg price mpg" in log_content
-    assert "Adj R-squared" in log_content
-    
-    assert "twoway scatter price mpg, name(scatter1, replace)" in log_content
-    
-    assert "twoway scatter mpg price" in log_content
+    # --- VERIFICATION 3: EXACT FORMAT CHECK (VERBATIM CLAMP) ---
+    expected_template = Path("tests/fixtures/smcl_perfection_clamp_expected.txt").read_text()
+    expected = expected_template.replace("{DO_PATH}", str(do_path))
+
+    assert log_content == expected
 
     print("SMCL Clamping Success!")
+
+if __name__ == "__main__":
+    pytest.main([__file__])

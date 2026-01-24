@@ -1,0 +1,28 @@
+{com}. do "{DO_PATH}"
+{txt}
+{com}. sysuse auto, clear
+{txt}(1978 automobile data)
+
+{com}. reg price mpg
+
+{txt}      Source {c |}       SS           df       MS      Number of obs   ={res}        74
+{txt}{hline 13}{c +}{hline 34}   F(1, 72)        = {res}    20.26
+{txt}       Model {c |} {res}  139449474         1   139449474   {txt}Prob > F        ={res}    0.0000
+{txt}    Residual {c |} {res}  495615923        72  6883554.48   {txt}R-squared       ={res}    0.2196
+{txt}{hline 13}{c +}{hline 34}   Adj R-squared   ={res}    0.2087
+{txt}       Total {c |} {res}  635065396        73  8699525.97   {txt}Root MSE        =   {res} 2623.7
+
+{txt}{hline 13}{c TT}{hline 11}{hline 11}{hline 9}{hline 8}{hline 13}{hline 12}
+{col 1}       price{col 14}{c |} Coefficient{col 26}  Std. err.{col 38}      t{col 46}   P>|t|{col 54}     [95% con{col 67}f. interval]
+{hline 13}{c +}{hline 11}{hline 11}{hline 9}{hline 8}{hline 13}{hline 12}
+{space 9}mpg {c |}{col 14}{res}{space 2}-238.8943{col 26}{space 2} 53.07669{col 37}{space 1}   -4.50{col 46}{space 3}0.000{col 54}{space 4}-344.7008{col 67}{space 3}-133.0879
+{txt}{space 7}_cons {c |}{col 14}{res}{space 2} 11253.06{col 26}{space 2} 1170.813{col 37}{space 1}    9.61{col 46}{space 3}0.000{col 54}{space 4} 8919.088{col 67}{space 3} 13587.03
+{txt}{hline 13}{c BT}{hline 11}{hline 11}{hline 9}{hline 8}{hline 13}{hline 12}
+{res}{txt}
+{com}. twoway scatter price mpg, name(scatter1, replace)
+{res}{txt}
+{com}. twoway scatter mpg price
+{res}{txt}
+{com}. 
+{txt}end of do-file
+
