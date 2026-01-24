@@ -2,6 +2,30 @@
 
 <!-- version list -->
 
+## v1.22.0 (2026-01-24)
+
+### Bug Fixes
+
+- Enhance session management and testing configuration
+  ([`3ba71e7`](https://github.com/tmonk/mcp-stata/commit/3ba71e76cf2b578c0c9c542b839436f68f5dec85))
+
+- Improve session listener management and error handling
+  ([`66df105`](https://github.com/tmonk/mcp-stata/commit/66df105e75bd55d62ae9a75fae36dfbf41e8a9d5))
+
+- Update Python version support to 3.11+ across configuration files. 3.10 is incompatible
+  ([`b40244c`](https://github.com/tmonk/mcp-stata/commit/b40244cbad624296c2da94d4e1af3174f7103d1d))
+
+### Features
+
+- Implement session management for Stata integration - fully backwards compatible
+  ([`5eeaea2`](https://github.com/tmonk/mcp-stata/commit/5eeaea2f78b034ac0a8545ce7b0e2d8980232b99))
+
+### Testing
+
+- Ensure async tests
+  ([`04be0a0`](https://github.com/tmonk/mcp-stata/commit/04be0a02501d409f5130d791b358d6baa37ff631))
+
+
 ## v1.21.0 (2026-01-24)
 
 ### Bug Fixes
