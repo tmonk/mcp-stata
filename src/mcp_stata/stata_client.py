@@ -1933,6 +1933,22 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # Remove orphan header markers that sometimes leak into output
         content = re.sub(r"^\s*\{smcl\}\s*$", "", content, flags=re.MULTILINE)
         content = re.sub(r"^\s*\{txt\}\{sf\}\{ul off\}\s*$", "", content, flags=re.MULTILINE)
+        content = re.sub(r"^\s*\{txt\}\{sf\}\{ul off\}\{smcl\}\s*$", "", content, flags=re.MULTILINE)
+
+        # Remove leading boilerplate-only lines (blank or SMCL tag-only)
+        lines = content.splitlines()
+        lead = 0
+        while lead < len(lines):
+            line = lines[lead].strip()
+            if not line:
+                lead += 1
+                continue
+            if re.fullmatch(r"(?:\{[^}]+\})+", line):
+                lead += 1
+                continue
+            break
+        if lead:
+            content = "\n".join(lines[lead:])
 
         # 2. Strip our injected capture/noisily blocks
         # We match start-of-line followed by optional tags, prompt, optional tags, 
