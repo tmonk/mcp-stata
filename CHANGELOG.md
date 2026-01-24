@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v1.22.1 (2026-01-24)
+
+### Bug Fixes
+
+- Add pytest marker for Stata requirement in cancellation and mock protocol tests
+  ([`0cbaa96`](https://github.com/tmonk/mcp-stata/commit/0cbaa96942821bb82afb8daf02abfe7688c743d1))
+
+- Enhance testing framework and improve mock handling for Stata integration
+  ([`21daa71`](https://github.com/tmonk/mcp-stata/commit/21daa71f9f475282b7771ff3a4e1e24b0f4fab31))
+
+
 ## v1.22.0 (2026-01-24)
 
 ### Bug Fixes
