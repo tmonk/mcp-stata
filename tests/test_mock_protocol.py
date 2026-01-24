@@ -2,6 +2,8 @@ import pytest
 import json
 from mcp_stata.models import CommandResponse
 
+pytestmark = pytest.mark.requires_stata
+
 def test_mock_command_execution(client, monkeypatch):
     """Verify that run_command_structured works with the mock setup."""
     # Force mock output directly to avoid file I/O synchronization issues in mock mode
