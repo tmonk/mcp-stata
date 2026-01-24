@@ -3,6 +3,7 @@ import os
 import uuid
 import logging
 import asyncio
+import atexit
 from typing import Any, Dict, List, Optional, Callable, Awaitable
 from multiprocessing import Process, Pipe
 from multiprocessing.connection import Connection
@@ -21,6 +22,7 @@ class StataSession:
         
         self._parent_conn, self._child_conn = Pipe()
         self._process = Process(target=self._run_worker, args=(self._child_conn,))
+        self._process.daemon = True
         self._process.start()
         
         self._pending_requests: Dict[str, asyncio.Future] = {}
@@ -140,6 +142,25 @@ class SessionManager:
     def __init__(self):
         self._sessions: Dict[str, StataSession] = {}
         self._default_session_id = "default"
+        atexit.register(self._shutdown)
+
+    def _shutdown(self) -> None:
+        for session in list(self._sessions.values()):
+            try:
+                if session._process.is_alive():
+                    session._process.terminate()
+                    session._process.join(timeout=2)
+            except Exception:
+                pass
+            try:
+                session._parent_conn.close()
+            except Exception:
+                pass
+            try:
+                session._child_conn.close()
+            except Exception:
+                pass
+        self._sessions.clear()
 
     async def start(self):
         # Start default session
