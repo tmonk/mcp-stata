@@ -67,19 +67,19 @@ def fast_scan_log(smcl_content: str, rc_default: int) -> Tuple[str, str, int | N
 
 
 def compute_filter_indices(
-    data_numeric: dict[str, "numpy.ndarray"],
-    data_string: dict[str, list[str]],
-    filter_json: str,
-    row_count: int,
+    filter_expr: str,
+    names: list[str],
+    columns: list[Any],
+    is_string: list[bool],
 ) -> list[int] | None:
     if _native is None:
         return None
     try:
         return _native.compute_filter_indices(
-            data_numeric, 
-            data_string, 
-            filter_json, 
-            row_count
+            filter_expr,
+            names,
+            columns,
+            is_string
         )
     except Exception as e:
         logger.warning(f"Native filtering failed: {e}")

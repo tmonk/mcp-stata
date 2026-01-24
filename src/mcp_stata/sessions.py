@@ -4,14 +4,20 @@ import uuid
 import logging
 import asyncio
 import atexit
+import multiprocessing
 from typing import Any, Dict, List, Optional, Callable, Awaitable
-from multiprocessing import Process, Pipe
 from multiprocessing.connection import Connection
 from datetime import datetime, timezone
 
 from mcp_stata.models import SessionInfo, CommandResponse
 
 logger = logging.getLogger("mcp_stata.sessions")
+
+# Use 'spawn' for process creation to ensure thread-safety and Stata/Rust compatibility.
+# Re-exposed at module level so tests can patch these references.
+_ctx = multiprocessing.get_context("spawn")
+Process = _ctx.Process
+Pipe = _ctx.Pipe
 
 class StataSession:
     def __init__(self, session_id: str):
@@ -39,9 +45,9 @@ class StataSession:
         loop = asyncio.get_running_loop()
         try:
             while True:
-                # We need to run poll in a thread to avoid blocking the event loop
+                # We need to run poll and recv in a thread to avoid blocking the event loop
                 if await loop.run_in_executor(None, self._parent_conn.poll, 0.1):
-                    msg = self._parent_conn.recv()
+                    msg = await loop.run_in_executor(None, self._parent_conn.recv)
                     await self._handle_worker_msg(msg)
                 else:
                     await asyncio.sleep(0.01)
@@ -118,14 +124,26 @@ class StataSession:
         
         return await future
 
-    async def stop(self):
+    async def stop(self, timeout: float = 5.0):
         if self.status != "stopped":
             try:
                 self._parent_conn.send({"type": "stop"})
-            except:
+            except Exception:
                 pass
             self._process.terminate()
-            self._process.join()
+            
+            # Use executor to join with timeout without blocking the event loop
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._process.join, timeout)
+            
+            if self._process.is_alive():
+                logger.warning(f"Session {self.id} worker (PID {self._process.pid}) did not exit after {timeout}s; killing.")
+                try:
+                    self._process.kill()
+                    await loop.run_in_executor(None, self._process.join)
+                except Exception as e:
+                    logger.error(f"Failed to kill session {self.id} worker: {e}")
+            
             self.status = "stopped"
             if self._listener_task:
                 self._listener_task.cancel()
@@ -171,9 +189,8 @@ class SessionManager:
             logger.info(f"Creating new Stata session: {session_id}")
             session = StataSession(session_id)
             self._sessions[session_id] = session
-            # Give it a tiny bit to start up and reach "running" if possible
-            # but we won't block indefinitely
-            timeout = 10.0
+            # Give it more time to start up on CI (especially Stata's first init)
+            timeout = 30.0
             start_time = asyncio.get_running_loop().time()
             while session.status == "starting" and asyncio.get_running_loop().time() - start_time < timeout:
                 await asyncio.sleep(0.1)
