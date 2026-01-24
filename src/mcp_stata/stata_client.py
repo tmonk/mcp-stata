@@ -1720,17 +1720,28 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             self._graph_name_aliases = {}
             self._graph_name_reverse = {}
 
-        # Handle common patterns: name("..." ...) or name(`"..."' ...)
-        pat = re.compile(r"name\(\s*(?:`\"(?P<cq>[^\"]*)\"'|\"(?P<dq>[^\"]*)\")\s*(?P<rest>[^)]*)\)")
+        # Handle common patterns: name("..." ...), name(`"..."' ...), or name(unquoted ...)
+        pat = re.compile(r"name\(\s*(?:`\"(?P<cq>[^\"]*)\"'|\"(?P<dq>[^\"]*)\"|(?P<uq>[^,\s\)]+))\s*(?P<rest>[^)]*)\)")
 
         def repl(m: re.Match) -> str:
-            original = m.group("cq") if m.group("cq") is not None else m.group("dq")
-            original = original or ""
+            original = m.group("cq") or m.group("dq") or m.group("uq")
+            original = (original or "").strip()
+            
+            # If it's already an alias we recognize, don't rewrite it again
+            if original.startswith("mcp_g_") and original in self._graph_name_reverse:
+                return m.group(0)
+
             internal = self._graph_name_aliases.get(original)
             if not internal:
-                internal = self._make_valid_stata_name(original)
-                self._graph_name_aliases[original] = internal
-                self._graph_name_reverse[internal] = original
+                # Only rewrite if it's NOT a valid Stata name or has special characters
+                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", original) or len(original) > 32:
+                    internal = self._make_valid_stata_name(original)
+                    self._graph_name_aliases[original] = internal
+                    self._graph_name_reverse[internal] = original
+                else:
+                    # Valid name, use as is but still record it if we want reverse mapping to be consistent
+                    internal = original
+
             rest = m.group("rest") or ""
             return f"name({internal}{rest})"
 
@@ -2202,8 +2213,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                         raise
                     finally:
                         if trace:
-                            try: self.stata.run("set trace off")
-                            except Exception: pass
+                            try:
+                                self.stata.run("set trace off")
+                            except Exception:
+                                pass
             except Exception as e:
                 sys_error = str(e)
             finally:
@@ -2447,10 +2460,14 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 # Bundle everything to minimize round-trips and ensure invisibility.
                 # Use braces to capture multi-line code correctly.
                 inner_code = f"{{\n{code}\n}}" if "\n" in code.strip() else code
+                trace_on = "set trace on\n" if trace else ""
+                trace_off = "set trace off\n" if trace else ""
                 full_cmd = (
                     f"capture _return hold {hold_name}\n"
+                    f"{trace_on}"
                     f"capture noisily {inner_code}\n"
                     f"local mcp_rc = _rc\n"
+                    f"{trace_off}"
                     f"capture _return restore {hold_name}\n"
                     f"capture error {preserved_rc}"
                 )
@@ -3528,8 +3545,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 from sfi import Variable  # type: ignore
                 is_string_vars = [Variable.isString(v) for v in vars_used]
             except (ImportError, AttributeError):
-                # Stata 19+ compatibility
-                is_string_vars = [Data.isVarTypeString(v) for v in vars_used]
+                try:
+                    is_string_vars = [Data.isVarTypeStr(v) or Data.isVarTypeStrL(v) for v in vars_used]
+                except AttributeError:
+                    # Stata 19+ compatibility
+                    is_string_vars = [Data.isVarTypeString(v) for v in vars_used]
 
         indices: List[int] = []
         for start in range(0, n, chunk_size):
@@ -3730,17 +3750,18 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                         sys.stderr.flush()
                         raise
 
-                raw_list = graph_list_str.split() if graph_list_str else []
-                
+                import shlex
+                raw_list = shlex.split(graph_list_str or "")
+
                 # Parse details: "name1|date time; name2|date time;"
                 details_map = {}
                 if details_str:
                     for item in details_str.split(';'):
-                        if '|' in item:
-                            parts = item.strip().split('|', 1)
-                            if len(parts) == 2:
-                                gname, ts = parts
-                                details_map[gname] = ts
+                        item = item.strip()
+                        if not item or '|' not in item:
+                            continue
+                        gname, ts = item.split('|', 1)
+                        details_map[gname.strip()] = ts.strip()
 
                 # Map internal Stata names back to user-facing names when we have an alias.
                 reverse = getattr(self, "_graph_name_reverse", {})
@@ -4283,7 +4304,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 if export_resp.success and os.path.exists(svg_path) and os.path.getsize(svg_path) > 0:
                     with open(svg_path, "rb") as f:
                         return f.read()
-                error_msg = getattr(export_resp, 'error', 'Unknown error')
+                
+                # If we reached here, something failed.
+                error_info = getattr(export_resp, 'error', None)
+                error_msg = error_info.message if error_info else f"Stata error r({export_resp.rc})"
                 raise RuntimeError(f"Failed to export graph {name}: {error_msg}")
             finally:
                 if os.path.exists(svg_path):
