@@ -170,6 +170,11 @@ class StataClient:
         self._graph_signature_cache: Dict[str, str] = {}
         self._graph_signature_cache_cmd_idx: Optional[int] = None
         self._last_results = None
+        self._list_graphs_cache = None
+        self._list_graphs_cache_time = 0
+        self._list_graphs_cache_lock = threading.Lock()
+        self._graph_name_aliases: Dict[str, str] = {}
+        self._graph_name_reverse: Dict[str, str] = {}
         from .graph_detector import GraphCreationDetector
         self._graph_detector = GraphCreationDetector(self)
 
@@ -184,6 +189,11 @@ class StataClient:
         inst._graph_signature_cache = {}
         inst._graph_signature_cache_cmd_idx = None
         inst._last_results = None
+        inst._list_graphs_cache = None
+        inst._list_graphs_cache_time = 0
+        inst._list_graphs_cache_lock = threading.Lock()
+        inst._graph_name_aliases = {}
+        inst._graph_name_reverse = {}
         from .graph_detector import GraphCreationDetector
         inst._graph_detector = GraphCreationDetector(inst)
         return inst
@@ -512,41 +522,45 @@ class StataClient:
     ) -> None:
         last_pos = start_offset
         emitted_debug_chunks = 0
+        has_written = False
         # Wait for Stata to create the SMCL file
         while not done.is_set() and not os.path.exists(smcl_path):
             await anyio.sleep(0.05)
 
         try:
-            def _read_content() -> str:
+            def _read_content() -> tuple[str, int]:
                 try:
-                    with open(smcl_path, "r", encoding="utf-8", errors="replace") as f:
+                    with open(smcl_path, "rb") as f:
                         f.seek(last_pos)
-                        return f.read()
+                        data = f.read()
+                    if not data:
+                        return "", 0
+                    return data.decode("utf-8", errors="replace"), len(data)
                 except PermissionError:
                     if is_windows():
                         try:
                             # Use 'type' on Windows to bypass exclusive lock
                             res = subprocess.run(f'type "{smcl_path}"', shell=True, capture_output=True)
-                            full_content = res.stdout.decode("utf-8", errors="replace")
+                            full_content = res.stdout
                             if len(full_content) > last_pos:
-                                return full_content[last_pos:]
-                            return ""
+                                data = full_content[last_pos:]
+                                return data.decode("utf-8", errors="replace"), len(data)
+                            return "", 0
                         except Exception:
-                            return ""
-                    return ""
+                            return "", 0
+                    return "", 0
                 except FileNotFoundError:
-                    return ""
+                    return "", 0
 
             while not done.is_set():
-                chunk = await anyio.to_thread.run_sync(_read_content)
+                chunk, chunk_bytes = await anyio.to_thread.run_sync(_read_content)
                 if chunk:
-                    is_first_chunk = last_pos == start_offset
-                    last_pos += len(chunk)
+                    last_pos += chunk_bytes
                     # Clean chunk before sending to log channel to suppress maintenance leakage
                     cleaned_chunk = self._clean_internal_smcl(
                         chunk,
                         strip_output=False,
-                        strip_leading_boilerplate=is_first_chunk,
+                        strip_leading_boilerplate=not has_written,
                     )
                     if cleaned_chunk:
                         try:
@@ -561,6 +575,7 @@ class StataClient:
                                 tee.write(cleaned_chunk)
                             except Exception:
                                 pass
+                        has_written = True
 
                     if on_chunk is not None:
                         try:
@@ -570,13 +585,13 @@ class StataClient:
                 await anyio.sleep(0.05)
 
             # Final check for any remaining content
-            chunk = await anyio.to_thread.run_sync(_read_content)
-            if chunk:
-                last_pos += len(chunk)
+                chunk, chunk_bytes = await anyio.to_thread.run_sync(_read_content)
+                if chunk:
+                    last_pos += chunk_bytes
                 cleaned_chunk = self._clean_internal_smcl(
                     chunk,
                     strip_output=False,
-                    strip_leading_boilerplate=False,
+                    strip_leading_boilerplate=not has_written,
                 )
                 if cleaned_chunk:
                     try:
@@ -590,6 +605,7 @@ class StataClient:
                             tee.write(cleaned_chunk)
                         except Exception:
                             pass
+                    has_written = True
             
             if on_chunk is not None:
                 # Final check even if last chunk is empty, to ensure 
@@ -838,20 +854,21 @@ class StataClient:
     def _read_smcl_file(self, path: str, start_offset: int = 0) -> str:
         """Read SMCL file contents, handling encoding issues, offsets and Windows file locks."""
         try:
-            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            with open(path, 'rb') as f:
                 if start_offset > 0:
                     f.seek(start_offset)
-                return f.read()
+                data = f.read()
+            return data.decode('utf-8', errors='replace')
         except PermissionError:
             if is_windows():
                 # Windows Fallback: Try to use 'type' command to bypass exclusive lock
                 try:
                     res = subprocess.run(f'type "{path}"', shell=True, capture_output=True)
                     if res.returncode == 0:
-                        content = res.stdout.decode('utf-8', errors='replace')
+                        content = res.stdout
                         if start_offset > 0 and len(content) > start_offset:
-                            return content[start_offset:]
-                        return content
+                            return content[start_offset:].decode('utf-8', errors='replace')
+                        return content.decode('utf-8', errors='replace')
                 except Exception as e:
                     logger.debug(f"Combined fallback read failed: {e}")
             logger.warning(f"Failed to read SMCL file {path} due to lock")
@@ -865,13 +882,14 @@ class StataClient:
         if not self._persistent_log_path:
             return ""
         try:
-            with open(self._persistent_log_path, 'r', encoding='utf-8', errors='replace') as f:
+            with open(self._persistent_log_path, 'rb') as f:
                 f.seek(start_offset)
-                content = f.read()
+                data = f.read()
 
-            if not content:
+            if not data:
                 return ""
 
+            content = data.decode('utf-8', errors='replace')
             # Use refined cleaning logic to strip internal headers and maintenance
             return self._clean_internal_smcl(content)
         except PermissionError:
@@ -880,9 +898,9 @@ class StataClient:
                     # Windows fallback for locked persistent log
                     res = subprocess.run(f'type "{self._persistent_log_path}"', shell=True, capture_output=True)
                     if res.returncode == 0:
-                        full_content = res.stdout.decode('utf-8', errors='replace')
+                        full_content = res.stdout
                         if len(full_content) > start_offset:
-                            return full_content[start_offset:]
+                            return full_content[start_offset:].decode('utf-8', errors='replace')
                         return ""
                 except Exception:
                     pass
@@ -1564,9 +1582,20 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                             try:
                                 # Use shorter timeout for pre-flight if feasible, 
                                 # but keep it safe for slow environments. 15s is usually enough for a ping.
+                                # Use the current interpreter to preserve its site-packages
+                                # (stata_setup/pystata) in the preflight subprocess.
+                                py_exe = sys.executable
+                                if not py_exe or not os.path.exists(py_exe):
+                                    py_exe = os.path.realpath(sys.executable)
+                                env = os.environ.copy()
+                                extra_paths = [p for p in sys.path if p and os.path.isdir(p)]
+                                if extra_paths:
+                                    existing = env.get("PYTHONPATH", "")
+                                    merged = os.pathsep.join(extra_paths + ([existing] if existing else []))
+                                    env["PYTHONPATH"] = merged
                                 res = subprocess.run(
-                                    [sys.executable, "-c", preflight_code],
-                                    capture_output=True, text=True, timeout=20
+                                    [py_exe, "-c", preflight_code],
+                                    capture_output=True, text=True, timeout=20, env=env
                                 )
                                 if res.returncode != 0:
                                     sys.stderr.write(f"[mcp_stata] Pre-flight failed (rc={res.returncode}) for '{path}'\n")
@@ -2030,8 +2059,19 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if not content:
             return ""
 
+        # Strip any UTF-8 BOM that can precede SMCL logs
+        if content.startswith("\ufeff"):
+            content = content.lstrip("\ufeff")
+
         # Pattern for arbitrary SMCL tags: {txt}, {com}, etc.
         tags = r"(?:\{[^}]+\})*"
+
+        # Only remove leading boilerplate when explicitly requested
+        if strip_leading_boilerplate:
+            # Remove leading standalone {txt} boilerplate.
+            content = re.sub(r"^\s*\{txt\}\s*(\r?\n\s*)+", "", content)
+            # Remove leading blank lines.
+            content = re.sub(r"^\s*\r?\n+", "", content)
 
         # 1. Strip SMCL log headers and footers (multiple possible due to append/reopen)
         # Headers typically run from {smcl} until the line after "opened on:".
@@ -2061,6 +2101,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 break
             if lead:
                 content = "\n".join(lines[lead:])
+
+            # Remove leading tag-only {txt} lines and blank lines that can leak
+            # from log open headers in streaming mode.
+            content = re.sub(r"^\s*\{txt\}\s*(\r?\n\s*)+", "", content)
+            content = re.sub(r"^\s*\r?\n+", "", content)
 
         # 2. Strip our injected capture/noisily blocks
         # We match start-of-line followed by optional tags, prompt, optional tags, 
@@ -2109,6 +2154,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         # 6. Final cleanup of potential double newlines introduced by stripping
         content = re.sub(r"\n{3,}", "\n\n", content)
+        # Remove leading blank lines that may remain after cleanup
+        content = content.lstrip("\r\n")
 
         return content.strip() if strip_output else content
 
@@ -2911,6 +2958,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             smcl_path = self._persistent_log_path
             smcl_log_name = self._persistent_log_name
             try:
+                self.stata.run(f"capture quietly log flush {smcl_log_name}", echo=False)
                 start_offset = os.path.getsize(smcl_path)
             except OSError:
                 start_offset = 0

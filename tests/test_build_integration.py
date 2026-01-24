@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 
 
-def run(cmd, *, cwd=None, check=True):
+def run(cmd, *, cwd=None, check=True, env=None):
     """Run command and return result. Fails with full output on error."""
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
     if check and result.returncode != 0:
         pytest.fail(
             f"Command failed: {' '.join(map(str, cmd))}\n"
@@ -247,7 +247,12 @@ class TestEntryPoints:
     @pytest.mark.slow
     def test_entry_point_runs_without_import_error(self, mcp_stata_exe):
         """Verify entry point can start without crashing on import."""
-        result = run([str(mcp_stata_exe), "--help"], check=False)
+        # Use skip-preflight to avoid attempting to load a real Stata engine,
+        # which would fail with ModuleNotFoundError in this clean venv.
+        import os
+        env = os.environ.copy()
+        env["MCP_STATA_SKIP_PREFLIGHT"] = "1"
+        result = run([str(mcp_stata_exe), "--help"], check=False, env=env)
 
         assert "ImportError" not in result.stderr, (
             f"Entry point has import error:\n{result.stderr}"

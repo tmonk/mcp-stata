@@ -26,6 +26,7 @@ import logging
 import sys
 import json
 import os
+import multiprocessing
 import re
 import traceback
 import uuid
@@ -1294,6 +1295,17 @@ def main():
     if "--version" in sys.argv:
         print(SERVER_VERSION)
         return
+
+    # Fix for macOS environments where sys.executable might be a shim that calls 'realpath'.
+    # On some macOS versions (pre-Monterey) or minimal environments, 'realpath' is missing,
+    # causing shims (like those from uv or pyenv) to fail.
+    if sys.platform == "darwin":
+        try:
+            real_py = os.path.realpath(sys.executable)
+            if real_py != sys.executable:
+                multiprocessing.set_executable(real_py)
+        except Exception:
+            pass
 
     # Filter non-JSON output off stdout to keep stdio transport clean.
     _install_stdout_filter()
