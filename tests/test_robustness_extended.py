@@ -4,6 +4,8 @@ import time
 from pathlib import Path
 from mcp_stata.stata_client import StataClient
 
+pytestmark = pytest.mark.requires_stata
+
 @pytest.fixture
 def client():
     """StataClient fixture that ensures it's initialized."""

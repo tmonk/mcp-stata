@@ -4,6 +4,8 @@ import pytest
 import os
 from mcp_stata.stata_client import StataClient
 
+pytestmark = pytest.mark.requires_stata
+
 @pytest.mark.asyncio
 async def test_regression_graph_emission_and_log_cleaning(client: StataClient):
     """

@@ -3,6 +3,8 @@ import uuid
 import pytest
 from mcp_stata.stata_client import StataClient
 
+pytestmark = pytest.mark.requires_stata
+
 @pytest.mark.asyncio
 async def test_session_persistence_and_chunk_extraction(stata_client):
     """
