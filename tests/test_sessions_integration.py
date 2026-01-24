@@ -2,6 +2,8 @@ import pytest
 import asyncio
 from mcp_stata.sessions import SessionManager
 
+pytestmark = pytest.mark.requires_stata
+
 @pytest.mark.asyncio
 async def test_session_process_isolation():
     """Verify that different sessions run in different processes."""
