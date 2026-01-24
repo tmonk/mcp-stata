@@ -219,5 +219,41 @@ def test_streaming_graph_ready_dedup_no_log_pollution(client):
     assert len(graph_ready_events) == 2
     assert not log_pollution
 
+
+def test_streaming_graph_bar_emits_graph_ready(client):
+    graph_ready_events: list[dict] = []
+
+    async def notify_log(msg: str) -> None:
+        try:
+            data = json.loads(msg)
+        except Exception:
+            return
+        if data.get("event") == "graph_ready":
+            graph_ready_events.append(data)
+
+    async def main() -> None:
+        client._last_emitted_graph_signatures = {}
+        client._run_internal("capture graph drop _all", echo=False)
+        try:
+            await client.run_command_streaming(
+                "sysuse auto, clear",
+                notify_log=notify_log,
+                emit_graph_ready=True,
+                auto_cache_graphs=True,
+            )
+            await client.run_command_streaming(
+                "graph bar price",
+                notify_log=notify_log,
+                emit_graph_ready=True,
+                auto_cache_graphs=True,
+            )
+        finally:
+            client._run_internal("capture graph drop _all", echo=False)
+
+    anyio.run(main)
+
+    assert len(graph_ready_events) >= 1
+    assert graph_ready_events[-1]["graph"]["path"]
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

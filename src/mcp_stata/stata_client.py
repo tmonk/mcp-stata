@@ -1212,7 +1212,7 @@ class StataClient:
         task_id: Optional[str],
         export_format: str,
     ) -> int:
-        if not initial_graphs:
+        if initial_graphs is None:
             return 0
         lock = self._ensure_graph_ready_lock()
 
@@ -1296,12 +1296,26 @@ class StataClient:
         graph_norm = self._normalize_command_text(graph_cmd)
         if not graph_norm:
             return False
+        graph_prefixed = f"graph {graph_norm}" if not graph_norm.startswith("graph ") else graph_norm
+        def matches(candidate: str) -> bool:
+            cand_norm = self._normalize_command_text(candidate)
+            if not cand_norm:
+                return False
+            return (
+                cand_norm == graph_norm
+                or graph_norm.startswith(cand_norm)
+                or cand_norm.startswith(graph_norm)
+                or cand_norm == graph_prefixed
+                or graph_prefixed.startswith(cand_norm)
+                or cand_norm.startswith(graph_prefixed)
+            )
+
         if "\n" in code:
             for line in code.splitlines():
-                if self._normalize_command_text(line) == graph_norm:
+                if matches(line):
                     return True
             return False
-        return self._normalize_command_text(code) == graph_norm
+        return matches(code)
 
     def _get_graph_command_line(self, graph_name: str) -> Optional[str]:
         """Fetch the Stata command line used to create the graph, if available."""
@@ -1313,24 +1327,57 @@ class StataClient:
         resolved = self._resolve_graph_name_for_stata(graph_name)
         hold_name = f"_mcp_gcmd_hold_{uuid.uuid4().hex[:8]}"
         cmd = None
+        cur_graph = None
 
         with self._exec_lock:
             try:
                 bundle = (
                     f"capture _return hold {hold_name}\n"
-                    f"quietly graph describe {resolved}\n"
+                    f"capture quietly graph describe {resolved}\n"
                     "macro define mcp_gcmd \"`r(command)'\"\n"
+                    "macro define mcp_curgraph \"`c(curgraph)'\"\n"
                     f"capture _return restore {hold_name}"
                 )
                 self.stata.run(bundle, echo=False)
                 cmd = Macro.getGlobal("mcp_gcmd")
+                cur_graph = Macro.getGlobal("mcp_curgraph")
                 self.stata.run("macro drop mcp_gcmd", echo=False)
+                self.stata.run("macro drop mcp_curgraph", echo=False)
             except Exception:
                 try:
                     self.stata.run(f"capture _return restore {hold_name}", echo=False)
                 except Exception:
                     pass
                 cmd = None
+
+        if cmd:
+            return cmd
+
+        # Fallback: describe current graph without a name and validate against c(curgraph).
+        with self._exec_lock:
+            try:
+                bundle = (
+                    f"capture _return hold {hold_name}\n"
+                    "capture quietly graph describe\n"
+                    "macro define mcp_gcmd \"`r(command)'\"\n"
+                    "macro define mcp_curgraph \"`c(curgraph)'\"\n"
+                    f"capture _return restore {hold_name}"
+                )
+                self.stata.run(bundle, echo=False)
+                cmd = Macro.getGlobal("mcp_gcmd")
+                cur_graph = Macro.getGlobal("mcp_curgraph")
+                self.stata.run("macro drop mcp_gcmd", echo=False)
+                self.stata.run("macro drop mcp_curgraph", echo=False)
+            except Exception:
+                try:
+                    self.stata.run(f"capture _return restore {hold_name}", echo=False)
+                except Exception:
+                    pass
+                cmd = None
+
+        if cmd and cur_graph:
+            if cur_graph == resolved or cur_graph == graph_name:
+                return cmd
 
         return cmd or None
 
