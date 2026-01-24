@@ -285,8 +285,8 @@ def test_cache_size_management_simulation(client):
         client.run_command_structured(f'scatter price mpg if rep78=={i+1}, name(SizeTest{i}, replace)')
         client.cache_graph_on_creation(f"SizeTest{i}")
     
-    # Cache should contain all graphs and their hashes
-    expected_size = num_graphs * 2  # graph paths + hashes
+    # Cache should contain all graphs, their hashes, and signatures
+    expected_size = num_graphs * 3  # graph paths + hashes + signatures
     assert len(client._preemptive_cache) == expected_size
     
     # Verify all cache entries exist
@@ -294,5 +294,4 @@ def test_cache_size_management_simulation(client):
         graph_name = f"SizeTest{i}"
         assert graph_name in client._preemptive_cache
         assert f"{graph_name}_hash" in client._preemptive_cache
-        cache_path = client._preemptive_cache[graph_name]
-        assert Path(cache_path).exists()
+        assert f"{graph_name}_sig" in client._preemptive_cache

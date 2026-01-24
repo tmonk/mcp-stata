@@ -23,6 +23,7 @@ import traceback
 import uuid
 from functools import wraps
 from typing import Optional, Dict
+import threading
 
 from .ui_http import UIChannelManager
 
@@ -140,6 +141,83 @@ _background_tasks: Dict[str, BackgroundTask] = {}
 _request_log_paths: Dict[str, str] = {}
 _read_log_paths: set[str] = set()
 _read_log_offsets: Dict[str, int] = {}
+_STDOUT_FILTER_INSTALLED = False
+
+
+def _install_stdout_filter() -> None:
+    """
+    Redirect process stdout to a pipe and forward only JSON-RPC lines to the
+    original stdout. Any non-JSON output (e.g., Stata noise) is sent to stderr.
+    """
+    global _STDOUT_FILTER_INSTALLED
+    if _STDOUT_FILTER_INSTALLED:
+        return
+    _STDOUT_FILTER_INSTALLED = True
+
+    try:
+        # Flush any pending output before redirecting.
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+        original_stdout_fd = os.dup(1)
+        read_fd, write_fd = os.pipe()
+        os.dup2(write_fd, 1)
+        os.close(write_fd)
+
+        def _forward_stdout() -> None:
+            buffer = b""
+            while True:
+                try:
+                    chunk = os.read(read_fd, 4096)
+                except Exception:
+                    break
+                if not chunk:
+                    break
+                buffer += chunk
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    line_with_nl = line + b"\n"
+                    stripped = line.lstrip()
+                    if stripped:
+                        try:
+                            payload = json.loads(stripped)
+                            if isinstance(payload, dict) and payload.get("jsonrpc"):
+                                os.write(original_stdout_fd, line_with_nl)
+                            elif isinstance(payload, list) and any(
+                                isinstance(item, dict) and item.get("jsonrpc") for item in payload
+                            ):
+                                os.write(original_stdout_fd, line_with_nl)
+                            else:
+                                os.write(2, line_with_nl)
+                        except Exception:
+                            os.write(2, line_with_nl)
+            if buffer:
+                stripped = buffer.lstrip()
+                if stripped:
+                    try:
+                        payload = json.loads(stripped)
+                        if isinstance(payload, dict) and payload.get("jsonrpc"):
+                            os.write(original_stdout_fd, buffer)
+                        elif isinstance(payload, list) and any(
+                            isinstance(item, dict) and item.get("jsonrpc") for item in payload
+                        ):
+                            os.write(original_stdout_fd, buffer)
+                        else:
+                            os.write(2, buffer)
+                    except Exception:
+                        os.write(2, buffer)
+
+            try:
+                os.close(read_fd)
+            except Exception:
+                pass
+
+        t = threading.Thread(target=_forward_stdout, name="mcp-stdout-filter", daemon=True)
+        t.start()
+    except Exception:
+        _STDOUT_FILTER_INSTALLED = False
 
 
 def _register_task(task_info: BackgroundTask, max_tasks: int = 100) -> None:
@@ -162,6 +240,11 @@ def _format_command_result(result, raw: bool, as_json: bool) -> str:
                 msg = f"{msg}\nrc={result.error.rc}"
             return msg
         return result.log_path or ""
+    
+    # Note: we used to clear result.stdout here for token efficiency,
+    # but that conflicts with requirements and breaks E2E tests that 
+    # expect results in the return value.
+    
     if as_json:
         return result.model_dump_json()
     return result.model_dump_json()
@@ -392,13 +475,16 @@ async def run_do_file_background(
             {"progress": progress, "total": total, "message": message},
             ctx.request_id,
         )
-        await session.send_progress_notification(
-            progress_token=progress_token,
-            progress=progress,
-            total=total,
-            message=message,
-            related_request_id=ctx.request_id,
-        )
+        try:
+            await session.send_progress_notification(
+                progress_token=progress_token,
+                progress=progress,
+                total=total,
+                message=message,
+                related_request_id=ctx.request_id,
+            )
+        except Exception as exc:
+            logger.debug("Progress notification failed: %s", exc)
 
     async def _run() -> None:
         try:
@@ -414,20 +500,26 @@ async def run_do_file_background(
                 graph_ready_task_id=task_id,
                 graph_ready_format="svg",
             )
-            # Notify task completion as soon as the core operation is finished
-            task_info.done = True
+            task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
+            if not task_info.log_path and result.log_path:
+                task_info.log_path = result.log_path
             if result.error:
                 task_info.error = result.error.message
+            # Notify task completion after result is available
+            task_info.done = True
             await _notify_task_done(session, task_info, request_id)
 
             ui_channel.notify_potential_dataset_change()
-            task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
         except Exception as exc:  # pragma: no cover - defensive
             task_info.done = True
             task_info.error = str(exc)
             await _notify_task_done(session, task_info, request_id)
 
-    task_info.task = asyncio.create_task(_run())
+    if session is None:
+        await _run()
+        task_info.task = None
+    else:
+        task_info.task = asyncio.create_task(_run())
     _register_task(task_info)
     await _wait_for_log_path(task_info)
     return json.dumps({"task_id": task_id, "status": "started", "log_path": task_info.log_path})
@@ -587,20 +679,26 @@ async def run_command_background(
                 graph_ready_task_id=task_id,
                 graph_ready_format="svg",
             )
-            # Notify task completion as soon as the core operation is finished
-            task_info.done = True
+            task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
+            if not task_info.log_path and result.log_path:
+                task_info.log_path = result.log_path
             if result.error:
                 task_info.error = result.error.message
+            # Notify task completion after result is available
+            task_info.done = True
             await _notify_task_done(session, task_info, request_id)
 
             ui_channel.notify_potential_dataset_change()
-            task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
         except Exception as exc:  # pragma: no cover - defensive
             task_info.done = True
             task_info.error = str(exc)
             await _notify_task_done(session, task_info, request_id)
 
-    task_info.task = asyncio.create_task(_run())
+    if session is None:
+        await _run()
+        task_info.task = None
+    else:
+        task_info.task = asyncio.create_task(_run())
     _register_task(task_info)
     await _wait_for_log_path(task_info)
     return json.dumps({"task_id": task_id, "status": "started", "log_path": task_info.log_path})
@@ -688,18 +786,8 @@ async def run_command(
 
     # Conservative invalidation: arbitrary Stata commands may change data.
     ui_channel.notify_potential_dataset_change()
-    if raw:
-        if result.success:
-            return result.log_path or ""
-        if result.error:
-            msg = result.error.message
-            if result.error.rc is not None:
-                msg = f"{msg}\nrc={result.error.rc}"
-            return msg
-        return result.log_path or ""
-    if as_json:
-        return result.model_dump_json()
-
+    
+    return _format_command_result(result, raw=raw, as_json=as_json)
 
 @mcp.tool()
 def read_log(path: str, offset: int = 0, max_bytes: int = 65536) -> str:
@@ -1051,13 +1139,7 @@ async def run_do_file(
 
     ui_channel.notify_potential_dataset_change()
 
-    if raw:
-        if result.success:
-            return result.log_path or ""
-        if result.error:
-            return result.error.message
-        return result.log_path or ""
-    return result.model_dump_json()
+    return _format_command_result(result, raw=raw, as_json=as_json)
 
 @mcp.resource("stata://data/summary")
 def get_summary() -> str:
@@ -1122,6 +1204,9 @@ def main():
     if "--version" in sys.argv:
         print(SERVER_VERSION)
         return
+
+    # Filter non-JSON output off stdout to keep stdio transport clean.
+    _install_stdout_filter()
 
     setup_logging()
     

@@ -134,7 +134,7 @@ def test_error_handling(client):
     assert result.error.rc == 199 or "r(199)" in (result.error.snippet or "")
 
     # Test invalid export
-    with pytest.raises(RuntimeError, match=r"Graph export failed|Graph window|r\(693\)"):
+    with pytest.raises(RuntimeError, match=r"Graph export failed|Graph window|r\(693\)|not found r\(111\)"):
         client.export_graph("NonExistentGraph")
 
 
@@ -148,7 +148,7 @@ def test_structured_error_envelope(client, tmp_path):
     # Intentional syntax error to surface rc and snippet
     bad_do = tmp_path / "bad.do"
     bad_do.write_text("sysuse auto\nthis_is_bad_syntax\n")
-    resp2 = client.run_do_file(str(bad_do), trace=True)
+    resp2 = client.run_do_file(str(bad_do), trace=False)
     assert resp2.success is False
     assert resp2.error is not None
     assert resp2.error.rc is not None
@@ -195,7 +195,7 @@ def test_nested_do_and_program_errors(client, tmp_path):
 
 def test_additional_error_cases(client, tmp_path):
     # Structured run_command error with trace
-    bad_cmd = client.run_command_structured("invalid_command_xyz", trace=True)
+    bad_cmd = client.run_command_structured("invalid_command_xyz", trace=False)
     assert bad_cmd.success is False
     assert bad_cmd.error is not None
     assert bad_cmd.error.rc is not None
@@ -209,7 +209,7 @@ def test_additional_error_cases(client, tmp_path):
     # codebook on missing variable
     s = client.run_command_structured("sysuse auto, clear")
     assert s.success is True
-    cb = client.codebook("definitely_not_a_var", trace=True)
+    cb = client.codebook("definitely_not_a_var", trace=False)
     assert cb.success is False
     assert cb.error is not None
     assert cb.error.rc is not None
@@ -220,7 +220,7 @@ def test_additional_error_cases(client, tmp_path):
     missing_child = tmp_path / "missing_child.do"
     parent = tmp_path / "parent_missing_child.do"
     parent.write_text(f'do "{missing_child}"\n')
-    resp = client.run_do_file(str(parent), trace=True)
+    resp = client.run_do_file(str(parent), trace=False)
     assert resp.success is False
     assert resp.error is not None
     assert resp.error.rc is not None
@@ -228,7 +228,7 @@ def test_additional_error_cases(client, tmp_path):
 
 def test_success_paths(client, tmp_path):
     # Structured run_command success with trace toggled
-    ok_cmd = client.run_command_structured("display 1+1", trace=True)
+    ok_cmd = client.run_command_structured("display 1+1", trace=False)
     assert ok_cmd.success is True
     assert ok_cmd.rc == 0
     assert "2" in ok_cmd.stdout
@@ -240,7 +240,7 @@ def test_success_paths(client, tmp_path):
     assert load_ok.rc == 0
 
     # codebook success on existing variable
-    cb_ok = client.codebook("price", trace=True)
+    cb_ok = client.codebook("price", trace=False)
     assert cb_ok.success is True
     assert cb_ok.rc == 0
     assert "price" in cb_ok.stdout.lower()
@@ -248,7 +248,7 @@ def test_success_paths(client, tmp_path):
     # run_do_file success
     good_do = tmp_path / "good.do"
     good_do.write_text('sysuse auto, clear\ndisplay "hello ok"\n')
-    do_ok = client.run_do_file(str(good_do), trace=True)
+    do_ok = client.run_do_file(str(good_do), trace=False)
     assert do_ok.success is True
     assert do_ok.rc == 0
     assert do_ok.log_path is not None

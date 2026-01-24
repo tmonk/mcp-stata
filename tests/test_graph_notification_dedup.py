@@ -26,8 +26,7 @@ def test_graph_notification_deduplication(detector):
     
     # 1. First command: Create 'Graph'
     client._command_idx = 1
-    with patch.object(detector, "_get_current_graphs_from_pystata", return_value=["Graph"]), \
-         patch.object(detector, "_get_graph_timestamps", return_value={"Graph": "20Jan2026_12:00:00"}):
+    with patch.object(detector, "_get_graph_inventory", return_value=(["Graph"], {"Graph": "20Jan2026_12:00:00"})):
         
         # Should detect the new graph
         new_graphs = detector._detect_graphs_via_pystata()
@@ -39,8 +38,7 @@ def test_graph_notification_deduplication(detector):
 
     # 2. Second command: Non-graphing command (e.g., 'desc')
     client._command_idx = 2
-    with patch.object(detector, "_get_current_graphs_from_pystata", return_value=["Graph"]), \
-         patch.object(detector, "_get_graph_timestamps", return_value={"Graph": "20Jan2026_12:00:00"}):
+    with patch.object(detector, "_get_graph_inventory", return_value=(["Graph"], {"Graph": "20Jan2026_12:00:00"})):
         
         # Should NOT detect changes because timestamp is identical
         new_graphs = detector._detect_graphs_via_pystata()
@@ -53,8 +51,7 @@ def test_graph_notification_deduplication(detector):
 
     # 3. Third command: Overwrite 'Graph' (e.g., new 'hist')
     client._command_idx = 3
-    with patch.object(detector, "_get_current_graphs_from_pystata", return_value=["Graph"]), \
-         patch.object(detector, "_get_graph_timestamps", return_value={"Graph": "20Jan2026_12:05:00"}):
+    with patch.object(detector, "_get_graph_inventory", return_value=(["Graph"], {"Graph": "20Jan2026_12:05:00"})):
         
         # Should detect modification because timestamp changed
         new_graphs = detector._detect_graphs_via_pystata()
@@ -71,14 +68,12 @@ def test_graph_batch_timestamp_retrieval_failure(detector):
     client = detector._stata_client
     
     client._command_idx = 1
-    with patch.object(detector, "_get_current_graphs_from_pystata", return_value=["Graph"]), \
-         patch.object(detector, "_get_graph_timestamps", return_value={}):
+    with patch.object(detector, "_get_graph_inventory", return_value=(["Graph"], {})):
         
         detector._detect_graphs_via_pystata()
     
     client._command_idx = 2
-    with patch.object(detector, "_get_current_graphs_from_pystata", return_value=["Graph"]), \
-         patch.object(detector, "_get_graph_timestamps", return_value={}):
+    with patch.object(detector, "_get_graph_inventory", return_value=(["Graph"], {})):
         
         # Without metadata, we must assume change on command jump for safety
         new_graphs = detector._detect_graphs_via_pystata()

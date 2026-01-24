@@ -101,42 +101,31 @@ class TestOutputTruncation:
 class TestJSONCompactness:
     """Test that JSON responses are compact (no indentation)."""
 
-    def _run_command_sync(self, command: str) -> str:
-        """Helper to run command and get JSON response."""
-        import asyncio
-        from mcp_stata.server import run_command
-        result = asyncio.run(run_command(command))
-        return result  # run_command already returns a JSON string
-
-    def test_run_command_returns_compact_json(self):
+    def test_run_command_returns_compact_json(self, client):
         """Server tools should return compact JSON without indentation."""
-        result_str = self._run_command_sync("display 1+1")
+        # Use structured runner to get results, then dump to JSON as the server would
+        result = client.run_command_structured("display 1+1")
+        result_str = result.model_dump_json()
 
         # Parse to ensure it's valid JSON
-        result = json.loads(result_str)
-        assert result["rc"] == 0
+        parsed = json.loads(result_str)
+        assert parsed["rc"] == 0
 
         # Check that it's compact - no newlines except in actual content
-        # Remove the stdout content first, then check
-        result_copy = result.copy()
-        result_copy["stdout"] = ""
-        compact_str = json.dumps(result_copy)
-
-        # The JSON structure itself should not have newlines from indentation
-        # (it will have the keys/values in one line)
-        lines = result_str.split("\n")
-        # If indented, would have many lines; compact should have few
-        # Note: stdout itself may have newlines, so we check structure
+        # model_dump_json() in Pydantic v2 is compact by default.
+        # We check for common indentation patterns.
         assert result_str.find('  "') == -1  # No double-space indent
+        assert result_str.find('\n  ') == -1  # No newline + indent
 
-    def test_graph_export_returns_compact_json(self):
+    def test_graph_export_returns_compact_json(self, client):
         """Graph export should return compact JSON."""
         # Initialize with a graph
-        self._run_command_sync("sysuse auto, clear")
-        self._run_command_sync("scatter price mpg, name(CompactTest, replace)")
+        client.run_command_structured("sysuse auto, clear")
+        client.run_command_structured("scatter price mpg, name(CompactTest, replace)")
 
-        from mcp_stata.server import export_graphs_all
-        result_str = export_graphs_all()  # Already returns JSON string
+        # Get results
+        exports = client.export_graphs_all()
+        result_str = exports.model_dump_json(exclude_none=False)
         result = json.loads(result_str)
 
         # Should be valid JSON

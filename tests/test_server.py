@@ -34,57 +34,53 @@ pytestmark = pytest.mark.requires_stata
 # We can test the tool functions directly since they are just Python functions decorated
 # We assume the singleton client is initialized by the time we import server
 
-def _run_command_sync(*args, **kwargs) -> str:
-    async def _main() -> str:
-        return await run_command(*args, **kwargs)
+@pytest.fixture
+def sync_tools(client):
+    """Helper to run server tools synchronously using anyio."""
+    class Helpers:
+        @staticmethod
+        def run_command_sync(*args, **kwargs):
+            async def _main():
+                return await run_command(*args, **kwargs)
+            return anyio.run(_main)
 
-    return anyio.run(_main)
+        @staticmethod
+        def run_do_file_sync(*args, **kwargs):
+            async def _main():
+                return await run_do_file(*args, **kwargs)
+            return anyio.run(_main)
 
+        @staticmethod
+        def run_command_background_sync(*args, **kwargs):
+            async def _main():
+                return await run_command_background(*args, **kwargs)
+            return anyio.run(_main)
 
-def _run_do_file_sync(*args, **kwargs) -> str:
-    async def _main() -> str:
-        return await run_do_file(*args, **kwargs)
+        @staticmethod
+        def run_do_file_background_sync(*args, **kwargs):
+            async def _main():
+                return await run_do_file_background(*args, **kwargs)
+            return anyio.run(_main)
 
-    return anyio.run(_main)
+        @staticmethod
+        def wait_for_task_result_sync(task_id, timeout=5.0):
+            async def _main():
+                with anyio.fail_after(timeout):
+                    while True:
+                        result = json.loads(get_task_result(task_id, allow_polling=True))
+                        if result.get("status") == "done":
+                            return result
+                        await anyio.sleep(0.05)
+            return anyio.run(_main)
+            
+    return Helpers()
 
-
-def _run_command_background_sync(*args, **kwargs) -> str:
-    async def _main() -> str:
-        return await run_command_background(*args, **kwargs)
-
-    return anyio.run(_main)
-
-
-def _run_do_file_background_sync(*args, **kwargs) -> str:
-    async def _main() -> str:
-        return await run_do_file_background(*args, **kwargs)
-
-    return anyio.run(_main)
-
-
-def _wait_for_task_result_sync(task_id: str, timeout: float = 5.0) -> dict:
-    async def _main() -> dict:
-        with anyio.fail_after(timeout):
-            while True:
-                result = json.loads(get_task_result(task_id, allow_polling=True))
-                if result.get("status") == "done":
-                    return result
-                await anyio.sleep(0.05)
-
-    return anyio.run(_main)
-
-@pytest.fixture(scope="session")
-def init_server():
-    # Ensure client init
-    # The server module creates 'client = StataClient()' at module level
-    # We just need to trigger one init
-    _run_command_sync("display 1")
-
-def test_server_tools(init_server):
+def test_server_tools(sync_tools):
     # Test run_command tool
-    res = json.loads(_run_command_sync("display 5+5"))
+    res = json.loads(sync_tools.run_command_sync("display 5+5"))
     assert res["rc"] == 0
-    assert res["stdout"] == ""
+    assert "{com}. display 5+5" in res["stdout"]
+    assert "{res}10" in res["stdout"]
     assert res.get("log_path")
     log_text = Path(res["log_path"]).read_text(encoding="utf-8", errors="replace")
     assert "10" in log_text
@@ -102,9 +98,10 @@ def test_server_tools(init_server):
     # Test find_in_log tool with case sensitivity (expect no matches)
     find_case = json.loads(find_in_log(res["log_path"], "DISPLAY", case_sensitive=True))
     assert find_case["matches"] == []
-    res_struct = json.loads(_run_command_sync("display 2+3"))
+    res_struct = json.loads(sync_tools.run_command_sync("display 2+3"))
     assert res_struct["rc"] == 0
-    assert res_struct["stdout"] == ""
+    assert "{com}. display 2+3" in res_struct["stdout"]
+    assert "{res}5" in res_struct["stdout"]
     assert res_struct.get("log_path")
     log_text2 = Path(res_struct["log_path"]).read_text(encoding="utf-8", errors="replace")
     assert "5" in log_text2
@@ -115,7 +112,7 @@ def test_server_tools(init_server):
 
     # Test get_data tool
     # Need data first
-    _run_command_sync("sysuse auto, clear")
+    sync_tools.run_command_sync("sysuse auto, clear")
     data_str = get_data(count=2)
     parsed_data = json.loads(data_str)
     assert parsed_data["data"][0].get("price") is not None
@@ -125,7 +122,7 @@ def test_server_tools(init_server):
     assert "Contains data" in desc or "obs:" in desc
 
     # Test graphs tool
-    _run_command_sync("scatter price mpg, name(ServerGraph, replace)")
+    sync_tools.run_command_sync("scatter price mpg, name(ServerGraph, replace)")
     g_list = json.loads(list_graphs())
     names = [g["name"] for g in g_list["graphs"]]
     assert "ServerGraph" in names
@@ -150,7 +147,7 @@ def test_server_tools(init_server):
     assert "sysuse" in h.lower()
     
     # Test stored results tool
-    _run_command_sync("summarize price")
+    sync_tools.run_command_sync("summarize price")
     res_json = get_stored_results()
     assert "mean" in res_json
 
@@ -171,9 +168,14 @@ def test_server_tools(init_server):
     tmp = Path("tmp_server_test.do")
     tmp.write_text('display "ok"\n')
     try:
-        do_resp = json.loads(_run_do_file_sync(str(tmp), as_json=True))
+        do_resp = json.loads(sync_tools.run_do_file_sync(str(tmp), as_json=True))
+        if do_resp["rc"] != 0:
+            print(f"DEBUG: do_file failed. Response: {do_resp}")
+            if "log_path" in do_resp and Path(do_resp["log_path"]).exists():
+                print(f"DEBUG: Log content: {Path(do_resp['log_path']).read_text()}")
         assert do_resp["rc"] == 0
-        assert do_resp["stdout"] == ""
+        assert "{com}. do" in do_resp["stdout"]
+        assert "{res}ok" in do_resp["stdout"]
         assert do_resp.get("log_path")
         do_log_text = Path(do_resp["log_path"]).read_text(encoding="utf-8", errors="replace")
         assert "ok" in do_log_text
@@ -181,9 +183,9 @@ def test_server_tools(init_server):
         if tmp.exists():
             tmp.unlink()
     
-def test_server_resources(init_server):
+def test_server_resources(sync_tools):
     # Load data for resources to have content
-    _run_command_sync("sysuse auto, clear")
+    sync_tools.run_command_sync("sysuse auto, clear")
 
     # Test summary resource
     summary = get_summary()
@@ -196,7 +198,7 @@ def test_server_resources(init_server):
 
     # Test graph list resource
     # Ensure a graph exists
-    _run_command_sync("scatter price mpg, name(ResourceGraph, replace)")
+    sync_tools.run_command_sync("scatter price mpg, name(ResourceGraph, replace)")
     g_list = json.loads(list_graphs_resource())
     names = [g["name"] for g in g_list.get("graphs", [])]
     assert "ResourceGraph" in names
@@ -208,12 +210,12 @@ def test_server_resources(init_server):
     assert "price" in names
 
     # Test stored results resource
-    _run_command_sync("summarize mpg")
+    sync_tools.run_command_sync("summarize mpg")
     stored = get_stored_results_resource()
     assert "mean" in stored
 
 
-def test_server_tools_with_cwd(tmp_path, init_server):
+def test_server_tools_with_cwd(tmp_path, sync_tools):
     project = tmp_path / "proj"
     project.mkdir()
 
@@ -223,25 +225,28 @@ def test_server_tools_with_cwd(tmp_path, init_server):
     parent.write_text('do "child.do"\ndisplay "parent-ok"\n')
 
     # run_do_file should resolve relative path via cwd and also allow nested relative do
-    do_resp = json.loads(_run_do_file_sync("parent.do", as_json=True, cwd=str(project)))
+    do_resp = json.loads(sync_tools.run_do_file_sync("parent.do", as_json=True, cwd=str(project)))
     assert do_resp["rc"] == 0
-    assert do_resp["stdout"] == ""
+    assert "{com}. do" in do_resp["stdout"]
+    assert "{res}child-ok" in do_resp["stdout"]
+    assert "{res}parent-ok" in do_resp["stdout"]
     assert do_resp.get("log_path")
     text = Path(do_resp["log_path"]).read_text(encoding="utf-8", errors="replace")
     assert "child-ok" in text
     assert "parent-ok" in text
 
     # run_command should honor cwd as well
-    cmd_resp = json.loads(_run_command_sync('do "child.do"', as_json=True, cwd=str(project)))
+    cmd_resp = json.loads(sync_tools.run_command_sync('do "child.do"', as_json=True, cwd=str(project)))
     assert cmd_resp["rc"] == 0
-    assert cmd_resp["stdout"] == ""
+    assert "{com}. do" in cmd_resp["stdout"]
+    assert "{res}child-ok" in cmd_resp["stdout"]
     assert cmd_resp.get("log_path")
     text2 = Path(cmd_resp["log_path"]).read_text(encoding="utf-8", errors="replace")
     assert "child-ok" in text2
 
 
-def test_server_background_tools(init_server, tmp_path):
-    cmd_resp = json.loads(_run_command_background_sync("display 7", as_json=True))
+def test_server_background_tools(sync_tools, tmp_path):
+    cmd_resp = json.loads(sync_tools.run_command_background_sync("display 7", as_json=True))
     assert cmd_resp["task_id"]
     assert cmd_resp.get("log_path")
 
@@ -249,42 +254,42 @@ def test_server_background_tools(init_server, tmp_path):
     assert status["status"] in {"running", "done"}
     assert status.get("log_path")
 
-    cmd_result = _wait_for_task_result_sync(cmd_resp["task_id"])
+    cmd_result = sync_tools.wait_for_task_result_sync(cmd_resp["task_id"])
     assert cmd_result["status"] == "done"
     assert cmd_result.get("result")
 
     dofile = tmp_path / "mcp_background.do"
     dofile.write_text('display "bg-ok"\n')
-    do_resp = json.loads(_run_do_file_background_sync(str(dofile), as_json=True))
+    do_resp = json.loads(sync_tools.run_do_file_background_sync(str(dofile), as_json=True))
     assert do_resp["task_id"]
     assert do_resp.get("log_path")
 
-    do_result = _wait_for_task_result_sync(do_resp["task_id"])
+    do_result = sync_tools.wait_for_task_result_sync(do_resp["task_id"])
     assert do_result["status"] == "done"
     assert do_result.get("result")
 
 
-def test_export_graphs_all_multiple(init_server):
+def test_export_graphs_all_multiple(sync_tools):
     """Test that multiple produced graphs appear in export_graphs_all output."""
     # Clear any existing graphs first
-    _run_command_sync("clear all")
-    _run_command_sync("graph drop _all")
+    sync_tools.run_command_sync("clear all")
+    sync_tools.run_command_sync("graph drop _all")
     
     # Load data and create multiple graphs
-    _run_command_sync("sysuse auto, clear")
+    sync_tools.run_command_sync("sysuse auto, clear")
     
     # Create graphs with names that can trigger edge cases:
     # - spaces/special characters
     # - cache filename collisions after sanitization (e.g., ":" vs "?")
-    _run_command_sync('scatter price mpg, name("Graph A", replace)')
-    _run_command_sync('histogram price, name("Graph:1", replace)')
-    _run_command_sync('graph box price, over(mpg) name("Graph?1", replace)')
+    sync_tools.run_command_sync('scatter price mpg, name("Graph A", replace)')
+    sync_tools.run_command_sync('histogram price, name("Graph:1", replace)')
+    sync_tools.run_command_sync('graph box price, over(mpg) name("Graph?1", replace)')
     
     # Debug: check what graphs are available before export
     list_graphs_cmd = 'global mcp_graph_list ""'
-    _run_command_sync(list_graphs_cmd)
-    _run_command_sync("quietly graph dir, memory")
-    _run_command_sync("global mcp_graph_list `r(list)'")
+    sync_tools.run_command_sync(list_graphs_cmd)
+    sync_tools.run_command_sync("quietly graph dir, memory")
+    sync_tools.run_command_sync("global mcp_graph_list `r(list)'")
     from sfi import Macro
     graph_list_str = Macro.getGlobal("mcp_graph_list")
     print(f"Graph list from memory: {graph_list_str}")
@@ -293,7 +298,7 @@ def test_export_graphs_all_multiple(init_server):
     all_graphs = json.loads(export_graphs_all())
     
     # Debug: print available graphs
-    graphs_result = _run_command_sync("graph dir")
+    graphs_result = sync_tools.run_command_sync("graph dir")
     print(f"Available graphs in Stata: {graphs_result}")
     print(f"Exported graphs: {[g['name'] for g in all_graphs['graphs']]}")
     
@@ -305,6 +310,19 @@ def test_export_graphs_all_multiple(init_server):
     assert "Graph A" in graph_names
     assert "Graph:1" in graph_names
     assert "Graph?1" in graph_names
+    
+    # Verify each graph has a valid file path
+    paths = []
+    for graph in all_graphs["graphs"]:
+        assert graph["file_path"]
+        # SVG files are now used (smaller, faster, vector format)
+        assert graph["file_path"].endswith(".svg")
+        assert Path(graph["file_path"]).exists()
+        assert Path(graph["file_path"]).stat().st_size > 0
+        paths.append(graph["file_path"])
+
+    # Ensure we did not overwrite graphs due to cache filename collisions
+    assert len(set(paths)) == 3
     
     # Verify each graph has a valid file path
     paths = []

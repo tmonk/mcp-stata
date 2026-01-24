@@ -6,23 +6,36 @@ import pytest
 # Mock Stata dependencies ONLY if they're not already available
 # This allows tests that need real Stata to use it, while providing mocks for unit tests
 def _setup_stata_mocks_if_needed():
-    """Set up mock Stata modules only if real ones are not available."""
-    # Try to import the real modules first
-    stata_available = False
+    """Set up mock Stata modules only if real ones are NOT available."""
+    stata_base_available = False
     try:
+        # Check for stata_setup which is the entry point
         import stata_setup
-        stata_available = True
+        stata_base_available = True
     except (ImportError, ModuleNotFoundError):
         pass
 
-    # Only mock if Stata is not available
-    if not stata_available:
+    # Special check: If we are running in a worker, pystata might not be in path
+    # but site-packages should be.
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER")
+    
+    # Only mock if stata_setup is missing
+    if not stata_base_available:
+        print(f"[conftest] Stata not found{f' (worker {worker_id})' if worker_id else ''}. Setting up mocks.")
         if 'sfi' not in sys.modules:
             sys.modules['sfi'] = MagicMock()
         if 'pystata' not in sys.modules:
             sys.modules['pystata'] = MagicMock()
         if 'stata_setup' not in sys.modules:
             sys.modules['stata_setup'] = MagicMock()
+    else:
+        # If stata_setup is available, we should NOT mock sfi/pystata
+        # However, we must ensure they can be imported eventually.
+        # We'll just print a diagnostic.
+        if worker_id:
+            pass # Verbose logging here can slow down xdist startup
+        else:
+            print(f"[conftest] Stata installation detected. Mocks disabled.")
 
 # In conftest.py
 @pytest.fixture(scope="session")
@@ -30,6 +43,9 @@ def stata_client():
     """Single StataClient shared across all test files."""
     from mcp_stata.stata_client import StataClient
     from mcp_stata import discovery
+    
+    # Speed up tests by skipping the heavy subprocess pre-flight check in StataClient.init()
+    os.environ["MCP_STATA_SKIP_PREFLIGHT"] = "1"
     
     stata_path = os.environ.get("STATA_PATH")
     if not stata_path or not os.path.exists(stata_path):
