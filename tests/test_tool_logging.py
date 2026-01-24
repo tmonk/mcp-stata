@@ -3,8 +3,9 @@ import os
 
 from mcp.server.fastmcp.utilities import logging as fastmcp_logging
 
+import pytest
 from mcp_stata.models import GraphListResponse
-from mcp_stata.server import get_task_status, list_graphs_resource, client, logger, setup_logging, payload_logger
+from mcp_stata.server import get_task_status, list_graphs_resource, logger, setup_logging, payload_logger
 import mcp_stata.server as server
 
 
@@ -17,12 +18,16 @@ def test_tool_logging_includes_tool_name(caplog):
     assert any("MCP tool call: get_task_status request_id=None" in msg for msg in messages)
 
 
-def test_resource_logging_includes_resource_name(caplog, monkeypatch):
+@pytest.mark.asyncio
+async def test_resource_logging_includes_resource_name(caplog, monkeypatch):
     caplog.set_level(logging.INFO, logger="mcp_stata")
 
-    monkeypatch.setattr(client, "list_graphs_structured", lambda: GraphListResponse(graphs=[], active=None))
+    async def mock_list_graphs(*args, **kwargs):
+        return GraphListResponse(graphs=[], active=None).model_dump_json()
 
-    list_graphs_resource()
+    monkeypatch.setattr(server, "list_graphs", mock_list_graphs)
+
+    await list_graphs_resource()
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("MCP tool call: list_graphs_resource request_id=None" in msg for msg in messages)

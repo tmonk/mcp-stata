@@ -191,27 +191,26 @@ class UIChannelManager:
         self._dataset_id_cache: str | None = None
         self._dataset_id_cache_at_version: int = -1
 
-        self._views: dict[str, ViewHandle] = {}
-        self._last_sort_spec: tuple[str, ...] | None = None
-        self._last_sort_dataset_id: str | None = None
-        self._sort_index_cache: dict[tuple[str, tuple[str, ...]], list[int]] = {}
-        self._sort_cache_order: list[tuple[str, tuple[str, ...]]] = []
-        self._sort_cache_max_entries: int = 4
-        self._sort_table_cache: dict[tuple[str, tuple[str, ...]], Any] = {}
-        self._sort_table_order: list[tuple[str, tuple[str, ...]]] = []
-        self._sort_table_max_entries: int = 2
+        self._views: dict[str, dict[str, ViewHandle]] = {} # session_id -> {view_id -> ViewHandle}
+        self._sort_index_cache: dict[tuple[str, str, tuple[str, ...]], list[int]] = {} # (session_id, dataset_id, sort_spec)
+        self._sort_cache_order: list[tuple[str, str, tuple[str, ...]]] = []
+        self._sort_cache_max_entries: int = 10
+        self._sort_table_cache: dict[tuple[str, str, tuple[str, ...]], Any] = {} # (session_id, dataset_id, sort_cols)
+        self._sort_table_order: list[tuple[str, str, tuple[str, ...]]] = []
+        self._sort_table_max_entries: int = 4
+        self._dataset_id_caches: dict[str, tuple[str, int]] = {} # session_id -> (digest, version)
 
-    def notify_potential_dataset_change(self) -> None:
+    def notify_potential_dataset_change(self, session_id: str = "default") -> None:
         with self._lock:
-            self._dataset_version += 1
-            self._dataset_id_cache = None
-            self._views.clear()
-            self._last_sort_spec = None
-            self._last_sort_dataset_id = None
-            self._sort_index_cache.clear()
-            self._sort_cache_order.clear()
-            self._sort_table_cache.clear()
-            self._sort_table_order.clear()
+            self._dataset_id_caches.pop(session_id, None)
+            if session_id in self._views:
+                self._views[session_id].clear()
+            
+            # Clear caches for this session
+            self._sort_cache_order = [k for k in self._sort_cache_order if k[0] != session_id]
+            self._sort_index_cache = {k: v for k, v in self._sort_index_cache.items() if k[0] != session_id}
+            self._sort_table_order = [k for k in self._sort_table_order if k[0] != session_id]
+            self._sort_table_cache = {k: v for k, v in self._sort_table_cache.items() if k[0] != session_id}
 
     @staticmethod
     def _normalize_sort_spec(sort_spec: list[str]) -> tuple[str, ...]:
@@ -230,23 +229,22 @@ class UIChannelManager:
         return tuple(normalized)
 
     def _get_cached_sort_indices(
-        self, dataset_id: str, sort_spec: tuple[str, ...]
+        self, session_id: str, dataset_id: str, sort_spec: tuple[str, ...]
     ) -> list[int] | None:
-        key = (dataset_id, sort_spec)
+        key = (session_id, dataset_id, sort_spec)
         with self._lock:
             cached = self._sort_index_cache.get(key)
             if cached is None:
                 return None
-            # refresh LRU order
             if key in self._sort_cache_order:
                 self._sort_cache_order.remove(key)
             self._sort_cache_order.append(key)
             return cached
 
     def _set_cached_sort_indices(
-        self, dataset_id: str, sort_spec: tuple[str, ...], indices: list[int]
+        self, session_id: str, dataset_id: str, sort_spec: tuple[str, ...], indices: list[int]
     ) -> None:
-        key = (dataset_id, sort_spec)
+        key = (session_id, dataset_id, sort_spec)
         with self._lock:
             if key in self._sort_index_cache:
                 self._sort_cache_order.remove(key)
@@ -257,9 +255,9 @@ class UIChannelManager:
                 self._sort_index_cache.pop(evict, None)
 
     def _get_cached_sort_table(
-        self, dataset_id: str, sort_cols: tuple[str, ...]
+        self, session_id: str, dataset_id: str, sort_cols: tuple[str, ...]
     ) -> Any | None:
-        key = (dataset_id, sort_cols)
+        key = (session_id, dataset_id, sort_cols)
         with self._lock:
             cached = self._sort_table_cache.get(key)
             if cached is None:
@@ -270,9 +268,9 @@ class UIChannelManager:
             return cached
 
     def _set_cached_sort_table(
-        self, dataset_id: str, sort_cols: tuple[str, ...], table: Any
+        self, session_id: str, dataset_id: str, sort_cols: tuple[str, ...], table: Any
     ) -> None:
-        key = (dataset_id, sort_cols)
+        key = (session_id, dataset_id, sort_cols)
         with self._lock:
             if key in self._sort_table_cache:
                 self._sort_table_order.remove(key)
@@ -282,19 +280,21 @@ class UIChannelManager:
                 evict = self._sort_table_order.pop(0)
                 self._sort_table_cache.pop(evict, None)
 
-    def _get_sort_table(self, dataset_id: str, sort_cols: list[str]) -> Any:
+    def _get_sort_table(self, session_id: str, dataset_id: str, sort_cols: list[str]) -> Any:
         sort_cols_key = tuple(sort_cols)
-        cached = self._get_cached_sort_table(dataset_id, sort_cols_key)
+        cached = self._get_cached_sort_table(session_id, dataset_id, sort_cols_key)
         if cached is not None:
             return cached
 
-        state = self._client.get_dataset_state()
+        # Use an appropriate client for the session
+        proxy = self._get_proxy_for_session(session_id)
+        state = proxy.get_dataset_state()
         n = int(state.get("n", 0) or 0)
         if n <= 0:
             return None
 
         # Pull full columns once via Arrow stream (Stata -> Arrow), then sort in Polars.
-        arrow_bytes = self._client.get_arrow_stream(
+        arrow_bytes = proxy.get_arrow_stream(
             offset=0,
             limit=n,
             vars=sort_cols,
@@ -307,7 +307,7 @@ class UIChannelManager:
         with pa.ipc.open_stream(io.BytesIO(arrow_bytes)) as reader:
             table = reader.read_all()
 
-        self._set_cached_sort_table(dataset_id, sort_cols_key, table)
+        self._set_cached_sort_table(session_id, dataset_id, sort_cols_key, table)
         return table
 
     def get_channel(self) -> UIChannelInfo:
@@ -322,12 +322,28 @@ class UIChannelManager:
     def capabilities(self) -> dict[str, bool]:
         return {"dataBrowser": True, "filtering": True, "sorting": True, "arrowStream": True}
 
-    def current_dataset_id(self) -> str:
-        with self._lock:
-            if self._dataset_id_cache is not None and self._dataset_id_cache_at_version == self._dataset_version:
-                return self._dataset_id_cache
+    def _get_proxy_for_session(self, session_id: str) -> StataClient:
+        # Prefer the injected client when present (used by unit tests and single-session setups).
+        client = getattr(self, "_client", None)
+        if client is not None:
+            from .server import StataClientProxy
+            if isinstance(client, StataClientProxy):
+                return StataClientProxy(session_id=session_id or "default")
+            return client
 
-        state = self._client.get_dataset_state()
+        from .server import StataClientProxy
+        return StataClientProxy(session_id=session_id or "default")
+
+    def current_dataset_id(self, session_id: str = "default") -> str:
+        with self._lock:
+            cached = self._dataset_id_caches.get(session_id)
+            if cached:
+                digest, version = cached
+                if version == self._dataset_version:
+                    return digest
+
+        proxy = self._get_proxy_for_session(session_id)
+        state = proxy.get_dataset_state()
         payload = {
             "version": self._dataset_version,
             "frame": state.get("frame"),
@@ -338,27 +354,30 @@ class UIChannelManager:
         digest = _stable_hash(payload)
 
         with self._lock:
-            self._dataset_id_cache = digest
-            self._dataset_id_cache_at_version = self._dataset_version
+            self._dataset_id_caches[session_id] = (digest, self._dataset_version)
             return digest
 
-    def get_view(self, view_id: str) -> Optional[ViewHandle]:
+    def get_view(self, session_id: str, view_id: str) -> Optional[ViewHandle]:
         now = time.time()
         with self._lock:
             self._evict_expired_locked(now)
-            view = self._views.get(view_id)
+            session_views = self._views.get(session_id)
+            if session_views is None:
+                return None
+            view = session_views.get(view_id)
             if view is None:
                 return None
             view.last_access = now
             return view
 
-    def create_view(self, *, dataset_id: str, frame: str, filter_expr: str) -> ViewHandle:
-        current_id = self.current_dataset_id()
+    def create_view(self, *, session_id: str, dataset_id: str, frame: str, filter_expr: str) -> ViewHandle:
+        current_id = self.current_dataset_id(session_id)
         if dataset_id != current_id:
             raise DatasetChangedError(current_id)
 
+        proxy = self._get_proxy_for_session(session_id)
         try:
-            obs_indices = self._client.compute_view_indices(filter_expr)
+            obs_indices = proxy.compute_view_indices(filter_expr)
         except ValueError as e:
             raise InvalidFilterError(str(e))
         except RuntimeError as e:
@@ -380,12 +399,17 @@ class UIChannelManager:
         )
         with self._lock:
             self._evict_expired_locked(now)
-            self._views[view_id] = view
+            if session_id not in self._views:
+                self._views[session_id] = {}
+            self._views[session_id][view_id] = view
         return view
 
-    def delete_view(self, view_id: str) -> bool:
+    def delete_view(self, session_id: str, view_id: str) -> bool:
         with self._lock:
-            return self._views.pop(view_id, None) is not None
+            session_views = self._views.get(session_id)
+            if session_views is None:
+                return False
+            return session_views.pop(view_id, None) is not None
 
     def validate_token(self, header_value: str | None) -> bool:
         if not header_value:
@@ -411,12 +435,16 @@ class UIChannelManager:
             self._expires_at = int((time.time() + self._token_ttl_s) * 1000)
 
     def _evict_expired_locked(self, now: float) -> None:
-        expired: list[str] = []
-        for key, view in self._views.items():
-            if now - view.last_access >= self._view_ttl_s:
-                expired.append(key)
-        for key in expired:
-            self._views.pop(key, None)
+        for session_id in list(self._views.keys()):
+            session_views = self._views[session_id]
+            expired: list[str] = []
+            for key, view in session_views.items():
+                if now - view.last_access >= self._view_ttl_s:
+                    expired.append(key)
+            for key in expired:
+                session_views.pop(key, None)
+            if not session_views:
+                self._views.pop(session_id, None)
 
     def _ensure_http_server(self) -> None:
         with self._lock:
@@ -482,10 +510,16 @@ class UIChannelManager:
                     if not self._require_auth():
                         return
 
-                    if self.path == "/v1/dataset":
+                    if self.path.startswith("/v1/dataset"):
+                        from urllib.parse import urlparse, parse_qs
+                        parsed_url = urlparse(self.path)
+                        params = parse_qs(parsed_url.query)
+                        session_id = params.get("sessionId", ["default"])[0]
+
                         try:
-                            state = manager._client.get_dataset_state()
-                            dataset_id = manager.current_dataset_id()
+                            proxy = manager._get_proxy_for_session(session_id)
+                            state = proxy.get_dataset_state()
+                            dataset_id = manager.current_dataset_id(session_id)
                             self._send_json(
                                 200,
                                 {
@@ -506,11 +540,17 @@ class UIChannelManager:
                             self._error(500, "internal_error", str(e))
                             return
 
-                    if self.path == "/v1/vars":
+                    if self.path.startswith("/v1/vars"):
+                        from urllib.parse import urlparse, parse_qs
+                        parsed_url = urlparse(self.path)
+                        params = parse_qs(parsed_url.query)
+                        session_id = params.get("sessionId", ["default"])[0]
+
                         try:
-                            state = manager._client.get_dataset_state()
-                            dataset_id = manager.current_dataset_id()
-                            variables = manager._client.list_variables_rich()
+                            proxy = manager._get_proxy_for_session(session_id)
+                            state = proxy.get_dataset_state()
+                            dataset_id = manager.current_dataset_id(session_id)
+                            variables = proxy.list_variables_rich()
                             self._send_json(
                                 200,
                                 {
@@ -570,11 +610,12 @@ class UIChannelManager:
                         dataset_id = str(body.get("datasetId", ""))
                         frame = str(body.get("frame", "default"))
                         filter_expr = str(body.get("filterExpr", ""))
+                        session_id = str(body.get("sessionId", "default"))
                         if not dataset_id or not filter_expr:
                             self._error(400, "invalid_request", "datasetId and filterExpr are required")
                             return
                         try:
-                            view = manager.create_view(dataset_id=dataset_id, frame=frame, filter_expr=filter_expr)
+                            view = manager.create_view(session_id=session_id, dataset_id=dataset_id, frame=frame, filter_expr=filter_expr)
                             self._send_json(
                                 200,
                                 {
@@ -584,7 +625,7 @@ class UIChannelManager:
                             )
                             return
                         except DatasetChangedError as e:
-                            self._error(409, "dataset_changed", "Dataset changed")
+                            self._error(409, "dataset_changed", f"Dataset changed for session {session_id}")
                             return
                         except ValueError as e:
                             self._error(400, "invalid_filter", str(e))
@@ -645,11 +686,13 @@ class UIChannelManager:
                         if body is None:
                             return
                         filter_expr = str(body.get("filterExpr", ""))
+                        session_id = str(body.get("sessionId", "default"))
                         if not filter_expr:
                             self._error(400, "invalid_request", "filterExpr is required")
                             return
                         try:
-                            manager._client.validate_filter_expr(filter_expr)
+                            proxy = manager._get_proxy_for_session(session_id)
+                            proxy.validate_filter_expr(filter_expr)
                             self._send_json(200, {"ok": True})
                             return
                         except ValueError as e:
@@ -677,11 +720,15 @@ class UIChannelManager:
                         if len(parts) != 4:
                             self._error(404, "not_found", "Not found")
                             return
+                        from urllib.parse import urlparse, parse_qs
+                        parsed_url = urlparse(self.path)
+                        params = parse_qs(parsed_url.query)
+                        session_id = params.get("sessionId", ["default"])[0]
                         view_id = parts[3]
-                        if manager.delete_view(view_id):
+                        if manager.delete_view(session_id, view_id):
                             self._send_json(200, {"ok": True})
                         else:
-                            self._error(404, "not_found", "Not found")
+                            self._error(404, "not_found", f"View {view_id} not found in session {session_id}")
                         return
 
                     self._error(404, "not_found", "Not found")
@@ -724,55 +771,58 @@ class InvalidFilterError(Exception):
         self.stata_rc = stata_rc
 
 
+def _resolve_proxy(manager: UIChannelManager, session_id: str) -> StataClient:
+    """Resolve the Stata client proxy, preferring injected clients for tests."""
+    proxy = getattr(manager, "_client", None)
+    if proxy is not None:
+        from .server import StataClientProxy
+        if not isinstance(proxy, StataClientProxy):
+            return proxy
+    return manager._get_proxy_for_session(session_id)
+
+
 def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view_id: str | None) -> dict[str, Any]:
     max_limit, max_vars, max_chars, _ = manager.limits()
+
+    session_id = str(body.get("sessionId", "default"))
 
     if view_id is None:
         dataset_id = str(body.get("datasetId", ""))
         frame = str(body.get("frame", "default"))
     else:
-        view = manager.get_view(view_id)
+        view = manager.get_view(session_id, view_id)
         if view is None:
-            raise HTTPError(404, "not_found", "View not found")
+            raise HTTPError(404, "not_found", f"View {view_id} not found in session {session_id}")
         dataset_id = view.dataset_id
         frame = view.frame
 
-    # Parse offset (default 0 is valid since offset >= 0)
     try:
         offset = int(body.get("offset") or 0)
-    except (ValueError, TypeError) as e:
-        raise HTTPError(400, "invalid_request", f"offset must be a valid integer, got: {body.get('offset')!r}")
+    except (ValueError, TypeError):
+        raise HTTPError(400, "invalid_request", "offset must be a valid integer")
 
-    # Parse limit (no default - must be explicitly provided)
     limit_raw = body.get("limit")
     if limit_raw is None:
         raise HTTPError(400, "invalid_request", "limit is required")
     try:
         limit = int(limit_raw)
-    except (ValueError, TypeError) as e:
-        raise HTTPError(400, "invalid_request", f"limit must be a valid integer, got: {limit_raw!r}")
+    except (ValueError, TypeError):
+        raise HTTPError(400, "invalid_request", "limit must be a valid integer")
 
     vars_req = body.get("vars", [])
     include_obs_no = bool(body.get("includeObsNo", False))
-
-    # Parse sortBy parameter
     sort_by = body.get("sortBy", [])
-    if sort_by is not None and not isinstance(sort_by, list):
-        raise HTTPError(400, "invalid_request", f"sortBy must be an array, got: {type(sort_by).__name__}")
-    if sort_by and not all(isinstance(s, str) for s in sort_by):
-        raise HTTPError(400, "invalid_request", "sortBy must be an array of strings")
-
-    # Parse maxChars
     max_chars_raw = body.get("maxChars", max_chars)
+
     try:
         max_chars_req = int(max_chars_raw or max_chars)
-    except (ValueError, TypeError) as e:
-        raise HTTPError(400, "invalid_request", f"maxChars must be a valid integer, got: {max_chars_raw!r}")
+    except (ValueError, TypeError):
+        raise HTTPError(400, "invalid_request", "maxChars must be a valid integer")
 
     if offset < 0:
-        raise HTTPError(400, "invalid_request", f"offset must be >= 0, got: {offset}")
+        raise HTTPError(400, "invalid_request", "offset must be >= 0")
     if limit <= 0:
-        raise HTTPError(400, "invalid_request", f"limit must be > 0, got: {limit}")
+        raise HTTPError(400, "invalid_request", f"limit must be > 0 (got: {limit})")
     if limit > max_limit:
         raise HTTPError(400, "request_too_large", f"limit must be <= {max_limit}")
     if max_chars_req <= 0:
@@ -785,53 +835,47 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
     if len(vars_req) > max_vars:
         raise HTTPError(400, "request_too_large", f"vars length must be <= {max_vars}")
 
-    current_id = manager.current_dataset_id()
+    if sort_by and (not isinstance(sort_by, list) or not all(isinstance(s, str) for s in sort_by)):
+        raise HTTPError(400, "invalid_request", "sortBy must be an array of strings")
+
+    current_id = manager.current_dataset_id(session_id)
     if dataset_id != current_id:
-        raise HTTPError(409, "dataset_changed", "Dataset changed")
+        raise HTTPError(409, "dataset_changed", f"Dataset changed for session {session_id}")
 
     if view_id is None:
         obs_indices = None
-        filtered_n: int | None = None
+        filtered_n = None
     else:
         assert view is not None
         obs_indices = view.obs_indices
         filtered_n = view.filtered_n
 
     try:
-        # Apply sorting if requested (Rust native sorter with Polars fallback; no dataset mutation)
         if sort_by:
-            try:
-                normalized_sort = manager._normalize_sort_spec(sort_by)
-                sorted_indices = manager._get_cached_sort_indices(current_id, normalized_sort)
-                if sorted_indices is None:
-                    sort_cols = [spec.lstrip("+-") for spec in normalized_sort]
-                    descending = [spec.startswith("-") for spec in normalized_sort]
-                    nulls_last = [not desc for desc in descending]
+            sort_spec = manager._normalize_sort_spec(sort_by)
+            obs_indices_sorted = manager._get_cached_sort_indices(session_id, dataset_id, sort_spec)
+            if obs_indices_sorted is None:
+                sort_cols = [s.lstrip("+-") for s in sort_spec]
+                descending = [s.startswith("-") for s in sort_spec]
+                nulls_last = [False] * len(sort_spec)
 
-                    table = manager._get_sort_table(current_id, sort_cols)
-                    if table is None:
-                        sorted_indices = []
-                    else:
-                        sorted_indices = _try_native_argsort(table, sort_cols, descending, nulls_last)
-                        if sorted_indices is None:
-                            sorted_indices = _get_sorted_indices_polars(table, sort_cols, descending, nulls_last)
+                table = manager._get_sort_table(session_id, dataset_id, sort_cols)
+                if table is not None:
+                    obs_indices_sorted = _try_native_argsort(table, sort_cols, descending, nulls_last)
+                    if obs_indices_sorted is None:
+                        obs_indices_sorted = _get_sorted_indices_polars(table, sort_cols, descending, nulls_last)
+                    manager._set_cached_sort_indices(session_id, dataset_id, sort_spec, obs_indices_sorted)
 
-                    manager._set_cached_sort_indices(current_id, normalized_sort, sorted_indices)
-
-                if view_id is None:
-                    obs_indices = sorted_indices
+            if obs_indices_sorted:
+                if obs_indices:
+                    filter_set = set(obs_indices)
+                    obs_indices = [idx for idx in obs_indices_sorted if idx in filter_set]
                 else:
-                    assert view is not None
-                    view_set = set(view.obs_indices)
-                    obs_indices = [idx for idx in sorted_indices if idx in view_set]
-                    filtered_n = len(obs_indices)
-            except ValueError as e:
-                raise HTTPError(400, "invalid_request", f"Invalid sort specification: {e}")
-            except RuntimeError as e:
-                raise HTTPError(500, "internal_error", f"Failed to apply sort: {e}")
+                    obs_indices = obs_indices_sorted
 
-        dataset_state = manager._client.get_dataset_state()
-        page = manager._client.get_page(
+        proxy = _resolve_proxy(manager, session_id)
+        dataset_state = proxy.get_dataset_state()
+        page = proxy.get_page(
             offset=offset,
             limit=limit,
             vars=vars_req,
@@ -839,11 +883,39 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
             max_chars=max_chars_req,
             obs_indices=obs_indices,
         )
+
+        view_obj: dict[str, Any] = {
+            "offset": offset,
+            "limit": limit,
+            "returned": page["returned"],
+            "filteredN": filtered_n,
+        }
+        if view_id is not None:
+            view_obj["viewId"] = view_id
+
+        return {
+            "dataset": {
+                "id": current_id,
+                "frame": dataset_state.get("frame"),
+                "n": dataset_state.get("n"),
+                "k": dataset_state.get("k"),
+            },
+            "view": view_obj,
+            "vars": page["vars"],
+            "rows": page["rows"],
+            "display": {
+                "maxChars": max_chars_req,
+                "truncatedCells": page["truncated_cells"],
+                "missing": ".",
+            },
+        }
+
     except HTTPError:
-        # Re-raise HTTPError exceptions as-is
         raise
     except RuntimeError as e:
         msg = str(e) or "No data in memory"
+        if "invalid variable" in msg.lower():
+            raise HTTPError(400, "invalid_variable", msg)
         if "no data" in msg.lower():
             raise HTTPError(400, "no_data_in_memory", msg)
         raise HTTPError(500, "internal_error", msg)
@@ -855,59 +927,29 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
     except Exception as e:
         raise HTTPError(500, "internal_error", str(e))
 
-    view_obj: dict[str, Any] = {
-        "offset": offset,
-        "limit": limit,
-        "returned": page["returned"],
-        "filteredN": filtered_n,
-    }
-    if view_id is not None:
-        view_obj["viewId"] = view_id
-
-    return {
-        "dataset": {
-            "id": current_id,
-            "frame": dataset_state.get("frame"),
-            "n": dataset_state.get("n"),
-            "k": dataset_state.get("k"),
-        },
-        "view": view_obj,
-        "vars": page["vars"],
-        "rows": page["rows"],
-        "display": {
-            "maxChars": max_chars_req,
-            "truncatedCells": page["truncated_cells"],
-            "missing": ".",
-        },
-    }
-
 
 def handle_arrow_request(manager: UIChannelManager, body: dict[str, Any], *, view_id: str | None) -> bytes:
-    max_limit, max_vars, max_chars, _ = manager.limits()
-    # Use the specific Arrow limit instead of the general UI page limit
+    max_limit, max_vars, _, _ = manager.limits()
     chunk_limit = getattr(manager, "_max_arrow_limit", 1_000_000)
+    session_id = str(body.get("sessionId", "default"))
 
     if view_id is None:
         dataset_id = str(body.get("datasetId", ""))
         frame = str(body.get("frame", "default"))
     else:
-        view = manager.get_view(view_id)
+        view = manager.get_view(session_id, view_id)
         if view is None:
-            raise HTTPError(404, "not_found", "View not found")
+            raise HTTPError(404, "not_found", f"View {view_id} not found in session {session_id}")
         dataset_id = view.dataset_id
         frame = view.frame
 
-    # Parse offset (default 0)
     try:
         offset = int(body.get("offset") or 0)
     except (ValueError, TypeError):
         raise HTTPError(400, "invalid_request", "offset must be a valid integer")
 
-    # Parse limit (required)
     limit_raw = body.get("limit")
     if limit_raw is None:
-        # Default to the max arrow limit if not specified? 
-        # The previous code required it. Let's keep it required but allow large values.
         raise HTTPError(400, "invalid_request", "limit is required")
     try:
         limit = int(limit_raw)
@@ -921,8 +963,7 @@ def handle_arrow_request(manager: UIChannelManager, body: dict[str, Any], *, vie
     if offset < 0:
         raise HTTPError(400, "invalid_request", "offset must be >= 0")
     if limit <= 0:
-        raise HTTPError(400, "invalid_request", "limit must be > 0")
-    # Arrow streams are efficient, but we still respect a (much larger) max limit
+        raise HTTPError(400, "invalid_request", f"limit must be > 0 (got: {limit})")
     if limit > chunk_limit:
         raise HTTPError(400, "request_too_large", f"limit must be <= {chunk_limit}")
 
@@ -931,9 +972,9 @@ def handle_arrow_request(manager: UIChannelManager, body: dict[str, Any], *, vie
     if len(vars_req) > max_vars:
         raise HTTPError(400, "request_too_large", f"vars length must be <= {max_vars}")
 
-    current_id = manager.current_dataset_id()
+    current_id = manager.current_dataset_id(session_id)
     if dataset_id != current_id:
-        raise HTTPError(409, "dataset_changed", "Dataset changed")
+        raise HTTPError(409, "dataset_changed", f"Dataset changed for session {session_id}")
 
     if view_id is None:
         obs_indices = None
@@ -942,50 +983,44 @@ def handle_arrow_request(manager: UIChannelManager, body: dict[str, Any], *, vie
         obs_indices = view.obs_indices
 
     try:
-        # Apply sorting if requested (Rust native sorter with Polars fallback; no dataset mutation)
         if sort_by:
             if not isinstance(sort_by, list) or not all(isinstance(s, str) for s in sort_by):
-                raise HTTPError(400, "invalid_request", "sortBy must be a list of strings")
-            try:
-                normalized_sort = manager._normalize_sort_spec(sort_by)
-                sorted_indices = manager._get_cached_sort_indices(current_id, normalized_sort)
-                if sorted_indices is None:
-                    sort_cols = [spec.lstrip("+-") for spec in normalized_sort]
-                    descending = [spec.startswith("-") for spec in normalized_sort]
-                    nulls_last = [not desc for desc in descending]
+                raise HTTPError(400, "invalid_request", "sortBy must be an array of strings")
+            
+            sort_spec = manager._normalize_sort_spec(sort_by)
+            obs_indices_sorted = manager._get_cached_sort_indices(session_id, dataset_id, sort_spec)
+            if obs_indices_sorted is None:
+                sort_cols = [s.lstrip("+-") for s in sort_spec]
+                descending = [s.startswith("-") for s in sort_spec]
+                nulls_last = [False] * len(sort_spec)
 
-                    table = manager._get_sort_table(current_id, sort_cols)
-                    if table is None:
-                        sorted_indices = []
-                    else:
-                        sorted_indices = _try_native_argsort(table, sort_cols, descending, nulls_last)
-                        if sorted_indices is None:
-                            sorted_indices = _get_sorted_indices_polars(table, sort_cols, descending, nulls_last)
+                table = manager._get_sort_table(session_id, dataset_id, sort_cols)
+                if table is not None:
+                    obs_indices_sorted = _try_native_argsort(table, sort_cols, descending, nulls_last)
+                    if obs_indices_sorted is None:
+                        obs_indices_sorted = _get_sorted_indices_polars(table, sort_cols, descending, nulls_last)
+                    manager._set_cached_sort_indices(session_id, dataset_id, sort_spec, obs_indices_sorted)
 
-                manager._set_cached_sort_indices(current_id, normalized_sort, sorted_indices)
-
-                if view_id is None:
-                    obs_indices = sorted_indices
+            if obs_indices_sorted:
+                if obs_indices:
+                    filter_set = set(obs_indices)
+                    obs_indices = [idx for idx in obs_indices_sorted if idx in filter_set]
                 else:
-                    assert view is not None
-                    view_set = set(view.obs_indices)
-                    obs_indices = [idx for idx in sorted_indices if idx in view_set]
-            except ValueError as e:
-                raise HTTPError(400, "invalid_request", f"Invalid sort: {e}")
-            except RuntimeError as e:
-                raise HTTPError(500, "internal_error", f"Sort failed: {e}")
+                    obs_indices = obs_indices_sorted
 
-        arrow_bytes = manager._client.get_arrow_stream(
+        proxy = _resolve_proxy(manager, session_id)
+        return proxy.get_arrow_stream(
             offset=offset,
             limit=limit,
             vars=vars_req,
             include_obs_no=include_obs_no,
             obs_indices=obs_indices,
         )
-        return arrow_bytes
 
     except RuntimeError as e:
         msg = str(e) or "No data in memory"
+        if "invalid variable" in msg.lower():
+            raise HTTPError(400, "invalid_variable", msg)
         if "no data" in msg.lower():
             raise HTTPError(400, "no_data_in_memory", msg)
         raise HTTPError(500, "internal_error", msg)

@@ -98,34 +98,36 @@ class TestOutputTruncation:
         assert len(result.error.snippet) > 0
 
 
+@pytest.mark.asyncio
 class TestJSONCompactness:
     """Test that JSON responses are compact (no indentation)."""
+    async def _run_command_async(self, command: str) -> str:
+        """Helper to run command and get JSON response."""
+        from mcp_stata.server import run_command, session_manager
+        await session_manager.start()
+        return await run_command(command)
 
-    def test_run_command_returns_compact_json(self, client):
+    async def test_run_command_returns_compact_json(self):
         """Server tools should return compact JSON without indentation."""
-        # Use structured runner to get results, then dump to JSON as the server would
-        result = client.run_command_structured("display 1+1")
-        result_str = result.model_dump_json()
+        result_str = await self._run_command_async("display 1+1")
 
         # Parse to ensure it's valid JSON
         parsed = json.loads(result_str)
         assert parsed["rc"] == 0
 
         # Check that it's compact - no newlines except in actual content
-        # model_dump_json() in Pydantic v2 is compact by default.
         # We check for common indentation patterns.
         assert result_str.find('  "') == -1  # No double-space indent
         assert result_str.find('\n  ') == -1  # No newline + indent
 
-    def test_graph_export_returns_compact_json(self, client):
+    async def test_graph_export_returns_compact_json(self):
         """Graph export should return compact JSON."""
         # Initialize with a graph
-        client.run_command_structured("sysuse auto, clear")
-        client.run_command_structured("scatter price mpg, name(CompactTest, replace)")
+        await self._run_command_async("sysuse auto, clear")
+        await self._run_command_async("scatter price mpg, name(CompactTest, replace)")
 
-        # Get results
-        exports = client.export_graphs_all()
-        result_str = exports.model_dump_json(exclude_none=False)
+        from mcp_stata.server import export_graphs_all
+        result_str = await export_graphs_all()  # Already returns JSON string
         result = json.loads(result_str)
 
         # Should be valid JSON
