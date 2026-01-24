@@ -123,3 +123,6 @@ async def test_regression_graph_emission_and_log_cleaning(client: StataClient):
 
     # Clean up
     client.stata.run("capture log close _all", echo=False)
+
+if __name__ == "__main__":
+    pytest.main([__file__])

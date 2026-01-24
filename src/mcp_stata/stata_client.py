@@ -573,7 +573,11 @@ class StataClient:
             chunk = await anyio.to_thread.run_sync(_read_content)
             if chunk:
                 last_pos += len(chunk)
-                cleaned_chunk = self._clean_internal_smcl(chunk, strip_output=False)
+                cleaned_chunk = self._clean_internal_smcl(
+                    chunk,
+                    strip_output=False,
+                    strip_leading_boilerplate=False,
+                )
                 if cleaned_chunk:
                     try:
                         await notify_log(cleaned_chunk)
@@ -820,26 +824,14 @@ class StataClient:
             # Always close our named log
             self._close_smcl_log(log_name)
             # Ensure the persistent session log is still active after our capture.
-            if self._persistent_log_path and os.path.exists(self._persistent_log_path):
+            if self._persistent_log_path and self._persistent_log_name:
                 try:
-                    from sfi import Scalar  # type: ignore[import-not-found]
-
-                    log_rc_scalar = f"_mcp_log_rc_restore_{uuid.uuid4().hex[:8]}"
-                    # Try to turn the persistent log back on first.
-                    restore_bundle = (
-                        f"capture quietly log on {self._persistent_log_name}\n"
-                        f"scalar {log_rc_scalar} = _rc"
+                    path_for_stata = self._persistent_log_path.replace("\\", "/")
+                    mode = "append" if os.path.exists(self._persistent_log_path) else "replace"
+                    reopen_cmd = (
+                        f"capture quietly log using \"{path_for_stata}\", {mode} smcl name({self._persistent_log_name})"
                     )
-                    self._run_internal(restore_bundle, echo=False)
-                    rc_val = Scalar.getValue(log_rc_scalar)
-                    self._run_internal(f"capture scalar drop {log_rc_scalar}", echo=False)
-                    if rc_val is None or int(float(rc_val)) != 0:
-                        # If log wasn't already open, reopen it in append mode.
-                        path_for_stata = self._persistent_log_path.replace("\\", "/")
-                        reopen_cmd = (
-                            f"capture quietly log using \"{path_for_stata}\", append smcl name({self._persistent_log_name})"
-                        )
-                        self._run_internal(reopen_cmd, echo=False)
+                    self._run_internal(reopen_cmd, echo=False)
                 except Exception:
                     pass
 
@@ -1098,6 +1090,7 @@ class StataClient:
         except Exception:
             pass
         code = getattr(self, "_current_command_code", "")
+        named_graphs = set(self._extract_named_graphs(code))
 
         for graph_name in graph_names:
             # Try to determine a stable signature before exporting; prefer cached path if present
@@ -1109,26 +1102,12 @@ class StataClient:
             if self._last_emitted_graph_signatures.get(graph_name) == emit_key:
                 continue
 
-            # RE-EMISSION FILTER: If the graph existed before, only re-emit if likely touched.
-            if graph_ready_initial and graph_name in graph_ready_initial:
-                is_default_plot = graph_name == "Graph" and any(
-                    k in code.lower() for k in ["twoway", "scatter", "line", "hist", "graph", "plot", "pie", "bar", "dot", "box", "matrix"]
-                )
-                mentioned = graph_name in code or is_default_plot
-                if graph_name != active_graph and not mentioned:
-                    continue
-                initial_sig = graph_ready_initial.get(graph_name)
-                if initial_sig == pre_signature:
-                    # No obvious change in memory; only re-emit if high probability it was refreshed
-                    if graph_name != active_graph and not mentioned:
+            # Emit only when the command matches the graph command or explicitly names it.
+            if graph_ready_initial is not None:
+                graph_cmd = self._get_graph_command_line(graph_name)
+                if not self._command_contains_graph_command(code, graph_cmd or ""):
+                    if graph_name not in named_graphs:
                         continue
-                else:
-                    # Signature changed (e.g. command index updated or timestamp changed).
-                    # If it's a fallback signature, we still verify relevance to avoid noise.
-                    is_fallback = pre_signature.endswith(f"_{self._command_idx}")
-                    if is_fallback:
-                        if not mentioned:
-                             continue
 
             try:
                 export_path = cached_path
@@ -1264,7 +1243,7 @@ class StataClient:
         return emitted
 
     def _get_graph_signature(self, graph_name: str) -> str:
-        """Return a stable signature for a graph name within the current command."""
+        """Return a stable signature for a graph name based on graph metadata."""
         if self._graph_signature_cache_cmd_idx != self._command_idx:
             self._graph_signature_cache = {}
             self._graph_signature_cache_cmd_idx = self._command_idx
@@ -1273,8 +1252,13 @@ class StataClient:
         if cached:
             return cached
 
-        cmd_idx = self._command_idx
         signature = graph_name
+
+        # Refresh graph metadata if we don't have created timestamps yet.
+        try:
+            self.list_graphs(force_refresh=True)
+        except Exception:
+            pass
 
         try:
             # Use cached graph metadata when available (created timestamp is stable).
@@ -1287,11 +1271,68 @@ class StataClient:
         except Exception:
             pass
 
+        # If still missing, attempt a targeted timestamp lookup via the graph detector.
         if signature == graph_name:
-            signature = f"{graph_name}_{cmd_idx}"
+            try:
+                detector = getattr(self, "_graph_detector", None)
+                if detector is not None:
+                    timestamps = detector._get_graph_timestamps([graph_name])
+                    ts = timestamps.get(graph_name)
+                    if ts:
+                        signature = f"{graph_name}_{ts}"
+            except Exception:
+                pass
 
         self._graph_signature_cache[graph_name] = signature
         return signature
+
+    @staticmethod
+    def _normalize_command_text(text: str) -> str:
+        return " ".join((text or "").strip().split()).lower()
+
+    def _command_contains_graph_command(self, code: str, graph_cmd: str) -> bool:
+        if not code or not graph_cmd:
+            return False
+        graph_norm = self._normalize_command_text(graph_cmd)
+        if not graph_norm:
+            return False
+        if "\n" in code:
+            for line in code.splitlines():
+                if self._normalize_command_text(line) == graph_norm:
+                    return True
+            return False
+        return self._normalize_command_text(code) == graph_norm
+
+    def _get_graph_command_line(self, graph_name: str) -> Optional[str]:
+        """Fetch the Stata command line used to create the graph, if available."""
+        try:
+            from sfi import Macro
+        except Exception:
+            return None
+
+        resolved = self._resolve_graph_name_for_stata(graph_name)
+        hold_name = f"_mcp_gcmd_hold_{uuid.uuid4().hex[:8]}"
+        cmd = None
+
+        with self._exec_lock:
+            try:
+                bundle = (
+                    f"capture _return hold {hold_name}\n"
+                    f"quietly graph describe {resolved}\n"
+                    "macro define mcp_gcmd \"`r(command)'\"\n"
+                    f"capture _return restore {hold_name}"
+                )
+                self.stata.run(bundle, echo=False)
+                cmd = Macro.getGlobal("mcp_gcmd")
+                self.stata.run("macro drop mcp_gcmd", echo=False)
+            except Exception:
+                try:
+                    self.stata.run(f"capture _return restore {hold_name}", echo=False)
+                except Exception:
+                    pass
+                cmd = None
+
+        return cmd or None
 
     def _request_break_in(self) -> None:
         """
@@ -1971,7 +2012,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             r"capture noisily \{",
             r"noisily \{c -\(\}",
             r"noisily \{",
-            r"\{c -\)\}",
+            r"\{c \)\-\}",
             r"\}"
         ]
         for p in block_markers:
@@ -2067,24 +2108,14 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             smcl_path = self._persistent_log_path if use_p else self._create_smcl_log_path(prefix="mcp_", max_hex=16)
             log_name = None if use_p else self._make_smcl_log_name()
             if use_p:
-                # Ensure persistent log is open; reopen in append mode if needed.
+                # Ensure persistent log is bound to our expected path.
                 try:
-                    from sfi import Scalar  # type: ignore[import-not-found]
-
-                    log_rc_scalar = f"_mcp_log_rc_pre_{uuid.uuid4().hex[:8]}"
-                    ensure_bundle = (
-                        f"capture quietly log on {self._persistent_log_name}\n"
-                        f"scalar {log_rc_scalar} = _rc"
+                    path_for_stata = smcl_path.replace("\\", "/")
+                    reopen_bundle = (
+                        f"capture quietly log close {self._persistent_log_name}\n"
+                        f"capture quietly log using \"{path_for_stata}\", append smcl name({self._persistent_log_name})"
                     )
-                    self._run_internal(ensure_bundle, echo=False)
-                    rc_val = Scalar.getValue(log_rc_scalar)
-                    self._run_internal(f"capture scalar drop {log_rc_scalar}", echo=False)
-                    if rc_val is None or int(float(rc_val)) != 0:
-                        path_for_stata = smcl_path.replace("\\", "/")
-                        self._run_internal(
-                            f"capture quietly log using \"{path_for_stata}\", append smcl name({self._persistent_log_name})",
-                            echo=False,
-                        )
+                    self._run_internal(reopen_bundle, echo=False)
                 except Exception:
                     pass
             

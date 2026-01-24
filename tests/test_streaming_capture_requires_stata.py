@@ -169,6 +169,8 @@ def test_streaming_graph_ready_dedup_no_log_pollution(client):
 
     async def main() -> None:
         client._last_emitted_graph_signatures = {}
+        prev_log_path = client._persistent_log_path
+        prev_log_name = client._persistent_log_name
         client._run_internal("capture log close _all", echo=False)
         log_path = client._create_smcl_log_path()
         client._persistent_log_path = log_path
@@ -189,8 +191,23 @@ def test_streaming_graph_ready_dedup_no_log_pollution(client):
                     log_pollution.append(smcl_output)
         finally:
             client._run_internal("capture log close _mcp_session", echo=False)
-            client._persistent_log_path = None
-            client._persistent_log_name = None
+            client._persistent_log_path = prev_log_path
+            client._persistent_log_name = prev_log_name
+            if prev_log_path and prev_log_name:
+                try:
+                    restored_path = prev_log_path.replace("\\", "/")
+                    if os.path.exists(prev_log_path):
+                        client._run_internal(
+                            f'log using "{restored_path}", append smcl name({prev_log_name})',
+                            echo=False,
+                        )
+                    else:
+                        client._run_internal(
+                            f'log using "{restored_path}", replace smcl name({prev_log_name})',
+                            echo=False,
+                        )
+                except Exception:
+                    pass
             if os.path.exists(log_path):
                 try:
                     os.remove(log_path)

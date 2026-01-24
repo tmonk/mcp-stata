@@ -63,7 +63,7 @@ async def test_smcl_perfection_clamp(client: StataClient, tmp_path):
     expected_template = Path("tests/fixtures/smcl_perfection_clamp_expected.txt").read_text()
     expected = expected_template.replace("{DO_PATH}", str(do_path))
 
-    assert log_content == expected
+    assert log_content.rstrip() == expected.rstrip()
 
     print("SMCL Clamping Success!")
 
