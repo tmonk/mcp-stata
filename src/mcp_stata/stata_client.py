@@ -262,9 +262,10 @@ class StataClient:
             with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 return self.stata.run(code, echo=echo)
 
-    def _open_smcl_log(self, smcl_path: str, log_name: str, *, quiet: bool = False) -> bool:
+    def _open_smcl_log(self, smcl_path: str, log_name: str, *, quiet: bool = False, append: bool = False) -> bool:
         path_for_stata = smcl_path.replace("\\", "/")
-        base_cmd = f"log using \"{path_for_stata}\", replace smcl name({log_name})"
+        mode = "append" if append else "replace"
+        base_cmd = f"log using \"{path_for_stata}\", {mode} smcl name({log_name})"
         
         # In multi-threaded environments (like pytest-xdist), we must be extremely
         # careful with the singleton Stata instance.
@@ -550,8 +551,9 @@ class StataClient:
                         
                         if tee:
                             try:
-                                # Write text version to tee so log_path is useful
-                                tee.write(self._smcl_to_text(cleaned_chunk))
+                                # Write cleaned SMCL to tee to satisfy requirements 
+                                # for clean logs with preserved markup. 
+                                tee.write(cleaned_chunk)
                             except Exception:
                                 pass
 
@@ -575,7 +577,8 @@ class StataClient:
                     
                     if tee:
                         try:
-                            tee.write(self._smcl_to_text(cleaned_chunk))
+                            # Write cleaned SMCL to tee
+                            tee.write(cleaned_chunk)
                         except Exception:
                             pass
             
@@ -619,7 +622,8 @@ class StataClient:
                     )
                     try:
                         if self._persistent_log_path and smcl_path == self._persistent_log_path:
-                            log_opened = True
+                            # Re-open or resume global session log in append mode to ensure it's active
+                            log_opened = self._open_smcl_log(smcl_path, smcl_log_name, quiet=True, append=True)
                         else:
                             log_opened = self._open_smcl_log(smcl_path, smcl_log_name, quiet=True)
                     except Exception as e:
@@ -642,30 +646,58 @@ class StataClient:
                                     if trace:
                                         self.stata.run("set trace on")
                                     
-                                    # Optimization: Combined bundle for streaming too.
-                                    # Consolidates hold and potentially flush into one call.
-                                    self._hold_name_stream = f"mcp_hold_{uuid.uuid4().hex[:8]}"
+                                    # Hybrid execution: Single-line commands run natively for perfect echoing.
+                                    # Multi-line commands use the bundle for error handling and stability.
+                                    is_multi_line = "\n" in command.strip()
                                     
-                                    # Initialization logic for locals can be sensitive.
-                                    # Since each run() in pystata starts a new context for locals unless it's a file,
-                                    # we use a global scalar for the return code.
-                                    bundle = (
-                                        f"capture noisily {{\n{command}\n}}\n"
-                                        f"scalar _mcp_rc = _rc\n"
-                                        f"capture _return hold {self._hold_name_stream}\n"
-                                        "capture quietly log flush _mcp_session"
-                                    )
-                                    
-                                    logger.debug("running Stata bundle echo=%s", echo)
-                                    # Using direct stata.run because tee redirection is already active
-                                    ret = self.stata.run(bundle, echo=echo)
-                                    
-                                    # Retrieve RC via SFI for accuracy
-                                    try:
-                                        rc_val = Scalar.getValue("_mcp_rc")
-                                        rc = int(float(rc_val)) if rc_val is not None else 0
-                                    except:
-                                        rc = 0
+                                    if not is_multi_line:
+                                        logger.debug("running Stata natively echo=%s", echo)
+                                        self._hold_name_stream = f"mcp_hold_{uuid.uuid4().hex[:8]}"
+                                        # Reset RC to 0 before running
+                                        self._run_internal("scalar _mcp_rc = 0", echo=False)
+                                        ret = self.stata.run(command, echo=echo)
+                                        # Use _rc if we were in a capture, but here we are native.
+                                        # Stata sets c(rc) to the return code of the last command.
+                                        self._run_internal(f"scalar _mcp_rc = c(rc)", echo=False)
+                                        self._run_internal(f"capture _return hold {self._hold_name_stream}", echo=False)
+                                        self._run_internal(f"capture quietly log flush {smcl_log_name}", echo=False)
+                                        
+                                        # Retrieve RC via SFI
+                                        try:
+                                            rc_val = Scalar.getValue("_mcp_rc")
+                                            rc = int(float(rc_val)) if rc_val is not None else 0
+                                        except:
+                                            rc = 0
+                                    else:
+                                        # Optimization: Combined bundle for streaming too.
+                                        # Consolidates hold and potentially flush into one call.
+                                        self._hold_name_stream = f"mcp_hold_{uuid.uuid4().hex[:8]}"
+                                        
+                                        # Initialization logic for locals can be sensitive.
+                                        # Since each run() in pystata starts a new context for locals unless it's a file,
+                                        # we use a global scalar for the return code.
+                                        # We use noisily inside the capture block to force echo of commands if requested.
+                                        bundle = (
+                                            f"capture noisily {{\n"
+                                            f"{'noisily {' if echo else ''}\n"
+                                            f"{command}\n"
+                                            f"{'}' if echo else ''}\n"
+                                            f"}}\n"
+                                            f"scalar _mcp_rc = _rc\n"
+                                            f"capture _return hold {self._hold_name_stream}\n"
+                                            f"capture quietly log flush {smcl_log_name}"
+                                        )
+                                        
+                                        logger.debug("running Stata bundle echo=%s", echo)
+                                        # Using direct stata.run because tee redirection is already active
+                                        ret = self.stata.run(bundle, echo=echo)
+                                        
+                                        # Retrieve RC via SFI for accuracy
+                                        try:
+                                            rc_val = Scalar.getValue("_mcp_rc")
+                                            rc = int(float(rc_val)) if rc_val is not None else 0
+                                        except:
+                                            rc = 0
                                         
                                     if isinstance(ret, str) and ret:
                                         # If for some reason SMCL log wasn't working, we can 
@@ -676,7 +708,13 @@ class StataClient:
                                     exc = e
                                     logger.error("stata.run bundle failed: %r", e)
                                     if rc in (-1, 0):
-                                        rc = 1
+                                        parsed_rc = self._parse_rc_from_text(str(e))
+                                        if parsed_rc is None:
+                                            try:
+                                                parsed_rc = self._parse_rc_from_text(direct_buf.getvalue())
+                                            except Exception:
+                                                parsed_rc = None
+                                        rc = parsed_rc if parsed_rc is not None else 1
                                 finally:
                                     if trace:
                                         try:
@@ -684,7 +722,10 @@ class StataClient:
                                         except Exception:
                                             pass
                         finally:
-                            self._close_smcl_log(smcl_log_name)
+                            # Only close if it's NOT the persistent session log
+                            if not self._persistent_log_name or smcl_log_name != self._persistent_log_name:
+                                self._close_smcl_log(smcl_log_name)
+                            
                             self._restore_results_from_hold(hold_attr)
                             
                             # Final state restoration (invisibility)
@@ -1056,10 +1097,11 @@ class StataClient:
         for graph_name in graph_names:
             # Try to determine a stable signature before exporting; prefer cached path if present
             cached_path = self._get_cached_graph_path(graph_name) if fmt == "svg" else None
-            pre_signature = f"{graph_name}:{cached_path}:{self._command_idx}" if cached_path else self._get_graph_signature(graph_name)
+            pre_signature = self._get_graph_signature(graph_name)
+            signature = f"{pre_signature}:{self._command_idx}:{fmt}"
             
             # If we already emitted this EXACT signature in THIS command, skip.
-            if self._last_emitted_graph_signatures.get(graph_name) == pre_signature:
+            if self._last_emitted_graph_signatures.get(graph_name) == signature:
                 continue
 
             # RE-EMISSION FILTER: If the graph existed before, only re-emit if likely touched.
@@ -1078,7 +1120,7 @@ class StataClient:
                     if is_fallback:
                         is_default_plot = graph_name == "Graph" and any(k in code.lower() for k in ["twoway", "scatter", "line", "hist", "graph", "plot", "pie", "bar", "dot", "box", "matrix"])
                         mentioned = graph_name in code or is_default_plot
-                        if graph_name != active_graph and not mentioned:
+                        if not mentioned:
                              continue
 
             try:
@@ -1097,7 +1139,6 @@ class StataClient:
                                 await anyio.sleep(0.05)
                                 continue
                             raise last_exc
-                signature = f"{graph_name}:{export_path}:{self._command_idx}" if export_path else pre_signature
                 if self._last_emitted_graph_signatures.get(graph_name) == signature:
                     continue
                 payload = {
@@ -1113,7 +1154,7 @@ class StataClient:
                 emitted += 1
                 self._last_emitted_graph_signatures[graph_name] = signature
                 if graph_ready_initial is not None:
-                    graph_ready_initial[graph_name] = signature
+                    graph_ready_initial[graph_name] = pre_signature
             except Exception as e:
                 logger.warning("graph_ready export failed for %s: %s", graph_name, e)
         return emitted
@@ -1872,48 +1913,76 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
     def _clean_internal_smcl(self, content: str, strip_output: bool = True) -> str:
         """
-        Aggressively strips internal maintenance and log headers/footers from SMCL.
+        Conservative cleaning of internal maintenance from SMCL while preserving 
+        tags and actual user output.
         """
         if not content:
             return ""
 
-        # 1. Strip SMCL log headers and footers
-        header_pattern = r"(?:\{smcl\}\r?\n?)?\{txt\}\{sf\}\{ul off\}(?:\{.-\})?.*?log:.*?opened on:.*?(?:\{.-\})?\r?\n?(?:\{txt\}\r?\n?)?"
-        content = re.sub(header_pattern, "", content, flags=re.DOTALL)
-        
-        footer_pattern = r"(?:\r?\n)*\{.-\}\r?\n?(?:\{smcl\})?\{txt\}\{sf\}\{ul off\}.*?log closed on.*$"
-        content = re.sub(footer_pattern, "", content, flags=re.DOTALL)
+        # Pattern for arbitrary SMCL tags: {txt}, {com}, etc.
+        tags = r"(?:\{[^}]+\})*"
 
-        # 2. Strip internal file notifications (often from graph exports or preemptive caching)
-        file_save_pattern = r"\r?\n?(?:\{res\}|\{txt\})?\(file (?:\{txt\})?.*?(?:mcp_(?:stata|hold|ghold|det|session)_|preemptive_cache).*?(?:\{res\}|\{txt\})? saved(?: as [^)]+)?\)\r?\n?(?:\{txt\}\r?\n?)?"
-        content = re.sub(file_save_pattern, "", content)
-        
-        file_not_found_pattern = r"\r?\n?(?:\{res\}|\{txt\})?\(file (?:\{txt\})?.*?(?:mcp_(?:stata|hold|ghold|det|session)_|preemptive_cache).*?(?:\{res\}|\{txt\})? not found\)\r?\n?(?:\{txt\}\r?\n?)?"
-        content = re.sub(file_not_found_pattern, "", content)
+        # 1. Strip SMCL log headers and footers (multiple possible due to append/reopen)
+        # Headers typically run from {smcl} until the line after "opened on:".
+        content = re.sub(
+            r"(?:\{smcl\}\s*)?\{txt\}\{sf\}\{ul off\}\{\.-\}.*?opened on:.*?(?:\r?\n){1,2}",
+            "",
+            content,
+            flags=re.DOTALL,
+        )
+        # Remove orphan header markers that sometimes leak into output
+        content = re.sub(r"^\s*\{smcl\}\s*$", "", content, flags=re.MULTILINE)
+        content = re.sub(r"^\s*\{txt\}\{sf\}\{ul off\}\s*$", "", content, flags=re.MULTILINE)
 
-        # 3. Strip internal scalar/macro/log commands
-        internal_cmd_pattern = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:capture )?(?:quietly )?(?:scalar|macro|log|graph|_return)\b[^\r\n]*?(?:_mcp_|mcp_hold|mcp_session|mcp_rc|hold_name|hold_attr|preemptive_cache)[^\r\n]*\r?\n?(?:\{txt\}\r?\n?)?"
-        content = re.sub(internal_cmd_pattern, "", content)
+        # 2. Strip our injected capture/noisily blocks
+        # We match start-of-line followed by optional tags, prompt, optional tags, 
+        # then the block markers. Must match the entire line to be safe.
+        block_markers = [
+            r"capture noisily \{c -\(\}",
+            r"capture noisily \{",
+            r"noisily \{c -\(\}",
+            r"noisily \{",
+            r"\{c -\)\}",
+            r"\}"
+        ]
+        for p in block_markers:
+            # Match exactly the marker line (with optional trailing tags/whitespace)
+            pattern = r"^" + tags + r"\. " + tags + p + tags + r"\s*(\r?\n|$)"
+            content = re.sub(pattern, "", content, flags=re.MULTILINE)
 
-        # 4. Strip the bundle wrapper echoes
-        # Match capture noisily { and } accurately
-        bundle_wrapper = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:capture noisily )?(?:\{|\{c\s*-\(}|c\s*-\(})[^\r\n]*\r?\n?(?:\{txt\}\r?\n?)?" 
-        content = re.sub(bundle_wrapper, "", content) 
-        bundle_end = r"\r?\n?(?:\{com\}|\{txt\})?\. (?:\}|\{c\s*\)-}|c\s*\)-})[^\r\n]*\r?\n?(?:\{txt\}\r?\n?)?" 
-        content = re.sub(bundle_end, "", content) 
+        # 3. Strip internal maintenance commands
+        # These can optionally be prefixed with 'capture' and/or 'quietly'
+        internal_cmds = [
+            r"scalar _mcp_rc\b",
+            r"scalar _mcp_.*?\b",
+            r"macro drop _mcp_.*?\b",
+            r"log flush\b",
+            r"log close\b",
+            r"capture _return hold\b",
+            r"_return hold\b",
+            r"preemptive_cache\b"
+        ]
+        internal_regex = r"^" + tags + r"\. " + tags + r"(?:(?:capture|quietly)\s+)*" + r"(?:" + "|".join(internal_cmds) + r").*?" + tags + r"\s*(\r?\n|$)"
+        content = re.sub(internal_regex, "", content, flags=re.MULTILINE)
 
-        # 5. Strip specific result artifacts that might persist
-        content = re.sub(r"\r?\n?(?:\{com\}|\{txt\})?\. capture _return hold .*?\r?\n?(?:\{txt\}\r?\n?)?", "", content)
-        content = re.sub(r"\r?\n?(?:\{com\}|\{txt\})?\. scalar _mcp_.*?\r?\n?(?:\{txt\}\r?\n?)?", "", content)
-        
-        # 6. Strip residual empty {res} or {txt} tags
-        content = re.sub(r'\{(?:res|txt|com)\}\s*(?:\r?\n|$)', '', content)
-        
-        # 7. Strip bare prompts at the end of output
-        content = re.sub(r"\r?\n+(?:\{com\}|\{txt\})?\. (?:\{txt\})?\s*$", "", content)
-        
-        # Final trim
+        # 4. Strip internal file notifications (e.g. from graph exports or internal logs)
+        internal_file_patterns = [
+            r"mcp_(?:stata|hold|ghold|det|session)_",
+            r"preemptive_cache"
+        ]
+        for p in internal_file_patterns:
+            content = re.sub(r"^" + tags + r"\(file " + tags + r".*?" + p + r".*?" + tags + r" (?:saved|not found)(?: as [^)]+)?\).*?(\r?\n|$)", "", content, flags=re.MULTILINE)
+
+        # 5. Strip any lines that are just bare prompts (artifact of our multi-line injection)
+        content = re.sub(r"^" + tags + r"\. " + tags + r"(\s*\r?\n|$)", "", content, flags=re.MULTILINE)
+
+        # Do not add SMCL tags heuristically; preserve original output.
+
+        # 6. Final cleanup of potential double newlines introduced by stripping
+        content = re.sub(r"\n{3,}", "\n\n", content)
+
         return content.strip() if strip_output else content
+
 
     def _extract_error_and_context(self, log_content: str, rc: int) -> Tuple[str, str]:
         """
@@ -2006,35 +2075,20 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     try:
                         if trace: self.stata.run("set trace on")
                         self._hold_name = f"mcp_hold_{uuid.uuid4().hex[:12]}"
-                        rc_scalar = f"_mcp_rc_{uuid.uuid4().hex[:8]}"
-                        
-                        # Optimization: Single bundle to handle execution, RC capture, and result holding.
-                        # We use a unique global scalar for RC to ensure isolation and bypass local scope.
-                        # Wrapping code in braces ensures multi-line code is captured as a block.
-                        bundle = (
-                            f"capture noisily {{\n{code}\n}}\n"
-                            f"scalar {rc_scalar} = _rc\n"
-                            f"capture _return hold {self._hold_name}"
-                        )
-                        
+
+                        # Execute directly to preserve native echo in SMCL logs.
+                        # Capture RC immediately via c(rc) before any maintenance commands.
+                        self.stata.run(code, echo=echo)
+                        rc = self._get_rc_from_scalar(Scalar)
+
+                        # Preserve results for later restoration
+                        self.stata.run(f"capture _return hold {self._hold_name}", echo=False)
                         if use_p:
-                            # Use classic log off/on trick for reliable flushing.
-                            # We append this to the bundle so it happens in the same roundtrip.
-                            bundle += f"\ncapture quietly log off {self._persistent_log_name}"
-                            bundle += f"\ncapture quietly log on {self._persistent_log_name}"
-                        
-                        self.stata.run(bundle, echo=echo)
-                        
-                        try:
-                            rc_val = Scalar.getValue(rc_scalar)
-                            if rc_val is not None:
-                                rc = int(float(rc_val))
-                            else:
-                                rc = 1 # Scalar not found
-                            # Clean up
-                            self.stata.run(f"scalar drop {rc_scalar}", echo=False)
-                        except Exception:
-                            rc = 1
+                            flush_bundle = (
+                                f"capture quietly log off {self._persistent_log_name}\n"
+                                f"capture quietly log on {self._persistent_log_name}"
+                            )
+                            self.stata.run(flush_bundle, echo=False)
                     except Exception as e:
                         rc = self._parse_rc_from_text(str(e)) or self._get_preserved_rc() or 1
                         raise
@@ -2066,13 +2120,36 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 pass
         if not use_p: self._safe_unlink(smcl_path)
     
-        # Use SMCL as authoritative source for stdout
+        # Use SMCL as authoritative source for stdout (preserve SMCL tags)
         if smcl_content:
-            stdout = self._smcl_to_text(smcl_content)
+            stdout = self._clean_internal_smcl(smcl_content)
         else:
             stdout = output_buffer.getvalue()
             
         stderr = error_buffer.getvalue()
+
+        # If RC looks wrong but SMCL shows no error markers, treat as success.
+        if rc != 0 and smcl_content:
+            has_err_tag = "{err}" in smcl_content
+            rc_match = re.search(r"(?<!\w)r\((\d+)\)", smcl_content)
+            if rc_match:
+                try:
+                    rc = int(rc_match.group(1))
+                except Exception:
+                    pass
+            else:
+                text_rc = None
+                try:
+                    text_rc = self._parse_rc_from_text(self._smcl_to_text(smcl_content))
+                except Exception:
+                    text_rc = None
+                if not has_err_tag and text_rc is None:
+                    rc = 0
+        elif rc != 0 and not smcl_content and stdout:
+            text_rc = self._parse_rc_from_text(stdout + ("\n" + stderr if stderr else ""))
+            if text_rc is None:
+                rc = 0
+
         success = rc == 0 and sys_error is None
         error = None
         
@@ -2095,34 +2172,14 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                             pass
             else:
                 msg, context = self._extract_error_and_context(stdout + stderr, rc)
-            error = ErrorEnvelope(message=msg, context=context, rc=rc, command=code, stdout=stdout, stderr=stderr, snippet=context)
+            snippet = context or stdout or stderr or msg
+            error = ErrorEnvelope(message=msg, context=context, rc=rc, command=code, stdout=stdout, stderr=stderr, snippet=snippet)
             # In error case, we often want to isolate the error msg in stderr
             # but keep stdout for context if provided.
             stdout = "" 
         elif echo:
-            # Clean up stdout if it contains internal bundle commands
-            # Remove lines starting with . or {com}. followed by our internal commands
-            internal_patterns = [
-                r"^(?:\{com\}|\{txt\})?\. (?:capture noisily )?\{.*$",
-                r"^(?:\{com\}|\{txt\})?\. \}.*$",
-                r"^(?:\{com\}|\{txt\})?\. scalar (?:drop )?_mcp_rc.*$",
-                r"^(?:\{com\}|\{txt\})?\. (?:capture )?_return (?:hold|restore) (?:mcp_hold|_mcp_).*$",
-                r"^(?:\{com\}|\{txt\})?\. capture quietly log.*$",
-                r"^(?:\{com\}|\{txt\})?\. log flush _mcp_session.*$",
-                r"^(?:\{com\}|\{txt\})?\. \r?$",
-                r"^\. \r?$",
-            ]
-            lines = stdout.splitlines()
-            filtered = []
-            for line in lines:
-                skip = False
-                for p in internal_patterns:
-                    if re.match(p, line):
-                        skip = True
-                        break
-                if not skip:
-                    filtered.append(line)
-            stdout = "\n".join(filtered).strip()
+            # SMCL output is already cleaned; no additional filtering needed.
+            pass
         # Persistence isolation: Ensure isolated log_path for tests and clarity
         if use_p:
             # Create a temporary chunk file to fulfill the isolated log_path contract
@@ -2494,9 +2551,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     raise
                 finally:
                     done.set()
-                    tee.close()
         except* Exception as exc_group:
             logger.debug("SMCL streaming task group failed: %s", exc_group)
+        finally:
+            tee.close()
 
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path, start_offset=start_offset)
@@ -2552,30 +2610,66 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         combined = self._build_combined_log(tail, smcl_path, rc, trace, exc, start_offset=start_offset)
         
-        # Use SMCL content as primary source for RC detection if pystata RC is ambiguous
-        if not exc or rc in (0, 1, -1):
+        # Use SMCL content as primary source for RC detection only when RC is ambiguous
+        if exc is not None or rc in (-1, 1):
             parsed_rc = self._parse_rc_from_smcl(smcl_content)
             if parsed_rc is not None and parsed_rc != 0:
                 rc = parsed_rc
-            elif rc in (-1, 0, 1): # Also check text if rc is generic 1 or unset
+            elif rc in (-1, 1):  # Also check text if rc is generic 1 or unset
                 parsed_rc_text = self._parse_rc_from_text(combined)
                 if parsed_rc_text is not None:
                     rc = parsed_rc_text
                 elif rc == -1:
-                    rc = 0 # Default to success if no error trace found
+                    rc = 0  # Default to success if no error trace found
+
+        # If RC looks wrong but SMCL shows no error markers, treat as success.
+        if rc != 0 and smcl_content:
+            has_err_tag = "{err}" in smcl_content
+            rc_match = re.search(r"(?<!\w)r\((\d+)\)", smcl_content)
+            if rc_match:
+                try:
+                    rc = int(rc_match.group(1))
+                except Exception:
+                    pass
+            else:
+                text_rc = None
+                try:
+                    text_rc = self._parse_rc_from_text(self._smcl_to_text(smcl_content))
+                except Exception:
+                    text_rc = None
+                if not has_err_tag and text_rc is None:
+                    rc = 0
+
+        # If RC looks wrong but SMCL shows no error markers, treat as success.
+        if rc != 0 and smcl_content:
+            has_err_tag = "{err}" in smcl_content
+            rc_match = re.search(r"(?<!\w)r\((\d+)\)", smcl_content)
+            if rc_match:
+                try:
+                    rc = int(rc_match.group(1))
+                except Exception:
+                    pass
+            else:
+                text_rc = None
+                try:
+                    text_rc = self._parse_rc_from_text(self._smcl_to_text(smcl_content))
+                except Exception:
+                    text_rc = None
+                if not has_err_tag and text_rc is None:
+                    rc = 0
 
         success = (rc == 0 and exc is None)
         stderr_final = None
         error = None
         
-        # authoritative output (plain text version of SMCL)
-        stdout_final = self._smcl_to_text(smcl_content) if smcl_content else combined
+        # authoritative output (Preserve SMCL tags as requested by user)
+        stdout_final = smcl_content if smcl_content else combined
         # Clean the final output of internal maintenance artifacts
         stdout_final = self._clean_internal_smcl(stdout_final)
         
-        # Consistent with server.py: if log_path is set and success, redundant stdout is cleared
-        if success and log_path:
-            stdout_final = ""
+        # NOTE: We keep stdout_final populated even if log_path is set, 
+        # so the user gets the exact SMCL result in the tool output.
+        # server.py may still clear it for token efficiency.
 
         if not success:
             # Use SMCL as authoritative source for error extraction
@@ -2644,6 +2738,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             return error_response
 
         total_lines = self._count_do_file_lines(effective_path)
+        dofile_text = ""
+        try:
+            dofile_text = pathlib.Path(effective_path).read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            dofile_text = ""
         executed_lines = 0
         last_progress_time = 0.0
         dot_prompt = re.compile(r"^\.\s+\S")
@@ -2698,6 +2797,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         rc = -1
         graph_ready_initial = self._capture_graph_state(graph_cache, emit_graph_ready)
+        self._current_command_code = dofile_text if dofile_text else command
         
         # Increment AFTER capture
         self._increment_command_idx()
@@ -2783,9 +2883,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     raise
                 finally:
                     done.set()
-                    tee.close()
         except* Exception as exc_group:
             logger.debug("SMCL streaming task group failed: %s", exc_group)
+        finally:
+            tee.close()
 
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path, start_offset=start_offset)
@@ -2826,10 +2927,6 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 logger.debug("graph_ready fallback emission failed: %s", exc)
         if emit_graph_ready and not graph_ready_emitted:
             try:
-                try:
-                    dofile_text = pathlib.Path(effective_path).read_text(encoding="utf-8", errors="replace")
-                except Exception:
-                    dofile_text = ""
                 fallback_names = self._extract_named_graphs(dofile_text)
                 if fallback_names:
                     async with self._ensure_graph_ready_lock():
@@ -2845,30 +2942,48 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         combined = self._build_combined_log(tail, smcl_path, rc, trace, exc, start_offset=start_offset)
         
-        # Use SMCL content as primary source for RC detection if pystata RC is ambiguous
-        if not exc or rc in (0, 1, -1):
+        # Use SMCL content as primary source for RC detection only when RC is ambiguous
+        if exc is not None or rc in (-1, 1):
             parsed_rc = self._parse_rc_from_smcl(smcl_content)
             if parsed_rc is not None and parsed_rc != 0:
                 rc = parsed_rc
-            elif rc in (-1, 0, 1):
+            elif rc in (-1, 1):
                 parsed_rc_text = self._parse_rc_from_text(combined)
                 if parsed_rc_text is not None:
                     rc = parsed_rc_text
                 elif rc == -1:
                     rc = 0  # Default to success if no error found
 
+        # If RC looks wrong but SMCL shows no error markers, treat as success.
+        if rc != 0 and smcl_content:
+            has_err_tag = "{err}" in smcl_content
+            rc_match = re.search(r"(?<!\w)r\((\d+)\)", smcl_content)
+            if rc_match:
+                try:
+                    rc = int(rc_match.group(1))
+                except Exception:
+                    pass
+            else:
+                text_rc = None
+                try:
+                    text_rc = self._parse_rc_from_text(self._smcl_to_text(smcl_content))
+                except Exception:
+                    text_rc = None
+                if not has_err_tag and text_rc is None:
+                    rc = 0
+
         success = (rc == 0 and exc is None)
         stderr_final = None
         error = None
         
-        # authoritative output (plain text version of SMCL)
-        stdout_final = self._smcl_to_text(smcl_content) if smcl_content else combined
+        # authoritative output (Preserve SMCL tags as requested by user)
+        stdout_final = smcl_content if smcl_content else combined
         # Clean the final output of internal maintenance artifacts
         stdout_final = self._clean_internal_smcl(stdout_final)
         
-        # Consistent with server.py: if log_path is set and success, redundant stdout is cleared
-        if success and log_path:
-            stdout_final = ""
+        # NOTE: We keep stdout_final populated even if log_path is set, 
+        # so the user gets the exact SMCL result in the tool output.
+        # server.py may still clear it for token efficiency.
 
         if not success:
             # Use SMCL as authoritative source for error extraction
@@ -4308,6 +4423,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         # Read SMCL content as the authoritative source
         smcl_content = self._read_smcl_file(smcl_path)
+        smcl_content = self._clean_internal_smcl(smcl_content, strip_output=False)
 
         combined = self._build_combined_log(tail, log_path, rc, trace, exc)
 
@@ -4325,6 +4441,24 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             parsed_rc = self._parse_rc_from_text(str(exc))
             if parsed_rc is not None:
                 rc = parsed_rc
+
+        # If RC looks wrong but SMCL shows no error markers, treat as success.
+        if rc != 0 and smcl_content:
+            has_err_tag = "{err}" in smcl_content
+            rc_match = re.search(r"(?<!\w)r\((\d+)\)", smcl_content)
+            if rc_match:
+                try:
+                    rc = int(rc_match.group(1))
+                except Exception:
+                    pass
+            else:
+                text_rc = None
+                try:
+                    text_rc = self._parse_rc_from_text(self._smcl_to_text(smcl_content))
+                except Exception:
+                    text_rc = None
+                if not has_err_tag and text_rc is None:
+                    rc = 0
 
         success = (rc == 0 and exc is None)
         error = None
@@ -4355,6 +4489,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             duration * 1000,
             effective_path,
         )
+
+        try:
+            with open(log_path, "w", encoding="utf-8", errors="replace") as handle:
+                handle.write(smcl_content)
+        except Exception:
+            pass
 
         return CommandResponse(
             command=command,

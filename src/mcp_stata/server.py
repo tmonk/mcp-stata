@@ -241,12 +241,10 @@ def _format_command_result(result, raw: bool, as_json: bool) -> str:
             return msg
         return result.log_path or ""
     
-    if hasattr(result, "stdout") and result.stdout:
-        # Token Efficiency: Tools that use streaming notifications already sent 
-        # the output. We clear stdout in the final result to avoid redundancy 
-        # and stay within token limits. Tests expect this behavior.
-        result.stdout = ""
-        
+    # Note: we used to clear result.stdout here for token efficiency,
+    # but that conflicts with requirements and breaks E2E tests that 
+    # expect results in the return value.
+    
     if as_json:
         return result.model_dump_json()
     return result.model_dump_json()

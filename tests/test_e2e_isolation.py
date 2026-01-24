@@ -11,6 +11,11 @@ from mcp import ClientSession, StdioServerParameters, stdio_client
 pytestmark = [pytest.mark.requires_stata, pytest.mark.integration]
 
 def find_mcp_stata_cli():
+    # Prefer local source execution for testing current changes
+    src_dir = Path(__file__).parent.parent / "src"
+    if src_dir.exists():
+        return f"{sys.executable} -m mcp_stata.server"
+    
     cli = shutil.which("mcp-stata")
     if cli: return cli
     # Search common locations
@@ -23,15 +28,13 @@ def find_mcp_stata_cli():
 @pytest.mark.asyncio
 async def test_e2e_command_isolation_and_log_path():
     """Verify that multiple command calls through the server return correct, isolated logs."""
-    cli = find_mcp_stata_cli()
-    if not cli:
-        pytest.skip("mcp-stata CLI not found")
-
+    
+    # Use direct python -m call to ensure we use local source code
     server_params = StdioServerParameters(
-        command=cli, 
-        args=[], 
+        command=sys.executable, 
+        args=["-m", "mcp_stata.server"], 
         cwd=os.getcwd(),
-        env={**os.environ, "MCP_STATA_SKIP_PREFLIGHT": "1"}
+        env={**os.environ, "MCP_STATA_SKIP_PREFLIGHT": "1", "PYTHONPATH": str(Path(__file__).parent.parent / "src")}
     )
 
     async with AsyncExitStack() as stack:
@@ -66,18 +69,12 @@ async def test_e2e_command_isolation_and_log_path():
 @pytest.mark.asyncio
 async def test_e2e_preflight_bypass():
     """Verify that the server starts even if STATA_PATH is set but bypass enabled (lightweight check)."""
-    cli = find_mcp_stata_cli()
-    if not cli:
-        pytest.skip("mcp-stata CLI not found")
-
-    # If we set an INVALID Stata path but skip preflight, it should still try to 
-    # initialize and only fail when it actually tries to use Stata, or during pystata setup.
-    # This just verifies the env var reaches the server.
+    
     server_params = StdioServerParameters(
-        command=cli, 
-        args=[], 
+        command=sys.executable, 
+        args=["-m", "mcp_stata.server"], 
         cwd=os.getcwd(),
-        env={**os.environ, "MCP_STATA_SKIP_PREFLIGHT": "1"}
+        env={**os.environ, "MCP_STATA_SKIP_PREFLIGHT": "1", "PYTHONPATH": str(Path(__file__).parent.parent / "src")}
     )
     
     # Just verify we can initialize the session

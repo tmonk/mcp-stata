@@ -27,7 +27,8 @@ def test_run_command_streaming_emits_log_and_progress(client):
             echo=True,
         )
         assert res.rc == 0
-        assert res.stdout == ""
+        assert "{com}. display 5+5" in res.stdout
+        assert "{res}10" in res.stdout
         assert res.log_path is not None
         assert Path(res.log_path).exists()
 
@@ -93,7 +94,9 @@ def test_run_do_file_streaming_progress_inference(tmp_path, client):
             echo=True,
         )
         assert res.rc == 0
-        assert res.stdout == ""
+        assert "{com}. do" in res.stdout
+        assert "{res}a" in res.stdout
+        assert "{res}b" in res.stdout
         assert res.log_path is not None
         assert Path(res.log_path).exists()
 

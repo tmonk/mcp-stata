@@ -79,7 +79,8 @@ def test_server_tools(sync_tools):
     # Test run_command tool
     res = json.loads(sync_tools.run_command_sync("display 5+5"))
     assert res["rc"] == 0
-    assert res["stdout"] == ""
+    assert "{com}. display 5+5" in res["stdout"]
+    assert "{res}10" in res["stdout"]
     assert res.get("log_path")
     log_text = Path(res["log_path"]).read_text(encoding="utf-8", errors="replace")
     assert "10" in log_text
@@ -99,7 +100,8 @@ def test_server_tools(sync_tools):
     assert find_case["matches"] == []
     res_struct = json.loads(sync_tools.run_command_sync("display 2+3"))
     assert res_struct["rc"] == 0
-    assert res_struct["stdout"] == ""
+    assert "{com}. display 2+3" in res_struct["stdout"]
+    assert "{res}5" in res_struct["stdout"]
     assert res_struct.get("log_path")
     log_text2 = Path(res_struct["log_path"]).read_text(encoding="utf-8", errors="replace")
     assert "5" in log_text2
@@ -172,7 +174,8 @@ def test_server_tools(sync_tools):
             if "log_path" in do_resp and Path(do_resp["log_path"]).exists():
                 print(f"DEBUG: Log content: {Path(do_resp['log_path']).read_text()}")
         assert do_resp["rc"] == 0
-        assert do_resp["stdout"] == ""
+        assert "{com}. do" in do_resp["stdout"]
+        assert "{res}ok" in do_resp["stdout"]
         assert do_resp.get("log_path")
         do_log_text = Path(do_resp["log_path"]).read_text(encoding="utf-8", errors="replace")
         assert "ok" in do_log_text
@@ -224,7 +227,9 @@ def test_server_tools_with_cwd(tmp_path, sync_tools):
     # run_do_file should resolve relative path via cwd and also allow nested relative do
     do_resp = json.loads(sync_tools.run_do_file_sync("parent.do", as_json=True, cwd=str(project)))
     assert do_resp["rc"] == 0
-    assert do_resp["stdout"] == ""
+    assert "{com}. do" in do_resp["stdout"]
+    assert "{res}child-ok" in do_resp["stdout"]
+    assert "{res}parent-ok" in do_resp["stdout"]
     assert do_resp.get("log_path")
     text = Path(do_resp["log_path"]).read_text(encoding="utf-8", errors="replace")
     assert "child-ok" in text
@@ -233,7 +238,8 @@ def test_server_tools_with_cwd(tmp_path, sync_tools):
     # run_command should honor cwd as well
     cmd_resp = json.loads(sync_tools.run_command_sync('do "child.do"', as_json=True, cwd=str(project)))
     assert cmd_resp["rc"] == 0
-    assert cmd_resp["stdout"] == ""
+    assert "{com}. do" in cmd_resp["stdout"]
+    assert "{res}child-ok" in cmd_resp["stdout"]
     assert cmd_resp.get("log_path")
     text2 = Path(cmd_resp["log_path"]).read_text(encoding="utf-8", errors="replace")
     assert "child-ok" in text2
