@@ -4,6 +4,7 @@ import pytest
 import os
 from pathlib import Path
 from mcp_stata.stata_client import StataClient
+pytestmark = pytest.mark.requires_stata
 
 @pytest.mark.asyncio
 async def test_smcl_perfection_clamp(client: StataClient, tmp_path):
