@@ -8,6 +8,8 @@ import time
 from conftest import configure_stata_for_tests
 import stata_setup
 
+pytestmark = pytest.mark.requires_stata
+
 class TestListGraphsTTLCache:
     """Test TTL cache for list_graphs() method."""
 
