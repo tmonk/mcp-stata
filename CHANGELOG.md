@@ -2,6 +2,91 @@
 
 <!-- version list -->
 
+## v1.21.0 (2026-01-24)
+
+### Bug Fixes
+
+- Enhance graph command handling and add test for graph ready event emission
+  ([`426b48f`](https://github.com/tmonk/mcp-stata/commit/426b48fd9858a7f98e91d0a60d2522cf221a001b))
+
+- Enhance graph signature detection and improve logging in GraphCreationDetector and server
+  ([`f01bedb`](https://github.com/tmonk/mcp-stata/commit/f01bedb231796503e4450bb782f4912ea38ecb5f))
+
+- Enhance SMCL log cleaning and add regression tests for output format
+  ([`67338fa`](https://github.com/tmonk/mcp-stata/commit/67338faa36a20ca0161713b71afcd66541627f05))
+
+- Enhance SMCL output cleaning by removing additional boilerplate lines
+  ([`5d973cc`](https://github.com/tmonk/mcp-stata/commit/5d973cc0ac1b8bfa8ea3b9986c11dd01a6e4ee54))
+
+- Enhance stdout filtering and improve error handling in StataClient
+  ([`933979b`](https://github.com/tmonk/mcp-stata/commit/933979bf4caf3c8fc2956b2c9ecb3f79919faae8))
+
+- Ensure logging is fully hardened
+  ([`78da711`](https://github.com/tmonk/mcp-stata/commit/78da71128e9acdae94681cb71410124dd8954c9e))
+
+- Ensure logs get passed through
+  ([`c2e1989`](https://github.com/tmonk/mcp-stata/commit/c2e1989d2a9dd43e92237011c25257bda7ebd4a7))
+
+- Fix graph emission logic and add regression tests for graph readiness and SMCL log cleaning
+  ([`1557422`](https://github.com/tmonk/mcp-stata/commit/15574229028a530b5c2de8dae356d44d49ef2f6e))
+
+- Harden rc handling with isolation across sessions.
+  ([`fbb57fe`](https://github.com/tmonk/mcp-stata/commit/fbb57fed2621af2c262d8ffdee5dd2b3b5c84e05))
+
+- Implement graph signature caching and improve inventory retrieval in GraphCreationDetector and
+  StataClient
+  ([`55314f0`](https://github.com/tmonk/mcp-stata/commit/55314f0c07f8ff55196c95c3412f9f180e4209e6))
+
+- Improve graph detection and error handling in StataClient and GraphCreationDetector
+  ([`51e485a`](https://github.com/tmonk/mcp-stata/commit/51e485a302ae4f664805eb13093a96f4e6ca7332))
+
+- Improve graph signature deduplication logic and add performance tests for user journeys
+  ([`9871b4b`](https://github.com/tmonk/mcp-stata/commit/9871b4b0fc24538f921d74367e6f81de81ae3257))
+
+- Improve SMCL log handling and enhance graph emission tests
+  ([`73866ab`](https://github.com/tmonk/mcp-stata/commit/73866ab1f277c594a53de9b59fe43c82ea14f3cd))
+
+- Optimisation of rc code gets
+  ([`eb1ca1d`](https://github.com/tmonk/mcp-stata/commit/eb1ca1d638014c31b4713298ae98520e53c27ca5))
+
+- Refactor signal handling and improve Stata mock setup in tests
+  ([`88d563d`](https://github.com/tmonk/mcp-stata/commit/88d563d3e3dcb65db6d6341e3078df5e72980348))
+
+- Refactor temp file creation to work cross-platform
+  ([`70ba79c`](https://github.com/tmonk/mcp-stata/commit/70ba79c86c9489ae14b2624a859b54fedc1d8b00))
+
+- Remove base_dir overrides to prevent log pollution in working directory
+  ([`7726580`](https://github.com/tmonk/mcp-stata/commit/7726580a34ef86bf94faf83b9c3adcc6db4f79ce))
+
+- Replace os.name checks with is_windows() for improved clarity and consistency
+  ([`13b7423`](https://github.com/tmonk/mcp-stata/commit/13b7423ae357f65958237991997306ec8ace836f))
+
+- SMCL handling and improve logging in StataClient
+  ([`1c48ac5`](https://github.com/tmonk/mcp-stata/commit/1c48ac53ba350b4917442547626f281e8dcdebfe))
+
+### Features
+
+- Implement persistent logging and performance optimizations
+  ([`d7a567a`](https://github.com/tmonk/mcp-stata/commit/d7a567a8e5e70e7f751bf6641addf9915fb6bd65))
+
+### Testing
+
+- Add pytest marker for Stata requirement in isolation tests
+  ([`a23c7ad`](https://github.com/tmonk/mcp-stata/commit/a23c7ad9775f222c04028b997468037492469cc3))
+
+- Add pytest marker for Stata requirement in multiple test files
+  ([`d40e0b9`](https://github.com/tmonk/mcp-stata/commit/d40e0b922237baa03c492cf021d7b2a9caa2a7ba))
+
+- Add pytest marker for Stata requirement in SMCL clamping test
+  ([`0eb8672`](https://github.com/tmonk/mcp-stata/commit/0eb867213c4622150bd23806fbf0fef34b548fea))
+
+- Add unit tests for internal SMCL cleaning and output conversion methods
+  ([`9d7a3e4`](https://github.com/tmonk/mcp-stata/commit/9d7a3e4083d7a749b8a8c51646e8d0d99f44d580))
+
+- Ensure 'invisibility'
+  ([`1218918`](https://github.com/tmonk/mcp-stata/commit/1218918a844dc05612f85c8843396f11a32b9a25))
+
+
 ## v1.20.0 (2026-01-21)
 
 ### Bug Fixes
