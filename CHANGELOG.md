@@ -2,6 +2,24 @@
 
 <!-- version list -->
 
+## v1.22.2 (2026-01-31)
+
+### Bug Fixes
+
+- Enhance StataClient path discovery and prioritize local utilities
+  ([`b658f50`](https://github.com/tmonk/mcp-stata/commit/b658f504060528287399310ca8fa483c06a0a420))
+
+### Documentation
+
+- Update README with Stata licensing details and clarify pystata usage
+  ([`b658f50`](https://github.com/tmonk/mcp-stata/commit/b658f504060528287399310ca8fa483c06a0a420))
+
+### Refactoring
+
+- Remove pystata dependency from pyproject.toml
+  ([`b658f50`](https://github.com/tmonk/mcp-stata/commit/b658f504060528287399310ca8fa483c06a0a420))
+
+
 ## v1.22.1 (2026-01-24)
 
 ### Bug Fixes
