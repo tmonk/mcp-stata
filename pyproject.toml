@@ -25,7 +25,6 @@ dependencies = [
     "pandas>=2.0.0",
     "numpy>=1.26.0",
     "pydantic>=2.0.0",
-    "pystata>=0.0.1",
     "stata_setup>=0.1.0",
     "httpx>=0.27.0,<0.28.0",  # Pin to 0.27.x for httpx_sse compatibility
     "pytest-asyncio>=1.3.0",

@@ -1523,28 +1523,29 @@ class StataClient:
                 # Prefer the binary directory first (documented input for stata_setup)
                 bin_dir = os.path.dirname(stata_exec_path)
                 
-                # 2. App Bundle: .../StataMP.app (macOS only)
+                # Walk up from bin_dir to find the root containing 'utilities'
+                # (where the proprietary pystata module lives)
+                root_candidates = []
                 curr = bin_dir
-                app_bundle = None
                 while len(curr) > 1:
-                    if curr.endswith(".app"):
-                        app_bundle = curr
+                    if os.path.isdir(os.path.join(curr, "utilities")):
+                        root_candidates.append(curr)
                         break
+                    
+                    # Also look for .app bundle on macOS
+                    if curr.endswith(".app"):
+                        parent = os.path.dirname(curr)
+                        if parent and parent != "/" and os.path.isdir(os.path.join(parent, "utilities")):
+                            root_candidates.append(parent)
+                        root_candidates.append(curr)
+                    
                     parent = os.path.dirname(curr)
                     if parent == curr: 
                         break
                     curr = parent
 
-                ordered_candidates = []
-                if app_bundle:
-                    # On macOS, the parent of the .app is often the correct install path
-                    # (e.g., /Applications/StataNow containing StataMP.app)
-                    parent_dir = os.path.dirname(app_bundle)
-                    if parent_dir and parent_dir != "/":
-                        ordered_candidates.append(parent_dir)
-                    ordered_candidates.append(app_bundle)
-                
-                if bin_dir:
+                ordered_candidates = root_candidates
+                if bin_dir not in ordered_candidates:
                     ordered_candidates.append(bin_dir)
                 
                 # Deduplicate preserving order
@@ -1565,11 +1566,18 @@ class StataClient:
                             
                             preflight_code = f"""
 import sys
+import os
 import stata_setup
 from contextlib import redirect_stdout, redirect_stderr
 with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
     try:
         stata_setup.config({repr(path)}, {repr(edition)})
+        
+        # Manually prioritize local utilities folder to avoid shadowing by PyPI 'pystata' trap
+        utils_path = os.path.join({repr(path)}, 'utilities')
+        if os.path.isdir(utils_path) and utils_path not in sys.path:
+            sys.path.insert(0, utils_path)
+            
         from pystata import stata
         # Minimal verification of engine health
         stata.run('display 1', echo=False)
@@ -1618,6 +1626,13 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                             sys.stderr.write(f"[mcp_stata] DEBUG: Skipping pre-flight check for path '{path}' (MCP_STATA_SKIP_PREFLIGHT=1)\n")
                             sys.stderr.flush()
 
+                        # Manually prioritize local utilities folder to avoid shadowing by PyPI 'pystata' trap.
+                        # We do this BEFORE stata_setup.config because it may attempt to import pystata.
+                        utils_path = os.path.join(path, "utilities")
+                        if os.path.isdir(utils_path) and utils_path not in sys.path:
+                            sys.stderr.write(f"[mcp_stata] DEBUG: Pre-emptively inserting {utils_path} at head of sys.path\n")
+                            sys.path.insert(0, utils_path)
+
                         msg = f"[mcp_stata] DEBUG: In-process stata_setup.config('{path}', '{edition}')\n"
                         sys.stderr.write(msg)
                         sys.stderr.flush()
@@ -1665,6 +1680,14 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 sys.stderr.write("[mcp_stata] DEBUG: Importing pystata and warming up...\n")
                 sys.stderr.flush()
                 with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr), self._safe_redirect_fds():
+                    # Manually prioritize local utilities folder to avoid shadowing by PyPI 'pystata' trap
+                    # stata_setup.config() appends to the end of sys.path, which is insufficient
+                    # if the user has accidentally installed the third-party 'pystata' package from PyPI.
+                    utils_path = os.path.join(path, "utilities")
+                    if os.path.isdir(utils_path) and utils_path not in sys.path:
+                        sys.stderr.write(f"[mcp_stata] DEBUG: Inserting {utils_path} at head of sys.path\n")
+                        sys.path.insert(0, utils_path)
+
                     from pystata import stata  # type: ignore[import-not-found]
                     try:
                         # Disable PyStata streamout to avoid stdout corruption and SystemError
@@ -1708,11 +1731,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             
             logger.info("StataClient initialized successfully with %s (%s)", stata_exec_path, edition)
 
-        except ImportError as e:
-            raise RuntimeError(
-                f"Failed to import stata_setup or pystata: {e}. "
-                "Ensure they are installed (pip install pystata stata-setup)."
-            ) from e
+        except (ImportError, RuntimeError) as e:
+            msg = (
+                f"Failed to initialize Stata: {e}. "
+                "Note: Stata 17+ (licensed) must be installed locally. "
+                "MCP-Stata relies on the proprietary 'pystata' module provided by your Stata installation, "
+                "NOT the third-party 'pystata' package on PyPI."
+            )
+            logger.error(msg)
+            raise RuntimeError(msg) from e
 
     def _make_valid_stata_name(self, name: str) -> str:
         """Create a valid Stata name (<=32 chars, [A-Za-z_][A-Za-z0-9_]*)."""
@@ -3223,7 +3250,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         return self._truncate_command_output(result, max_output_lines)
 
     def get_data(self, start: int = 0, count: int = 50) -> List[Dict[str, Any]]:
-        """Returns valid JSON-serializable data."""
+        """Returns valid JSON-serializable data. Efficiently fetches only the requested slice."""
         if not self._initialized:
             self.init()
 
@@ -3232,15 +3259,27 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         with self._exec_lock:
             try:
-                # Use pystata integration to retrieve data
-                df = self.stata.pdataframe_from_data()
+                # Use pystata integration to retrieve data.
+                # pystata.pdataframe_from_data() uses 0-indexed 'obs' range (like Python).
+                stata_start = start
+                stata_end = start + count
+                
+                # Verify total observations to avoid out-of-bounds requests
+                from sfi import Data
+                total_obs = int(Data.getObsTotal())
+                if stata_start >= total_obs:
+                    return []
+                if stata_end > total_obs:
+                    stata_end = total_obs
 
-                # Slice
-                sliced = df.iloc[start : start + count]
+                # Much more memory efficient than loading the entire dataset
+                # obs=range(0, 10) fetches rows 0 through 9 (equivalent to Stata _n 1 to 10).
+                df = self.stata.pdataframe_from_data(obs=range(stata_start, stata_end))
 
                 # Convert to dict
-                return sliced.to_dict(orient="records")
+                return df.to_dict(orient="records")
             except Exception as e:
+                logger.error("Failed to retrieve data: %s", e)
                 return [{"error": f"Failed to retrieve data: {e}"}]
 
     def list_variables(self) -> List[Dict[str, str]]:

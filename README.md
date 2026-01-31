@@ -19,9 +19,11 @@ This server enables LLMs to:
 
 ## Prerequisites
 
-- **Stata 17+** (required for `pystata` integration)
-- **Python 3.11+** (required)
-- **uv** (recommended for install/run)
+- **Stata 17+** (Stata MP, SE, or BE). Must be licensed and installed locally.
+- **Python 3.11+**
+- **uv** (recommended)
+
+> **Note on `pystata`**: This server uses the proprietary `pystata` module that is included with your Stata installation. There is a third-party package named `pystata` on PyPI that is **not** the official Stata package and should not be installed. MCP-Stata handles finding and loading the official module from your Stata directory automatically.
 
 ## Installation
 

@@ -64,13 +64,9 @@ async def test_session_dataset_isolation():
         assert len(res1) == 1
         assert "make" in res1[0]
         
-        # Check in s2 (should be empty/error)
+        # Check in s2 (should be empty)
         res = await s2.call("get_data", {"count": 1})
-        # If there's no data, pdataframe_from_data might return empty or error
-        # StataClient.get_data catches exceptions and returns [{"error": "..."}]
-        assert len(res) > 0
-        err_msg = res[0].get("error", "")
-        assert "No data in memory" in err_msg or "NoneType" in err_msg
-            
+        # If there's no data, get_data returns an empty list []
+        assert len(res) == 0
     finally:
         await manager.stop_all()
