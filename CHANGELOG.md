@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.23.0 (2026-02-01)
+
+### Chores
+
+- Remove MCP badge from README
+  ([`60712e4`](https://github.com/tmonk/mcp-stata/commit/60712e43586ce926599b468c30d292057d712a20))
+
+
 ## v1.22.2 (2026-01-31)
 
 ### Bug Fixes
