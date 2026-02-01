@@ -565,15 +565,16 @@ async def run_do_file_background(
             if result.error:
                 task_info.error = result.error.message
             task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
-            task_info.done = True
-            await _notify_task_done(session, task_info, request_id)
-
             _ensure_ui_channel()
             if ui_channel:
                 ui_channel.notify_potential_dataset_change(session_id)
+        except asyncio.CancelledError:
+            task_info.error = "Operation cancelled"
+            raise
         except Exception as exc:  # pragma: no cover - defensive
-            task_info.done = True
             task_info.error = str(exc)
+        finally:
+            task_info.done = True
             await _notify_task_done(session, task_info, request_id)
 
     if session is None:
@@ -660,7 +661,7 @@ def get_task_result(task_id: str, allow_polling: bool = False) -> str:
 
 @mcp.tool()
 @log_call
-def cancel_task(task_id: str) -> str:
+async def cancel_task(task_id: str) -> str:
     """Request cancellation of a background task."""
     task_info = _background_tasks.get(task_id)
     if task_info is None:
@@ -773,15 +774,16 @@ async def run_command_background(
             if result.error:
                 task_info.error = result.error.message
             task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
-            task_info.done = True
-            await _notify_task_done(session, task_info, request_id)
-
             _ensure_ui_channel()
             if ui_channel:
                 ui_channel.notify_potential_dataset_change(session_id)
+        except asyncio.CancelledError:
+            task_info.error = "Operation cancelled"
+            raise
         except Exception as exc:  # pragma: no cover - defensive
-            task_info.done = True
             task_info.error = str(exc)
+        finally:
+            task_info.done = True
             await _notify_task_done(session, task_info, request_id)
 
     if session is None:
