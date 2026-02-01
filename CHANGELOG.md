@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v1.23.2 (2026-02-01)
+
+### Bug Fixes
+
+- Add session inspection tool and enhance task logging with task_id
+  ([`fd70ca5`](https://github.com/tmonk/mcp-stata/commit/fd70ca5834207bfd0efb1f146c2bfc448f6fb4cd))
+
+### Testing
+
+- Add end-to-end tests for session stability and break handling
+  ([`822bb6e`](https://github.com/tmonk/mcp-stata/commit/822bb6ef0194813226e08b67b989690fb3eac9ec))
+
+
 ## v1.23.1 (2026-02-01)
 
 ### Bug Fixes
