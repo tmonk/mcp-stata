@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.23.1 (2026-02-01)
+
+### Bug Fixes
+
+- Enhance task cancellation handling and add integration test for cancel_task
+  ([`299bd46`](https://github.com/tmonk/mcp-stata/commit/299bd461e120c75c3534d2539fda46ce1c3cb6b7))
+
+
 ## v1.23.0 (2026-02-01)
 
 ### Chores
