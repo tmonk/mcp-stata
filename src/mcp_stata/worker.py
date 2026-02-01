@@ -8,6 +8,7 @@ import traceback
 from typing import Any, Dict, Optional
 from multiprocessing.connection import Connection
 import asyncio
+import queue
 
 # Ensure the parent directory is in sys.path so we can import modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,6 +23,40 @@ class StataWorker:
         self.client: Optional[StataClient] = None
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
+        self._command_queue = queue.Queue()
+        self._is_running = True
+
+    def _listen_on_pipe(self):
+        """Background thread to listen for out-of-band signals (like 'break')."""
+        while self._is_running:
+            try:
+                # Use a small timeout to allow checking self._is_running
+                if self.conn.poll(0.2):
+                    msg = self.conn.recv()
+                    msg_type = msg.get("type")
+                    
+                    if msg_type == "break":
+                        # Out-of-band break request.
+                        # sfi.breakIn() is thread-safe and signals the Stata engine.
+                        logger.info("Received out-of-band break signal from session")
+                        if self.client:
+                            self.client._request_break_in()
+                        # We don't put 'break' in the command queue; it's handled immediately.
+                    elif msg_type == "stop":
+                        self._is_running = False
+                        self._command_queue.put(msg)
+                    else:
+                        self._command_queue.put(msg)
+                else:
+                    continue
+            except (EOFError, ConnectionResetError, BrokenPipeError):
+                logger.debug("Worker listener pipe closed.")
+                self._is_running = False
+                break
+            except Exception as e:
+                logger.error(f"Worker listener error: {e}")
+                if not self._is_running:
+                    break
 
     def run(self):
         """Main loop for the worker process."""
@@ -35,20 +70,42 @@ class StataWorker:
             logger.info("StataWorker initialized and ready.")
             self.conn.send({"event": "ready", "pid": os.getpid()})
 
-            while True:
-                if self.conn.poll(0.1):
-                    msg = self.conn.recv()
+            # Start the out-of-band listener thread
+            listener_thread = threading.Thread(target=self._listen_on_pipe, name="worker-listener", daemon=True)
+            listener_thread.start()
+
+            while self._is_running:
+                try:
+                    # Pull messages from the queue populated by the listener thread
+                    msg = self._command_queue.get(timeout=0.1)
                     if msg.get("type") == "stop":
                         break
                     
                     # Handle command
                     self.loop.run_until_complete(self.handle_message(msg))
+                except queue.Empty:
+                    continue
+                except Exception as e:
+                    logger.error(f"Error in worker main loop: {e}")
+                    # Try to notify parent of the error but continue if possible
+                    try:
+                        self.conn.send({"event": "error", "message": f"Worker loop error: {e}"})
+                    except Exception:
+                        pass
+
         except Exception as e:
             logger.error(f"Worker process failed: {e}")
-            self.conn.send({"event": "error", "message": str(e), "traceback": traceback.format_exc()})
+            try:
+                self.conn.send({"event": "error", "message": str(e), "traceback": traceback.format_exc()})
+            except Exception:
+                pass
         finally:
+            self._is_running = False
             logger.info("Worker process exiting.")
-            self.conn.close()
+            try:
+                self.conn.close()
+            except Exception:
+                pass
 
     async def handle_message(self, msg: Dict[str, Any]):
         msg_type = msg.get("type")

@@ -673,6 +673,22 @@ def cancel_task(task_id: str) -> str:
 
 @mcp.tool()
 @log_call
+async def break_session(session_id: str = "default") -> str:
+    """Interrupt/Break the currently running command in a Stata session.
+    
+    Use this if a command is taking too long and you want to stop it without 
+    closing the session and losing your data.
+    """
+    try:
+        session = session_manager.get_session(session_id)
+        await session.send_break()
+        return json.dumps({"status": "break_sent", "session_id": session_id})
+    except Exception as e:
+        return json.dumps({"error": str(e), "session_id": session_id})
+
+
+@mcp.tool()
+@log_call
 async def run_command_background(
     code: str,
     ctx: Context | None = None,

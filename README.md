@@ -250,6 +250,7 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 * `create_session(session_id)`: Manually create a new Stata session.
 * `list_sessions()`: List all active sessions and their status.
 * `stop_session(session_id)`: Terminate a specific session.
+* `break_session(session_id="default")`: Interrupt/Break the currently running command in a specific session. Use this if a command is taking too long and you want to stop it without closing the session and losing your data.
 
 ### Cancellation
 

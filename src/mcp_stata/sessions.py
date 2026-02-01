@@ -137,11 +137,40 @@ class StataSession:
                 "id": msg_id,
                 "args": args
             })
+            return await future
+        except asyncio.CancelledError:
+            # If the session call is cancelled (e.g., from the server or UI),
+            # send an out-of-band 'break' message to the worker to interrupt Stata.
+            logger.info(f"Cancellation requested for command {method}:{msg_id} in session {self.id}")
+            try:
+                self._parent_conn.send({"type": "break"})
+            except Exception as e:
+                logger.warning(f"Failed to send break command to worker for session {self.id}: {e}")
+            
+            # Wait briefly for the worker to return the result of the interrupted command.
+            # We use shield so that we stay in this call until we see the worker acknowledge or we timeout.
+            # This prevents the next command from being sent while the worker is still cleaning up.
+            try:
+                # Give Stata a few seconds to acknowledge the break.
+                await asyncio.wait_for(asyncio.shield(future), timeout=3.0)
+                logger.info(f"Session {self.id} acknowledged break for {msg_id}")
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.warning(f"Session {self.id} did not acknowledge break within timeout: {e}")
+            
+            # Re-raise cancellation
+            raise
         except (AttributeError, BrokenPipeError, ConnectionResetError) as e:
              self._cleanup_listeners(msg_id)
              raise RuntimeError(f"Failed to send command to worker: {e}")
-        
-        return await future
+
+    async def send_break(self):
+        """Send an out-of-band break signal to the worker."""
+        try:
+            self._parent_conn.send({"type": "break"})
+            logger.info(f"Break signal sent to session {self.id}")
+        except Exception as e:
+            logger.warning(f"Failed to send break command to session {self.id}: {e}")
+            raise RuntimeError(f"Failed to send break signal: {e}")
 
     async def stop(self, timeout: float = 5.0):
         self._listener_running = False

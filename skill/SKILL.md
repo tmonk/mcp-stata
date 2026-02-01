@@ -89,6 +89,14 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
 
 - `get_stored_results()`: Return current `r()` and `e()` results as JSON after a command.
 
+### Session Management
+- `create_session(session_id)`: Manually create a new Stata session.
+- `list_sessions()`: List all active sessions and their status (running, idle, etc.).
+- `stop_session(session_id)`: Terminate and clean up a specific session.
+- `break_session(session_id="default")`: Interrupt the currently executing command in a session.
+  - Use this tool when a command is taking too long or you want to stop a long-running loop without losing data already in memory.
+  - Follow-up with `read_log` to see where execution stopped.
+
 ### UI Data Browser
 - `get_ui_channel()`: Return a short-lived localhost HTTP endpoint + bearer token for the UI-only data browser.
   - Returns JSON with `baseUrl`, `token`, `expiresAt`, and `capabilities`.
