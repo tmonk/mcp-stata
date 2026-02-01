@@ -443,5 +443,4 @@ pytest -v -m "not requires_stata"
 python -m build
 ```
 
-[![MCP Badge](https://lobehub.com/badge/mcp/tmonk-mcp-stata)](https://lobehub.com/mcp/tmonk-mcp-stata)
 [![Tests](https://github.com/tmonk/mcp-stata/actions/workflows/build-test.yml/badge.svg)](https://github.com/tmonk/mcp-stata/actions/workflows/build-test.yml)
