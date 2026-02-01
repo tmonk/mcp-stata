@@ -396,11 +396,12 @@ class StataClient:
         auto_cache_graphs: bool,
         on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]],
         notify_log: Callable[[str], Awaitable[None]],
+        task_id: Optional[str] = None,
     ) -> Optional[StreamingGraphCache]:
         if not auto_cache_graphs:
             return None
         graph_cache = StreamingGraphCache(self, auto_cache=True)
-        graph_cache_callback = self._create_graph_cache_callback(on_graph_cached, notify_log)
+        graph_cache_callback = self._create_graph_cache_callback(on_graph_cached, notify_log, task_id=task_id)
         graph_cache.add_cache_callback(graph_cache_callback)
         return graph_cache
 
@@ -1046,7 +1047,7 @@ class StataClient:
         return None
 
     @staticmethod
-    def _create_graph_cache_callback(on_graph_cached, notify_log):
+    def _create_graph_cache_callback(on_graph_cached, notify_log, task_id=None):
         """Create a standardized graph cache callback with proper error handling."""
         async def graph_cache_callback(graph_name: str, success: bool) -> None:
             try:
@@ -1060,7 +1061,8 @@ class StataClient:
                 await notify_log(json.dumps({
                     "event": "graph_cached",
                     "graph": graph_name,
-                    "success": success
+                    "success": success,
+                    "task_id": task_id,
                 }))
             except Exception as e:
                 logger.error(f"Failed to notify about graph cache: {e}")
@@ -2643,7 +2645,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         smcl_path = None
 
         # Setup streaming graph cache if enabled
-        graph_cache = self._init_streaming_graph_cache(auto_cache_graphs, on_graph_cached, notify_log)
+        graph_cache = self._init_streaming_graph_cache(
+            auto_cache_graphs, 
+            on_graph_cached, 
+            notify_log,
+            task_id=graph_ready_task_id
+        )
 
         _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
 
@@ -2663,7 +2670,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # Inform the MCP client immediately where to read/tail the output.
         # We provide the cleaned plain-text log_path as the primary 'path' to satisfy 
         # requirements for clean logs without maintenance boilerplate.
-        await notify_log(json.dumps({"event": "log_path", "path": log_path, "smcl_path": smcl_path}))
+        await notify_log(json.dumps({
+            "event": "log_path", 
+            "path": log_path, 
+            "smcl_path": smcl_path,
+            "task_id": graph_ready_task_id,
+        }))
 
         rc = -1
         path_for_stata = code.replace("\\", "/")
@@ -2975,7 +2987,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         smcl_content = ""
         smcl_path = None
 
-        graph_cache = self._init_streaming_graph_cache(auto_cache_graphs, on_graph_cached, notify_log)
+        graph_cache = self._init_streaming_graph_cache(
+            auto_cache_graphs, 
+            on_graph_cached, 
+            notify_log,
+            task_id=graph_ready_task_id
+        )
         _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
 
         smcl_path = self._create_smcl_log_path()
@@ -2993,7 +3010,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # Inform the MCP client immediately where to read/tail the output.
         # We provide the cleaned plain-text log_path as the primary 'path' to satisfy 
         # requirements for clean logs without maintenance boilerplate.
-        await notify_log(json.dumps({"event": "log_path", "path": log_path, "smcl_path": smcl_path}))
+        await notify_log(json.dumps({
+            "event": "log_path", 
+            "path": log_path, 
+            "smcl_path": smcl_path,
+            "task_id": graph_ready_task_id,
+        }))
 
         rc = -1
         graph_ready_initial = self._capture_graph_state(graph_cache, emit_graph_ready)

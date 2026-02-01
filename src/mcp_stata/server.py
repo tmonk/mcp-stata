@@ -385,7 +385,7 @@ async def _notify_tool_error(ctx: Context | None, tool_name: str, exc: Exception
     task_id = None
     meta = ctx.request_context.meta
     if meta is not None:
-        task_id = getattr(meta, "task_id", None) or getattr(meta, "taskId", None)
+        task_id = getattr(meta, "task_id", None)
     payload = {
         "event": "tool_error",
         "tool": tool_name,
@@ -500,9 +500,34 @@ async def run_do_file_background(
         if session is not None:
             if not _should_stream_smcl_chunk(text, ctx.request_id):
                 return
-            _debug_notification("logMessage", text, ctx.request_id)
+            
+            payload_to_send = text
             try:
-                await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
+                # If the worker sent a structured JSON event, ensure it has our task_id
+                # before we forward it as a logMessage.
+                parsed = json.loads(text)
+                if isinstance(parsed, dict) and "event" in parsed:
+                    if "task_id" not in parsed:
+                        parsed["task_id"] = task_id
+                    payload_to_send = json.dumps(parsed)
+                else:
+                    # Raw output - wrap it in JSON so it has a task_id
+                    payload_to_send = json.dumps({
+                        "event": "output",
+                        "text": text,
+                        "task_id": task_id
+                    }, ensure_ascii=False)
+            except Exception:
+                # Fallback: literal string was not JSON, wrap it
+                payload_to_send = json.dumps({
+                    "event": "output",
+                    "text": text,
+                    "task_id": task_id
+                }, ensure_ascii=False)
+
+            _debug_notification("logMessage", payload_to_send, ctx.request_id)
+            try:
+                await session.send_log_message(level="info", data=payload_to_send, related_request_id=ctx.request_id)
             except Exception as e:
                 logger.warning("Failed to send logMessage notification: %s", e)
                 sys.stderr.write(f"[mcp_stata] ERROR: logMessage send failed: {e!r}\n")
@@ -584,7 +609,11 @@ async def run_do_file_background(
         task_info.task = asyncio.create_task(_run())
     _register_task(task_info)
     await _wait_for_log_path(task_info)
-    return json.dumps({"task_id": task_id, "status": "started", "log_path": task_info.log_path})
+    return json.dumps({
+        "task_id": task_id, 
+        "status": "started", 
+        "log_path": task_info.log_path
+    })
 
 
 @mcp.tool()
@@ -608,7 +637,11 @@ def get_task_status(task_id: str, allow_polling: bool = False) -> str:
     logger.warning("get_task_status called; clients should use task_done logMessage notifications instead of polling")
     task_info = _background_tasks.get(task_id)
     if task_info is None:
-        return json.dumps({"task_id": task_id, "status": "not_found", "notice": notice})
+        return json.dumps({
+            "task_id": task_id, 
+            "status": "not_found", 
+            "notice": notice
+        })
     return json.dumps({
         "task_id": task_id,
         "status": "done" if task_info.done else "running",
@@ -641,7 +674,11 @@ def get_task_result(task_id: str, allow_polling: bool = False) -> str:
     logger.warning("get_task_result called; clients should use task_done logMessage notifications instead of polling")
     task_info = _background_tasks.get(task_id)
     if task_info is None:
-        return json.dumps({"task_id": task_id, "status": "not_found", "notice": notice})
+        return json.dumps({
+            "task_id": task_id, 
+            "status": "not_found", 
+            "notice": notice
+        })
     if not task_info.done:
         return json.dumps({
             "task_id": task_id,
@@ -722,8 +759,38 @@ async def run_command_background(
         if session is not None:
             if not _should_stream_smcl_chunk(text, ctx.request_id):
                 return
-            _debug_notification("logMessage", text, ctx.request_id)
-            await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
+            
+            payload_to_send = text
+            try:
+                # If the worker sent a structured JSON event, ensure it has our task_id
+                # before we forward it as a logMessage.
+                parsed = json.loads(text)
+                if isinstance(parsed, dict) and "event" in parsed:
+                    if "task_id" not in parsed:
+                        parsed["task_id"] = task_id
+                    payload_to_send = json.dumps(parsed)
+                else:
+                    # Raw output - wrap it in JSON so it has a task_id
+                    payload_to_send = json.dumps({
+                        "event": "output",
+                        "text": text,
+                        "task_id": task_id
+                    }, ensure_ascii=False)
+            except Exception:
+                # Fallback: literal string was not JSON, wrap it
+                payload_to_send = json.dumps({
+                    "event": "output",
+                    "text": text,
+                    "task_id": task_id
+                }, ensure_ascii=False)
+
+            _debug_notification("logMessage", payload_to_send, ctx.request_id)
+            try:
+                await session.send_log_message(level="info", data=payload_to_send, related_request_id=ctx.request_id)
+            except Exception as e:
+                logger.warning("Failed to send logMessage notification: %s", e)
+                sys.stderr.write(f"[mcp_stata] ERROR: logMessage send failed: {e!r}\n")
+                sys.stderr.flush()
         try:
             payload = json.loads(text)
             if isinstance(payload, dict) and payload.get("event") == "log_path":
@@ -793,7 +860,11 @@ async def run_command_background(
         task_info.task = asyncio.create_task(_run())
     _register_task(task_info)
     await _wait_for_log_path(task_info)
-    return json.dumps({"task_id": task_id, "status": "started", "log_path": task_info.log_path})
+    return json.dumps({
+        "task_id": task_id, 
+        "status": "started", 
+        "log_path": task_info.log_path
+    })
 
 @mcp.tool()
 @log_call
