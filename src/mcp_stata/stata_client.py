@@ -1573,15 +1573,20 @@ import stata_setup
 from contextlib import redirect_stdout, redirect_stderr
 with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
     try:
-        stata_setup.config({repr(path)}, {repr(edition)})
-        
-        # Manually prioritize local utilities folder to avoid shadowing by PyPI 'pystata' trap
+        # Manually prioritize local utilities folder to avoid shadowing by PyPI 'pystata' trap.
+        # This MUST happen before stata_setup.config in case it imports pystata.
         utils_path = os.path.join({repr(path)}, 'utilities')
         if os.path.isdir(utils_path) and utils_path not in sys.path:
+            sys.stderr.write(f"[preflight] Inserting {{utils_path}} at head of sys.path\\n")
             sys.path.insert(0, utils_path)
             
+        sys.stderr.write(f"[preflight] Calling stata_setup.config({repr(path)}, {repr(edition)})\\n")
+        stata_setup.config({repr(path)}, {repr(edition)})
+        
+        sys.stderr.write("[preflight] Importing pystata.stata...\\n")
         from pystata import stata
         # Minimal verification of engine health
+        sys.stderr.write("[preflight] Running diagnostic command...\\n")
         stata.run('display 1', echo=False)
         print('PREFLIGHT_OK')
     except Exception as e:
@@ -1591,7 +1596,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                             
                             try:
                                 # Use shorter timeout for pre-flight if feasible, 
-                                # but keep it safe for slow environments. 15s is usually enough for a ping.
+                                # but keep it safe for slow environments.
                                 # Use the current interpreter to preserve its site-packages
                                 # (stata_setup/pystata) in the preflight subprocess.
                                 py_exe = sys.executable
@@ -1603,9 +1608,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                                     existing = env.get("PYTHONPATH", "")
                                     merged = os.pathsep.join(extra_paths + ([existing] if existing else []))
                                     env["PYTHONPATH"] = merged
+                                
+                                # Increased timeout to 60s to handle cold starts and license checks on macOS
                                 res = subprocess.run(
                                     [py_exe, "-c", preflight_code],
-                                    capture_output=True, text=True, timeout=20, env=env
+                                    capture_output=True, text=True, timeout=60, env=env
                                 )
                                 if res.returncode != 0:
                                     sys.stderr.write(f"[mcp_stata] Pre-flight failed (rc={res.returncode}) for '{path}'\n")
@@ -1619,6 +1626,16 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                                 else:
                                     sys.stderr.write(f"[mcp_stata] Pre-flight succeeded for '{path}'. Proceeding to in-process init.\n")
                                     sys.stderr.flush()
+                            except subprocess.TimeoutExpired as te:
+                                msg = f"Pre-flight timed out after {te.timeout}s for '{path}'"
+                                sys.stderr.write(f"[mcp_stata] {msg}\n")
+                                if te.stdout:
+                                    sys.stderr.write(f"--- Captured stdout ---\n{te.stdout.decode() if isinstance(te.stdout, bytes) else te.stdout}\n")
+                                if te.stderr:
+                                    sys.stderr.write(f"--- Captured stderr ---\n{te.stderr.decode() if isinstance(te.stderr, bytes) else te.stderr}\n")
+                                sys.stderr.flush()
+                                last_error = msg
+                                continue
                             except Exception as pre_e:
                                 sys.stderr.write(f"[mcp_stata] Pre-flight execution error for '{path}': {repr(pre_e)}\n")
                                 sys.stderr.flush()
