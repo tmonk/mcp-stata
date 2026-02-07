@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.23.3 (2026-02-07)
+
+### Bug Fixes
+
+- Increase preflight timeout to 60s and enhance diagnostic logging
+  ([`cf36aab`](https://github.com/tmonk/mcp-stata/commit/cf36aabdeb08165d65c8392d2f41461d07195185))
+
+
 ## v1.23.2 (2026-02-01)
 
 ### Bug Fixes
