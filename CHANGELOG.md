@@ -2,6 +2,40 @@
 
 <!-- version list -->
 
+## v1.24.0 (2026-02-09)
+
+### Bug Fixes
+
+- Enhance pytest fixture handling for Stata-backed tests and improve test structure
+  ([`71cf058`](https://github.com/tmonk/mcp-stata/commit/71cf0581636770c60502cca9b687c6e691fa8237))
+
+- Remove redundant call to _install_startup_sentinel after _load_startup_do_file
+  ([`9fc2fca`](https://github.com/tmonk/mcp-stata/commit/9fc2fcada850df1646baff58a0be667d1daf7c5e))
+
+### Features
+
+- Add MCP_STATA_NO_RELOAD_ON_CLEAR support to control program reloading after clear commands
+  ([`0d88c44`](https://github.com/tmonk/mcp-stata/commit/0d88c44c227dc648a17ed3324998c7e24f2044cb))
+
+- Add support for loading a startup .do file and corresponding tests
+  ([`f7a6bfb`](https://github.com/tmonk/mcp-stata/commit/f7a6bfb617f9cc01c8b99a3bf4b0ff4fd9f184f1))
+
+- Enhance break handling and startup .do file loading with deduplication.
+  ([`3cac948`](https://github.com/tmonk/mcp-stata/commit/3cac948f4e50b12b68fdce403b2b1df7e8d9fc00))
+
+- Implement macro handling and conditional reloading of startup files in StataClient
+  ([`1452373`](https://github.com/tmonk/mcp-stata/commit/1452373625432ec8c034f33dd69455689189198a))
+
+- Implement startup .do file loading with sysprofile.do support and deduplication - match Stata
+  implementation
+  ([`a8a789b`](https://github.com/tmonk/mcp-stata/commit/a8a789b1602c5ddc3f3d460f365ecc17820b428b))
+
+### Testing
+
+- Fix full test suite
+  ([`3cac948`](https://github.com/tmonk/mcp-stata/commit/3cac948f4e50b12b68fdce403b2b1df7e8d9fc00))
+
+
 ## v1.23.3 (2026-02-07)
 
 ### Bug Fixes
