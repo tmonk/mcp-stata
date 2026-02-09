@@ -134,6 +134,8 @@ def stata_client():
         
         # Manually set initialized
         c._initialized = True
+    else:
+        c.init()
     return c
 
 # Call this immediately to ensure mocks are available if needed

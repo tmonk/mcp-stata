@@ -101,6 +101,11 @@ class TestSFIGraphCreationDetector:
     def test_sfi_modification_detection(self, detector_with_real_client):
         """Test SFI-only modification detection."""
         detector = detector_with_real_client
+
+        # Ensure a clean baseline so previous tests do not interfere.
+        detector._stata_client.stata.run("graph drop _all", quietly=True)
+        detector._stata_client.stata.run("clear", quietly=True)
+        detector.clear_detection_state()
         
         # Create initial graphs
         detector._stata_client.stata.run("sysuse auto, clear", quietly=True)

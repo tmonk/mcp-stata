@@ -38,21 +38,30 @@ def test_pystata_trap_protection_e2e(tmp_path, monkeypatch, clean_client):
     
     # Prepend to sys.path to ensure it's found first by standard imports
     monkeypatch.syspath_prepend(str(trap_dir))
-    
-    # 2. Verify it's actually trapped for a normal import
+
+    # 2. Purge any previously-loaded pystata/sfi modules so the trap is the
+    #    only pystata that standard import resolution can find.  This is
+    #    necessary when another test on the same xdist worker has already
+    #    loaded the real pystata via the session-scoped stata_client fixture.
+    for mod_name in [k for k in sys.modules if k == "pystata" or k.startswith("pystata.") or k == "sfi" or k.startswith("sfi.")]:
+        sys.modules.pop(mod_name, None)
+    import importlib
+    importlib.invalidate_caches()
+
+    # 3. Verify it's actually trapped for a normal import
     with pytest.raises(ImportError, match="STATA_PYPI_TRAP_TRIGGERED"):
         import pystata
         import importlib
         importlib.reload(pystata)
-    
-    # 3. Initialize StataClient
+
+    # 4. Initialize StataClient
     # It should succeed because it inserts the REAL utilities path at the head of sys.path[0]
     try:
         clean_client.init()
     except Exception as e:
         pytest.fail(f"StataClient failed to initialize despite trap protection: {e}")
     
-    # 4. Verify pystata is now healthy in the current process
+    # 5. Verify pystata is now healthy in the current process
     try:
         import pystata
         # Check that it's the real one (from Stata install, not our trap)
