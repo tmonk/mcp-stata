@@ -1982,8 +1982,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             self.stata.run("local _mcp_saved_rc = c(rc)", echo=False)
         except Exception:
             pass
+        # _load_startup_do_file already calls _install_startup_sentinel at end.
         self._load_startup_do_file()
-        self._install_startup_sentinel()
         try:
             self.stata.run("capture error `_mcp_saved_rc'", echo=False)
         except Exception:
@@ -2138,11 +2138,13 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             oldplace = (Macro.getGlobal("mcp_sysdir_oldplace") or "").strip()
             adopath_raw = (Macro.getGlobal("mcp_adopath") or "")
         finally:
-            for name in macro_names:
-                try:
-                    self.stata.run(f"macro drop {name}", echo=False)
-                except Exception:
-                    pass
+            try:
+                self.stata.run(
+                    "\n".join(f"macro drop {name}" for name in macro_names),
+                    echo=False,
+                )
+            except Exception:
+                pass
 
         def split_lines(raw: str) -> List[str]:
             cleaned = raw.replace("\r", "")
