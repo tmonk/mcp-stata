@@ -134,6 +134,123 @@ async def test_startup_do_file_duplicate_only_runs_once_e2e():
             del os.environ["MCP_STATA_STARTUP_DO_FILE"]
 
 
+@pytest.mark.requires_stata
+@pytest.mark.asyncio
+async def test_clear_all_restores_startup_programs_e2e():
+    """Program defined in startup .do file survives ``clear all``.
+
+    Scenario
+    --------
+    1. A startup .do file defines program ``_test_add_numbers``.
+    2. After session start the program is callable.
+    3. ``clear all`` is executed inside the session.
+    4. The sentinel mechanism detects the loss and re-runs startup files.
+    5. The program is callable again.
+
+    This exercises the full SessionManager → worker → StataClient path.
+    """
+    with tempfile.NamedTemporaryFile(suffix=".do", mode="w", delete=False) as tf:
+        tf.write(
+            "capture program drop _test_add_numbers\n"
+            "program define _test_add_numbers, rclass\n"
+            "    args num1 num2\n"
+            "    local sum = `num1' + `num2'\n"
+            "    display `sum'\n"
+            "    return scalar sum = `sum'\n"
+            "end\n"
+        )
+        startup_file_path = tf.name
+
+    os.environ["MCP_STATA_STARTUP_DO_FILE"] = startup_file_path
+
+    manager = SessionManager()
+    try:
+        await manager.start()
+        session = manager.get_session("default")
+
+        # 1) Program should be available after startup.
+        res1 = await session.call(
+            "run_command",
+            {"code": "_test_add_numbers 3 4", "options": {"echo": False}},
+        )
+        assert "7" in res1.get("smcl_output", ""), (
+            f"Program not loaded at startup: {res1}"
+        )
+
+        # 2) Run ``clear all`` — this wipes all user programs.
+        await session.call(
+            "run_command",
+            {"code": "clear all", "options": {"echo": False}},
+        )
+
+        # 3) Program should still be callable because the sentinel
+        #    mechanism re-loaded the startup .do file.
+        res2 = await session.call(
+            "run_command",
+            {"code": "_test_add_numbers 10 20", "options": {"echo": False}},
+        )
+        assert "30" in res2.get("smcl_output", ""), (
+            f"Program NOT restored after clear all: {res2}"
+        )
+    finally:
+        await manager.stop_all()
+        if os.path.exists(startup_file_path):
+            os.unlink(startup_file_path)
+        if "MCP_STATA_STARTUP_DO_FILE" in os.environ:
+            del os.environ["MCP_STATA_STARTUP_DO_FILE"]
+
+
+@pytest.mark.requires_stata
+@pytest.mark.asyncio
+async def test_clear_programs_restores_startup_programs_e2e():
+    """Program defined in startup .do file survives ``clear programs``."""
+    with tempfile.NamedTemporaryFile(suffix=".do", mode="w", delete=False) as tf:
+        tf.write(
+            "capture program drop _test_myprog\n"
+            "program define _test_myprog\n"
+            "    display \"myprog_ok\"\n"
+            "end\n"
+        )
+        startup_file_path = tf.name
+
+    os.environ["MCP_STATA_STARTUP_DO_FILE"] = startup_file_path
+
+    manager = SessionManager()
+    try:
+        await manager.start()
+        session = manager.get_session("default")
+
+        # Available after startup.
+        res1 = await session.call(
+            "run_command",
+            {"code": "_test_myprog", "options": {"echo": False}},
+        )
+        assert "myprog_ok" in res1.get("smcl_output", ""), (
+            f"Program not loaded at startup: {res1}"
+        )
+
+        # ``clear programs`` wipes programs.
+        await session.call(
+            "run_command",
+            {"code": "clear programs", "options": {"echo": False}},
+        )
+
+        # Should be restored.
+        res2 = await session.call(
+            "run_command",
+            {"code": "_test_myprog", "options": {"echo": False}},
+        )
+        assert "myprog_ok" in res2.get("smcl_output", ""), (
+            f"Program NOT restored after clear programs: {res2}"
+        )
+    finally:
+        await manager.stop_all()
+        if os.path.exists(startup_file_path):
+            os.unlink(startup_file_path)
+        if "MCP_STATA_STARTUP_DO_FILE" in os.environ:
+            del os.environ["MCP_STATA_STARTUP_DO_FILE"]
+
+
 @pytest.mark.skipif(os.getenv("STATA_BIN") is None and shutil.which("stata") is None, reason="Stata not found")
 @pytest.mark.requires_stata
 @pytest.mark.asyncio

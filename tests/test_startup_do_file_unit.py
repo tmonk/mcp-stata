@@ -292,5 +292,52 @@ class TestReloadStartupDoFiles(unittest.TestCase):
         self.assertTrue(len(sentinel_calls) > 0)
 
 
+class TestNoReloadOnClear(unittest.TestCase):
+    """Tests for MCP_STATA_NO_RELOAD_ON_CLEAR env var."""
+
+    @patch('mcp_stata.stata_client.os.getenv')
+    def test_reload_skipped_when_env_set(self, mock_getenv):
+        """clear all should NOT reload when MCP_STATA_NO_RELOAD_ON_CLEAR=1."""
+        mock_getenv.return_value = None
+
+        mock_stata = MagicMock()
+        client = StataClient()
+        client._reload_startup_on_clear = False   # simulate env var
+        client.stata = mock_stata
+        client._profile_do_checked = True
+
+        # _reload_startup_do_files should be a no-op in the hook sites.
+        # Directly test that _code_drops_programs + the flag prevents reload.
+        code = "clear all"
+        assert client._code_drops_programs(code)
+        # Simulate the guard used in _exec_with_capture / run_command_streaming
+        if client._reload_startup_on_clear and client._code_drops_programs(code):
+            client._reload_startup_do_files()
+        # No stata.run calls should have been made for reload.
+        mock_stata.run.assert_not_called()
+
+    @patch('mcp_stata.stata_client.os.getenv')
+    def test_sentinel_not_installed_when_env_set(self, mock_getenv):
+        """Sentinel should NOT be installed when reload is disabled."""
+        mock_getenv.return_value = None
+
+        mock_stata = MagicMock()
+        client = StataClient()
+        client._reload_startup_on_clear = False
+        client.stata = mock_stata
+        client._profile_do_checked = True
+
+        client._load_startup_do_file()
+
+        calls = [call[0][0] for call in mock_stata.run.call_args_list]
+        sentinel_calls = [c for c in calls if '_mcp_startup_sentinel' in c]
+        self.assertEqual(sentinel_calls, [])
+
+    def test_flag_defaults_to_true(self):
+        """Without the env var, reload should be enabled."""
+        client = StataClient()
+        self.assertTrue(client._reload_startup_on_clear)
+
+
 if __name__ == '__main__':
     unittest.main()

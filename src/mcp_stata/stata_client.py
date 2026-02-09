@@ -179,6 +179,9 @@ class StataClient:
         self._sysprofile_do_path: Optional[str] = None
         self._profile_do_path: Optional[str] = None
         self._profile_do_dirs: List[str] = []
+        self._reload_startup_on_clear = (
+            (os.getenv("MCP_STATA_NO_RELOAD_ON_CLEAR") or "").strip() not in ("1", "true", "yes")
+        )
         self._break_requested = False
         from .graph_detector import GraphCreationDetector
         self._graph_detector = GraphCreationDetector(self)
@@ -203,6 +206,9 @@ class StataClient:
         inst._sysprofile_do_path = None
         inst._profile_do_path = None
         inst._profile_do_dirs = []
+        inst._reload_startup_on_clear = (
+            (os.getenv("MCP_STATA_NO_RELOAD_ON_CLEAR") or "").strip() not in ("1", "true", "yes")
+        )
         inst._break_requested = False
         from .graph_detector import GraphCreationDetector
         inst._graph_detector = GraphCreationDetector(inst)
@@ -1907,7 +1913,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 except Exception as e:
                     logger.error("Failed to load profile.do from %s: %s", self._profile_do_path, e)
 
-        self._install_startup_sentinel()
+        if self._reload_startup_on_clear:
+            self._install_startup_sentinel()
 
     # Patterns that drop user programs — require startup re-execution.
     _PROGRAM_DROP_RE = re.compile(
@@ -1933,12 +1940,20 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         """Define a tiny hidden program used to detect ``clear all``.
 
         Preserves ``c(rc)`` so that the user's error state is not disturbed.
+
+        .. note::
+
+           The program body must contain at least one statement (here
+           ``version 16``).  Stata silently discards programs with empty
+           bodies, so ``program define … / end`` alone would leave no
+           trace for ``program list`` to find.
         """
         try:
             self.stata.run(
                 f"local _mcp_saved_rc = c(rc)\n"
                 f"capture program drop {self._STARTUP_SENTINEL}\n"
                 f"program define {self._STARTUP_SENTINEL}\n"
+                f"    version 16\n"
                 f"end\n"
                 f"capture error `_mcp_saved_rc'",
                 echo=False,
@@ -1978,14 +1993,23 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         Preserves ``c(rc)`` so that the user's error state is not disturbed.
         """
         logger.info("Re-loading startup do files after program-clearing command")
+
+        # Save c(rc) into Python — Stata locals do NOT survive across
+        # separate stata.run() calls, so we must bridge through Python.
+        saved_rc = 0
         try:
             self.stata.run("local _mcp_saved_rc = c(rc)", echo=False)
+            from sfi import Macro  # type: ignore[import-not-found]
+            saved_rc = int(Macro.getLocal("_mcp_saved_rc") or "0")
         except Exception:
             pass
+
         # _load_startup_do_file already calls _install_startup_sentinel at end.
         self._load_startup_do_file()
+
+        # Restore the original c(rc).
         try:
-            self.stata.run("capture error `_mcp_saved_rc'", echo=False)
+            self.stata.run(f"capture error {saved_rc}", echo=False)
         except Exception:
             pass
 
@@ -1995,7 +2019,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         We cannot parse arbitrary do-file content, so we check whether
         the sentinel program we planted at startup is still alive.
         """
-        if not self._startup_sentinel_alive():
+        if self._reload_startup_on_clear and not self._startup_sentinel_alive():
             self._reload_startup_do_files()
 
     def _parse_startup_do_files(self, raw: str) -> tuple[List[str], int]:
@@ -2736,7 +2760,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     delattr(self, "_hold_name")
 
                 # Re-run startup .do files when programs have been dropped.
-                if self._code_drops_programs(code):
+                if self._reload_startup_on_clear and self._code_drops_programs(code):
                     self._reload_startup_do_files()
 
         # Output extraction
@@ -3208,7 +3232,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             tee.close()
 
         # Re-run startup .do files when programs have been dropped.
-        if self._code_drops_programs(code):
+        if self._reload_startup_on_clear and self._code_drops_programs(code):
             self._reload_startup_do_files()
 
         # Read SMCL content as the authoritative source
