@@ -182,6 +182,7 @@ class StataClient:
         self._reload_startup_on_clear = (
             (os.getenv("MCP_STATA_NO_RELOAD_ON_CLEAR") or "").strip() not in ("1", "true", "yes")
         )
+        self._global_macro_cache: Dict[str, str] = {}
         self._break_requested = False
         from .graph_detector import GraphCreationDetector
         self._graph_detector = GraphCreationDetector(self)
@@ -209,6 +210,7 @@ class StataClient:
         inst._reload_startup_on_clear = (
             (os.getenv("MCP_STATA_NO_RELOAD_ON_CLEAR") or "").strip() not in ("1", "true", "yes")
         )
+        inst._global_macro_cache = {}
         inst._break_requested = False
         from .graph_detector import GraphCreationDetector
         inst._graph_detector = GraphCreationDetector(inst)
@@ -1934,6 +1936,161 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         """Return True if *code* contains a command that drops all programs."""
         return bool(self._PROGRAM_DROP_RE.search(code))
 
+    _MACRO_INDIRECTION_RE = re.compile(
+        r"`[^'\n]+'|\$[A-Za-z_][A-Za-z0-9_]*",
+        re.IGNORECASE,
+    )
+    _BARE_INDIRECT_LINE_RE = re.compile(
+        r"""
+        (?:^|\n)\s*
+        (?:(?:capture\s+(?:noisily\s+)?)?(?:quietly\s+)?)?
+        (?:`[^'\n]+'|\$[A-Za-z_][A-Za-z0-9_]*)
+        \s*(?:,.*)?(?:$|\n)
+        """,
+        re.VERBOSE | re.IGNORECASE,
+    )
+    _LOCAL_ASSIGN_RE = re.compile(
+        r"""
+        (?:^|\n)\s*
+        local \s+ (?P<name>[A-Za-z_][A-Za-z0-9_]*) \s+
+        (?P<value>.+?) \s* (?:$|\n)
+        """,
+        re.VERBOSE | re.IGNORECASE,
+    )
+    _GLOBAL_ASSIGN_RE = re.compile(
+        r"""
+        (?:^|\n)\s*
+        global \s+ (?P<name>[A-Za-z_][A-Za-z0-9_]*) \s+
+        (?P<value>.+?) \s* (?:$|\n)
+        """,
+        re.VERBOSE | re.IGNORECASE,
+    )
+    _BARE_LOCAL_MACRO_CMD_RE = re.compile(
+        r"""
+        (?:^|\n)\s*
+        (?:(?:capture\s+(?:noisily\s+)?)?(?:quietly\s+)?)?
+        `(?P<name>[A-Za-z_][A-Za-z0-9_]*)'
+        \s*(?:,.*)?(?:$|\n)
+        """,
+        re.VERBOSE | re.IGNORECASE,
+    )
+    _BARE_GLOBAL_MACRO_CMD_RE = re.compile(
+        r"""
+        (?:^|\n)\s*
+        (?:(?:capture\s+(?:noisily\s+)?)?(?:quietly\s+)?)?
+        \$(?P<name>[A-Za-z_][A-Za-z0-9_]*)
+        \s*(?:,.*)?(?:$|\n)
+        """,
+        re.VERBOSE | re.IGNORECASE,
+    )
+    _MACRO_MUTATION_HINT_RE = re.compile(
+        r"""
+        (?:^|\n)\s*
+        (?:
+            global \s+ [A-Za-z_][A-Za-z0-9_]* \b
+          | macro \s+ drop \s+ (?:_all|[A-Za-z_][A-Za-z0-9_]*)
+          | clear \s+ all
+        )
+        """,
+        re.VERBOSE | re.IGNORECASE,
+    )
+
+    def _should_probe_startup_sentinel_after_command(self, code: str) -> bool:
+        """Return True when sentinel probing is worthwhile for *code*.
+
+        We avoid probing on every command. Probe only when code uses macro
+        indirection (where static parsing is unreliable) and either:
+        1) contains clear/program-drop related tokens, or
+        2) is a bare macro invocation line (for example `` `cmd' ``),
+           which could expand to ``clear all`` with no visible literal text.
+        """
+        if not code:
+            return False
+        return bool(self._MACRO_INDIRECTION_RE.search(code) and self._BARE_INDIRECT_LINE_RE.search(code))
+
+    @staticmethod
+    def _normalize_macro_value(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        v = value.strip()
+        if not v:
+            return None
+        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+            v = v[1:-1].strip()
+        return v or None
+
+    def _extract_inline_macro_assignment(
+        self, code_prefix: str, name: str, *, is_global: bool
+    ) -> Optional[str]:
+        if not code_prefix or not name:
+            return None
+        pattern = self._GLOBAL_ASSIGN_RE if is_global else self._LOCAL_ASSIGN_RE
+        value: Optional[str] = None
+        for match in pattern.finditer(code_prefix):
+            if (match.group("name") or "").strip() != name:
+                continue
+            value = match.group("value")
+        return self._normalize_macro_value(value)
+
+    def _probe_global_macro(self, name: str) -> Optional[str]:
+        if not name:
+            return None
+        try:
+            from sfi import Macro  # type: ignore[import-not-found]
+            value = self._normalize_macro_value(Macro.getGlobal(name))
+            if value is None:
+                return None
+            self._global_macro_cache[name] = value
+            return value
+        except Exception:
+            return None
+
+    def _probe_local_macro(self, name: str) -> Optional[str]:
+        if not name:
+            return None
+        try:
+            from sfi import Macro  # type: ignore[import-not-found]
+            return self._normalize_macro_value(Macro.getLocal(name))
+        except Exception:
+            return None
+
+    def _resolve_indirect_macro_command(self, code: str) -> Optional[str]:
+        """Resolve a bare macro-invoked command to concrete text when possible."""
+        if not code:
+            return None
+
+        local_matches = list(self._BARE_LOCAL_MACRO_CMD_RE.finditer(code))
+        global_matches = list(self._BARE_GLOBAL_MACRO_CMD_RE.finditer(code))
+        if len(local_matches) + len(global_matches) != 1:
+            return None
+
+        if local_matches:
+            m = local_matches[0]
+            name = m.group("name")
+            inline_value = self._extract_inline_macro_assignment(
+                code[: m.start()], name, is_global=False
+            )
+            if inline_value is not None:
+                return inline_value
+            return self._probe_local_macro(name)
+
+        m = global_matches[0]
+        name = m.group("name")
+        inline_value = self._extract_inline_macro_assignment(
+            code[: m.start()], name, is_global=True
+        )
+        if inline_value is not None:
+            self._global_macro_cache[name] = inline_value
+            return inline_value
+        cached = self._global_macro_cache.get(name)
+        if cached is not None:
+            return cached
+        return self._probe_global_macro(name)
+
+    def _invalidate_macro_cache_if_needed(self, code: str) -> None:
+        if code and self._MACRO_MUTATION_HINT_RE.search(code):
+            self._global_macro_cache.clear()
+
     _STARTUP_SENTINEL = "_mcp_startup_sentinel"
 
     def _install_startup_sentinel(self) -> None:
@@ -2020,6 +2177,29 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         the sentinel program we planted at startup is still alive.
         """
         if self._reload_startup_on_clear and not self._startup_sentinel_alive():
+            self._reload_startup_do_files()
+
+    def _maybe_reload_startup_after_command(self, code: str) -> None:
+        """Reload startup files when a command likely (or actually) dropped programs.
+
+        First use the fast text detector for obvious commands (`clear all`,
+        `clear programs`, `program drop _all`). If that misses, probe the
+        sentinel only for macro-indirect command shapes where static detection
+        may miss the final executed command text.
+        """
+        if not self._reload_startup_on_clear:
+            return
+        if self._code_drops_programs(code):
+            self._reload_startup_do_files()
+            return
+        if not self._should_probe_startup_sentinel_after_command(code):
+            return
+        resolved = self._resolve_indirect_macro_command(code)
+        if resolved is not None:
+            if self._code_drops_programs(resolved):
+                self._reload_startup_do_files()
+            return
+        if not self._startup_sentinel_alive():
             self._reload_startup_do_files()
 
     def _parse_startup_do_files(self, raw: str) -> tuple[List[str], int]:
@@ -2684,6 +2864,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         self._last_results = None # Invalidate results cache
         
         code = self._maybe_rewrite_graph_name_in_command(code)
+        self._invalidate_macro_cache_if_needed(code)
 
         output_buffer, error_buffer = StringIO(), StringIO()
         rc, sys_error = 0, None
@@ -2760,8 +2941,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     delattr(self, "_hold_name")
 
                 # Re-run startup .do files when programs have been dropped.
-                if self._reload_startup_on_clear and self._code_drops_programs(code):
-                    self._reload_startup_do_files()
+                self._maybe_reload_startup_after_command(code)
 
         # Output extraction
         smcl_content = self._read_persistent_log_chunk(start_off) if use_p else self._read_smcl_file(smcl_path)
@@ -3079,6 +3259,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         self._break_requested = False
 
         code = self._maybe_rewrite_graph_name_in_command(code)
+        self._invalidate_macro_cache_if_needed(code)
         auto_cache_graphs = auto_cache_graphs or emit_graph_ready
         total_lines = 0  # Commands (not do-files) do not have line-based progress
 
@@ -3232,8 +3413,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             tee.close()
 
         # Re-run startup .do files when programs have been dropped.
-        if self._reload_startup_on_clear and self._code_drops_programs(code):
-            self._reload_startup_do_files()
+        self._maybe_reload_startup_after_command(code)
 
         # Read SMCL content as the authoritative source
         if self._break_requested:

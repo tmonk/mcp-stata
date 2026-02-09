@@ -1,5 +1,6 @@
 
 import os
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 from mcp_stata.stata_client import StataClient
@@ -337,6 +338,208 @@ class TestNoReloadOnClear(unittest.TestCase):
         """Without the env var, reload should be enabled."""
         client = StataClient()
         self.assertTrue(client._reload_startup_on_clear)
+
+
+class TestMaybeReloadAfterCommand(unittest.TestCase):
+    def test_reloads_when_pattern_matches(self):
+        client = StataClient()
+        client._reload_startup_on_clear = True
+        client._reload_startup_do_files = MagicMock()
+        client._startup_sentinel_alive = MagicMock(return_value=True)
+
+        client._maybe_reload_startup_after_command("clear all")
+
+        client._reload_startup_do_files.assert_called_once()
+        client._startup_sentinel_alive.assert_not_called()
+
+    def test_reloads_when_sentinel_missing_even_if_pattern_misses(self):
+        client = StataClient()
+        client._reload_startup_on_clear = True
+        client._reload_startup_do_files = MagicMock()
+        client._startup_sentinel_alive = MagicMock(return_value=False)
+        client._probe_local_macro = MagicMock(return_value=None)
+
+        # Macro-expanded/indirect command form that the text regex cannot detect.
+        client._maybe_reload_startup_after_command("local x \"clear all\"\n`x'")
+
+        client._reload_startup_do_files.assert_called_once()
+        client._startup_sentinel_alive.assert_not_called()
+        client._probe_local_macro.assert_not_called()
+
+    def test_no_probe_for_plain_non_macro_command(self):
+        client = StataClient()
+        client._reload_startup_on_clear = True
+        client._reload_startup_do_files = MagicMock()
+        client._startup_sentinel_alive = MagicMock(return_value=False)
+
+        client._maybe_reload_startup_after_command("summarize")
+
+        client._reload_startup_do_files.assert_not_called()
+        client._startup_sentinel_alive.assert_not_called()
+
+    def test_no_probe_for_non_clear_macro_usage(self):
+        client = StataClient()
+        client._reload_startup_on_clear = True
+        client._reload_startup_do_files = MagicMock()
+        client._startup_sentinel_alive = MagicMock(return_value=False)
+
+        client._maybe_reload_startup_after_command("display `x'")
+
+        client._reload_startup_do_files.assert_not_called()
+        client._startup_sentinel_alive.assert_not_called()
+
+    def test_no_probe_for_macro_text_not_at_command_position(self):
+        client = StataClient()
+        client._reload_startup_on_clear = True
+        client._reload_startup_do_files = MagicMock()
+        client._startup_sentinel_alive = MagicMock(return_value=False)
+
+        client._maybe_reload_startup_after_command("if 1 display `x'")
+
+        client._reload_startup_do_files.assert_not_called()
+        client._startup_sentinel_alive.assert_not_called()
+
+    def test_probe_for_bare_macro_invocation(self):
+        client = StataClient()
+        client._reload_startup_on_clear = True
+        client._reload_startup_do_files = MagicMock()
+        client._startup_sentinel_alive = MagicMock(return_value=True)
+        client._resolve_indirect_macro_command = MagicMock(return_value=None)
+
+        client._maybe_reload_startup_after_command("`cmd'")
+
+        client._resolve_indirect_macro_command.assert_called_once()
+        client._startup_sentinel_alive.assert_called_once()
+        client._reload_startup_do_files.assert_not_called()
+
+    def test_resolved_macro_clear_reloads_without_sentinel_probe(self):
+        client = StataClient()
+        client._reload_startup_on_clear = True
+        client._reload_startup_do_files = MagicMock()
+        client._startup_sentinel_alive = MagicMock(return_value=True)
+        client._resolve_indirect_macro_command = MagicMock(return_value="clear all")
+
+        client._maybe_reload_startup_after_command("`cmd'")
+
+        client._reload_startup_do_files.assert_called_once()
+        client._startup_sentinel_alive.assert_not_called()
+
+    def test_resolved_macro_non_clear_skips_sentinel_probe(self):
+        client = StataClient()
+        client._reload_startup_on_clear = True
+        client._reload_startup_do_files = MagicMock()
+        client._startup_sentinel_alive = MagicMock(return_value=False)
+        client._resolve_indirect_macro_command = MagicMock(return_value="summarize")
+
+        client._maybe_reload_startup_after_command("`cmd'")
+
+        client._reload_startup_do_files.assert_not_called()
+        client._startup_sentinel_alive.assert_not_called()
+
+    def test_no_reload_when_disabled(self):
+        client = StataClient()
+        client._reload_startup_on_clear = False
+        client._reload_startup_do_files = MagicMock()
+        client._startup_sentinel_alive = MagicMock(return_value=False)
+
+        client._maybe_reload_startup_after_command("clear all")
+
+        client._reload_startup_do_files.assert_not_called()
+        client._startup_sentinel_alive.assert_not_called()
+
+
+class TestResolveIndirectMacroCommand(unittest.TestCase):
+    def test_resolve_local_macro_from_inline_assignment(self):
+        client = StataClient()
+        client._probe_local_macro = MagicMock(return_value=None)
+
+        resolved = client._resolve_indirect_macro_command("local cmd \"clear all\"\n`cmd'")
+
+        self.assertEqual(resolved, "clear all")
+        client._probe_local_macro.assert_not_called()
+
+    def test_resolve_global_macro_from_inline_assignment(self):
+        client = StataClient()
+        client._probe_global_macro = MagicMock(return_value=None)
+
+        resolved = client._resolve_indirect_macro_command("global cmd clear all\n$cmd")
+
+        self.assertEqual(resolved, "clear all")
+        self.assertEqual(client._global_macro_cache.get("cmd"), "clear all")
+        client._probe_global_macro.assert_not_called()
+
+    def test_resolve_global_macro_uses_cache(self):
+        client = StataClient()
+        client._global_macro_cache["cmd"] = "clear all"
+        client._probe_global_macro = MagicMock(return_value=None)
+
+        resolved = client._resolve_indirect_macro_command("$cmd")
+
+        self.assertEqual(resolved, "clear all")
+        client._probe_global_macro.assert_not_called()
+
+    def test_resolve_global_macro_probes_when_missing(self):
+        client = StataClient()
+        client._probe_global_macro = MagicMock(return_value="clear programs")
+
+        resolved = client._resolve_indirect_macro_command("$cmd")
+
+        self.assertEqual(resolved, "clear programs")
+        client._probe_global_macro.assert_called_once_with("cmd")
+
+    def test_resolve_local_macro_probes_local_scope(self):
+        client = StataClient()
+        client._probe_local_macro = MagicMock(return_value="program drop _all")
+
+        resolved = client._resolve_indirect_macro_command("`cmd'")
+
+        self.assertEqual(resolved, "program drop _all")
+        client._probe_local_macro.assert_called_once_with("cmd")
+
+    def test_resolve_returns_none_for_non_bare_macro_lines(self):
+        client = StataClient()
+        client._probe_local_macro = MagicMock(return_value="clear all")
+
+        resolved = client._resolve_indirect_macro_command("display `cmd'")
+
+        self.assertIsNone(resolved)
+        client._probe_local_macro.assert_not_called()
+
+
+class TestMacroProbeCost(unittest.TestCase):
+    @patch("mcp_stata.stata_client.sys.modules", new_callable=dict)
+    def test_probe_global_uses_sfi_without_stata_run(self, mock_modules):
+        class FakeMacro:
+            @staticmethod
+            def getGlobal(name):
+                return "clear all" if name == "cmd" else ""
+
+        mock_modules["sfi"] = types.SimpleNamespace(Macro=FakeMacro)
+
+        client = StataClient()
+        client.stata = MagicMock()
+
+        resolved = client._probe_global_macro("cmd")
+
+        self.assertEqual(resolved, "clear all")
+        client.stata.run.assert_not_called()
+
+    @patch("mcp_stata.stata_client.sys.modules", new_callable=dict)
+    def test_probe_local_uses_sfi_without_stata_run(self, mock_modules):
+        class FakeMacro:
+            @staticmethod
+            def getLocal(name):
+                return "program drop _all" if name == "cmd" else ""
+
+        mock_modules["sfi"] = types.SimpleNamespace(Macro=FakeMacro)
+
+        client = StataClient()
+        client.stata = MagicMock()
+
+        resolved = client._probe_local_macro("cmd")
+
+        self.assertEqual(resolved, "program drop _all")
+        client.stata.run.assert_not_called()
 
 
 if __name__ == '__main__':
