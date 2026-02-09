@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v1.25.0 (2026-02-09)
+
+### Bug Fixes
+
+- Tests for startup file handling and session management without reload
+  ([`6186120`](https://github.com/tmonk/mcp-stata/commit/61861201f5e723f02773c20b97907ba44a281e97))
+
+### Features
+
+- Add noReloadOnClear setting to control reloading of startup/profile do files
+  ([`d286d3f`](https://github.com/tmonk/mcp-stata/commit/d286d3ffaec4440c54cd3f2f29b530beba85c1e8))
+
+
 ## v1.24.0 (2026-02-09)
 
 ### Bug Fixes
