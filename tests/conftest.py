@@ -151,7 +151,26 @@ def mock_stata_modules():
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip Stata-required tests when running in forced mock mode."""
+    """Auto-mark Stata-backed fixture users and skip them in forced mock mode."""
+    # Auto-mark tests that use the Stata-backed shared fixtures.
+    for item in items:
+        needs_stata = False
+        fixturenames = set(getattr(item, "fixturenames", ()) or ())
+        if "stata_client" in fixturenames:
+            needs_stata = True
+        elif "client" in fixturenames:
+            fixtureinfo = getattr(item, "_fixtureinfo", None)
+            name2defs = getattr(fixtureinfo, "name2fixturedefs", {}) if fixtureinfo else {}
+            defs = name2defs.get("client", []) or []
+            if defs:
+                chosen = defs[-1]
+                func = getattr(chosen, "func", None)
+                module = getattr(func, "__module__", "") if func else ""
+                if module.endswith("conftest"):
+                    needs_stata = True
+        if needs_stata and "requires_stata" not in item.keywords:
+            item.add_marker(pytest.mark.requires_stata)
+
     force_mock = os.environ.get("MCP_STATA_MOCK") == "1"
     if force_mock:
         try:
