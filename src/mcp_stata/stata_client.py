@@ -1730,6 +1730,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 stata.run(f"capture log close {self._persistent_log_name}", echo=False)
                 stata.run(f'log using "{path_for_stata}", replace smcl name({self._persistent_log_name})', echo=False)
                 
+                # Load startup do file if configured via environment variable
+                self._load_startup_do_file()
+
                 sys.stderr.write("[mcp_stata] DEBUG: pystata warmed up successfully\n")
                 sys.stderr.flush()
             except BaseException as e:
@@ -1759,6 +1762,18 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             )
             logger.error(msg)
             raise RuntimeError(msg) from e
+
+    def _load_startup_do_file(self):
+        """Loads a startup .do file if MCP_STATA_STARTUP_DO_FILE is set."""
+        startup_do_file = os.getenv("MCP_STATA_STARTUP_DO_FILE")
+        if startup_do_file and os.path.exists(startup_do_file):
+            logger.info("Loading startup do file from %s", startup_do_file)
+            try:
+                # Run with noisily to ensure any output appears in the initial session log
+                # use compound double quotes for path safety
+                self.stata.run(f'noisily do {self._stata_quote(startup_do_file)}', echo=False)
+            except Exception as e:
+                logger.error("Failed to load startup do file %s: %s", startup_do_file, e)
 
     def _make_valid_stata_name(self, name: str) -> str:
         """Create a valid Stata name (<=32 chars, [A-Za-z_][A-Za-z0-9_]*)."""
