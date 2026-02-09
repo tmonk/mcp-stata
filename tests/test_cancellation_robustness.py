@@ -60,7 +60,7 @@ async def test_break_session_tool_logic():
         print(f"Interruption took {duration:.2f}s")
         
         # Interruption should be fast (allow more headroom under parallel execution)
-        assert duration < 10.0
+        assert duration < 15.0
         
         # Session should be ready for next command
         res = await session.call("run_command", {"code": "display 123", "options": {"echo": False}})

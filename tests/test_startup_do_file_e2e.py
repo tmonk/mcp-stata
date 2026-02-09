@@ -251,6 +251,61 @@ async def test_clear_programs_restores_startup_programs_e2e():
             del os.environ["MCP_STATA_STARTUP_DO_FILE"]
 
 
+@pytest.mark.requires_stata
+@pytest.mark.asyncio
+async def test_clear_all_does_not_restore_when_no_reload_e2e():
+    """Program is NOT restored after ``clear all`` when reload is disabled."""
+    with tempfile.NamedTemporaryFile(suffix=".do", mode="w", delete=False) as tf:
+        tf.write(
+            "capture program drop _test_no_reload\n"
+            "program define _test_no_reload\n"
+            "    display \"noreload_ok\"\n"
+            "end\n"
+        )
+        startup_file_path = tf.name
+
+    os.environ["MCP_STATA_STARTUP_DO_FILE"] = startup_file_path
+    os.environ["MCP_STATA_NO_RELOAD_ON_CLEAR"] = "1"
+
+    manager = SessionManager()
+    try:
+        await manager.start()
+        session = manager.get_session("default")
+
+        res1 = await session.call(
+            "run_command",
+            {"code": "_test_no_reload", "options": {"echo": False}},
+        )
+        assert "noreload_ok" in res1.get("smcl_output", ""), (
+            f"Program not loaded at startup: {res1}"
+        )
+
+        await session.call(
+            "run_command",
+            {"code": "clear all", "options": {"echo": False}},
+        )
+
+        res2 = await session.call(
+            "run_command",
+            {"code": "_test_no_reload", "options": {"echo": False}},
+        )
+        rc = res2.get("rc")
+        if rc is not None:
+            assert rc != 0, f"Program unexpectedly restored (rc={rc}): {res2}"
+        else:
+            assert "not found" in res2.get("smcl_output", "").lower(), (
+                f"Program unexpectedly restored: {res2}"
+            )
+    finally:
+        await manager.stop_all()
+        if os.path.exists(startup_file_path):
+            os.unlink(startup_file_path)
+        if "MCP_STATA_STARTUP_DO_FILE" in os.environ:
+            del os.environ["MCP_STATA_STARTUP_DO_FILE"]
+        if "MCP_STATA_NO_RELOAD_ON_CLEAR" in os.environ:
+            del os.environ["MCP_STATA_NO_RELOAD_ON_CLEAR"]
+
+
 @pytest.mark.skipif(os.getenv("STATA_BIN") is None and shutil.which("stata") is None, reason="Stata not found")
 @pytest.mark.requires_stata
 @pytest.mark.asyncio

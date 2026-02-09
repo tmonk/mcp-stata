@@ -1,5 +1,6 @@
 
 import os
+import sys
 import types
 import unittest
 from unittest.mock import MagicMock, patch
@@ -297,6 +298,29 @@ class TestNoReloadOnClear(unittest.TestCase):
     """Tests for MCP_STATA_NO_RELOAD_ON_CLEAR env var."""
 
     @patch('mcp_stata.stata_client.os.getenv')
+    def test_flag_false_when_env_set(self, mock_getenv):
+        def getenv_side_effect(key, default=None):
+            if key == "MCP_STATA_NO_RELOAD_ON_CLEAR":
+                return "1"
+            return default
+
+        mock_getenv.side_effect = getenv_side_effect
+
+        client = StataClient()
+        self.assertFalse(client._reload_startup_on_clear)
+
+    @patch('mcp_stata.stata_client.os.getenv')
+    def test_flag_false_when_env_true_or_yes(self, mock_getenv):
+        def getenv_side_effect(key, default=None):
+            if key == "MCP_STATA_NO_RELOAD_ON_CLEAR":
+                return "true"
+            return default
+
+        mock_getenv.side_effect = getenv_side_effect
+        client = StataClient()
+        self.assertFalse(client._reload_startup_on_clear)
+
+    @patch('mcp_stata.stata_client.os.getenv')
     def test_reload_skipped_when_env_set(self, mock_getenv):
         """clear all should NOT reload when MCP_STATA_NO_RELOAD_ON_CLEAR=1."""
         mock_getenv.return_value = None
@@ -320,7 +344,12 @@ class TestNoReloadOnClear(unittest.TestCase):
     @patch('mcp_stata.stata_client.os.getenv')
     def test_sentinel_not_installed_when_env_set(self, mock_getenv):
         """Sentinel should NOT be installed when reload is disabled."""
-        mock_getenv.return_value = None
+        def getenv_side_effect(key, default=None):
+            if key == "MCP_STATA_NO_RELOAD_ON_CLEAR":
+                return "1"
+            return default
+
+        mock_getenv.side_effect = getenv_side_effect
 
         mock_stata = MagicMock()
         client = StataClient()
@@ -332,6 +361,34 @@ class TestNoReloadOnClear(unittest.TestCase):
 
         calls = [call[0][0] for call in mock_stata.run.call_args_list]
         sentinel_calls = [c for c in calls if '_mcp_startup_sentinel' in c]
+        self.assertEqual(sentinel_calls, [])
+
+    @patch('mcp_stata.stata_client.os.path.exists')
+    @patch('mcp_stata.stata_client.os.getenv')
+    def test_user_startup_file_loads_but_no_reload_when_disabled(self, mock_getenv, mock_exists):
+        startup_path = "/tmp/startup_test.do"
+
+        def getenv_side_effect(key, default=None):
+            if key == "MCP_STATA_NO_RELOAD_ON_CLEAR":
+                return "1"
+            if key == "MCP_STATA_STARTUP_DO_FILE":
+                return startup_path
+            return default
+
+        mock_getenv.side_effect = getenv_side_effect
+        mock_exists.return_value = True
+
+        mock_stata = MagicMock()
+        client = StataClient()
+        client.stata = mock_stata
+        client._profile_do_checked = True
+
+        client._load_startup_do_file()
+
+        calls = [call[0][0] for call in mock_stata.run.call_args_list]
+        do_calls = [c for c in calls if 'capture noisily do' in c]
+        sentinel_calls = [c for c in calls if '_mcp_startup_sentinel' in c]
+        self.assertEqual(len(do_calls), 1)
         self.assertEqual(sentinel_calls, [])
 
     def test_flag_defaults_to_true(self):
@@ -507,14 +564,14 @@ class TestResolveIndirectMacroCommand(unittest.TestCase):
 
 
 class TestMacroProbeCost(unittest.TestCase):
-    @patch("mcp_stata.stata_client.sys.modules", new_callable=dict)
-    def test_probe_global_uses_sfi_without_stata_run(self, mock_modules):
+    @patch.dict("mcp_stata.stata_client.sys.modules", {}, clear=False)
+    def test_probe_global_uses_sfi_without_stata_run(self):
         class FakeMacro:
             @staticmethod
             def getGlobal(name):
                 return "clear all" if name == "cmd" else ""
 
-        mock_modules["sfi"] = types.SimpleNamespace(Macro=FakeMacro)
+        sys.modules["sfi"] = types.SimpleNamespace(Macro=FakeMacro)
 
         client = StataClient()
         client.stata = MagicMock()
@@ -524,14 +581,14 @@ class TestMacroProbeCost(unittest.TestCase):
         self.assertEqual(resolved, "clear all")
         client.stata.run.assert_not_called()
 
-    @patch("mcp_stata.stata_client.sys.modules", new_callable=dict)
-    def test_probe_local_uses_sfi_without_stata_run(self, mock_modules):
+    @patch.dict("mcp_stata.stata_client.sys.modules", {}, clear=False)
+    def test_probe_local_uses_sfi_without_stata_run(self):
         class FakeMacro:
             @staticmethod
             def getLocal(name):
                 return "program drop _all" if name == "cmd" else ""
 
-        mock_modules["sfi"] = types.SimpleNamespace(Macro=FakeMacro)
+        sys.modules["sfi"] = types.SimpleNamespace(Macro=FakeMacro)
 
         client = StataClient()
         client.stata = MagicMock()
