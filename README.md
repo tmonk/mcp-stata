@@ -62,13 +62,26 @@ The server will automatically try the following locations in order of preference
 3. `~/.mcp-stata/temp`
 4. Current working directory subdirectory (`.tmp/`)
 
+### Startup Do Files
+
+When a session starts, MCP-Stata loads startup do files in the same order as native Stata:
+
+1. **`MCP_STATA_STARTUP_DO_FILE`** (env var) — one or more custom do files, separated by `:` (Unix) or `;` (Windows).
+2. **`sysprofile.do`** — the first one found along the Stata search path.
+3. **`profile.do`** — the first one found along the Stata search path.
+
+The search path mirrors native Stata: Stata install directory, current working directory, then the ado-path (PERSONAL, SITE, PLUS, OLDPLACE, ...). Only the first `sysprofile.do` and first `profile.do` found are executed, matching native Stata behavior. All paths are deduplicated so the same file is never run twice.
+
+If a command clears programs (`clear all`, `clear programs`, or `program drop _all`), MCP-Stata automatically re-executes the startup files so that any programs they defined remain available. This goes beyond native Stata, which does not re-run `profile.do` after `clear all`.
+
 If you prefer, add these variables to your MCP config's `env` for any IDE shown below. It's optional and only needed when discovery cannot find Stata.
 
 Optional `env` example (add inside your MCP server entry):
 
 ```json
 "env": {
-  "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp"
+  "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp",
+  "MCP_STATA_STARTUP_DO_FILE": "/path/to/my/startup.do"
 }
 ```
 

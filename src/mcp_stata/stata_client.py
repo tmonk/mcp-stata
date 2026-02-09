@@ -176,6 +176,7 @@ class StataClient:
         self._graph_name_aliases: Dict[str, str] = {}
         self._graph_name_reverse: Dict[str, str] = {}
         self._profile_do_checked = False
+        self._sysprofile_do_path: Optional[str] = None
         self._profile_do_path: Optional[str] = None
         self._profile_do_dirs: List[str] = []
         self._break_requested = False
@@ -199,6 +200,7 @@ class StataClient:
         inst._graph_name_aliases = {}
         inst._graph_name_reverse = {}
         inst._profile_do_checked = False
+        inst._sysprofile_do_path = None
         inst._profile_do_path = None
         inst._profile_do_dirs = []
         inst._break_requested = False
@@ -1829,7 +1831,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             raise RuntimeError(msg) from e
 
     def _load_startup_do_file(self) -> None:
-        """Load a configured startup .do file or fallback to profile.do."""
+        """Load startup .do files matching native Stata behavior.
+
+        Execution order:
+        1. ``MCP_STATA_STARTUP_DO_FILE`` entries (env var, may list several).
+        2. First ``sysprofile.do`` found along the Stata search path.
+        3. First ``profile.do`` found along the Stata search path.
+
+        All paths are deduplicated so the same file is never executed twice.
+        """
         loaded_paths: set[str] = set()
 
         startup_do_file = os.getenv("MCP_STATA_STARTUP_DO_FILE")
@@ -1861,24 +1871,132 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     )
                 except Exception as e:
                     logger.error("Failed to load startup do file %s: %s", path, e)
-        # Do not return; we still want to load profile.do if present and not already loaded.
+        # Do not return; we still want to load sysprofile.do/profile.do if present.
 
         self._prime_profile_do_cache()
-        if not self._profile_do_path:
-            return
-        try:
+
+        # sysprofile.do — Stata executes sysprofile.do before profile.do.
+        if self._sysprofile_do_path:
+            normalized_sys = self._normalize_startup_path(self._sysprofile_do_path)
+            if normalized_sys in loaded_paths:
+                logger.info("Skipping duplicate sysprofile.do from %s", self._sysprofile_do_path)
+            else:
+                loaded_paths.add(normalized_sys)
+                logger.info("Loading sysprofile.do from %s", self._sysprofile_do_path)
+                try:
+                    self.stata.run(
+                        f'capture noisily do {self._stata_quote(self._sysprofile_do_path)}',
+                        echo=False,
+                    )
+                except Exception as e:
+                    logger.error("Failed to load sysprofile.do from %s: %s", self._sysprofile_do_path, e)
+
+        # profile.do — only the first one found (native Stata behavior).
+        if self._profile_do_path:
             normalized_profile = self._normalize_startup_path(self._profile_do_path)
             if normalized_profile in loaded_paths:
                 logger.info("Skipping duplicate profile.do from %s", self._profile_do_path)
-                return
-            loaded_paths.add(normalized_profile)
-            logger.info("Loading profile.do from %s", self._profile_do_path)
+            else:
+                loaded_paths.add(normalized_profile)
+                logger.info("Loading profile.do from %s", self._profile_do_path)
+                try:
+                    self.stata.run(
+                        f'capture noisily do {self._stata_quote(self._profile_do_path)}',
+                        echo=False,
+                    )
+                except Exception as e:
+                    logger.error("Failed to load profile.do from %s: %s", self._profile_do_path, e)
+
+        self._install_startup_sentinel()
+
+    # Patterns that drop user programs — require startup re-execution.
+    _PROGRAM_DROP_RE = re.compile(
+        r"""
+        (?:^|\n) \s*                        # line start
+        (?:capture\s+(?:noisily\s+)?)?      # optional capture/capture noisily
+        (?:
+            clear \s+ (?:all|programs)       # clear all | clear programs
+          | program \s+ drop \s+ _all        # program drop _all
+        )
+        \s* (?:[,\s]|$|\n)                  # end of command
+        """,
+        re.VERBOSE | re.IGNORECASE,
+    )
+
+    def _code_drops_programs(self, code: str) -> bool:
+        """Return True if *code* contains a command that drops all programs."""
+        return bool(self._PROGRAM_DROP_RE.search(code))
+
+    _STARTUP_SENTINEL = "_mcp_startup_sentinel"
+
+    def _install_startup_sentinel(self) -> None:
+        """Define a tiny hidden program used to detect ``clear all``.
+
+        Preserves ``c(rc)`` so that the user's error state is not disturbed.
+        """
+        try:
             self.stata.run(
-                f'capture noisily do {self._stata_quote(self._profile_do_path)}',
+                f"local _mcp_saved_rc = c(rc)\n"
+                f"capture program drop {self._STARTUP_SENTINEL}\n"
+                f"program define {self._STARTUP_SENTINEL}\n"
+                f"end\n"
+                f"capture error `_mcp_saved_rc'",
                 echo=False,
             )
-        except Exception as e:
-            logger.error("Failed to load profile.do from %s: %s", self._profile_do_path, e)
+        except Exception:
+            pass
+
+    def _startup_sentinel_alive(self) -> bool:
+        """Return True if the startup sentinel program still exists.
+
+        Preserves ``c(rc)`` so that the user's error state is not disturbed.
+        """
+        try:
+            # Save the current c(rc), check the sentinel, then restore it.
+            self.stata.run(
+                f"local _mcp_saved_rc = c(rc)\n"
+                f"capture program list {self._STARTUP_SENTINEL}\n"
+                f"local _mcp_sentinel_rc = c(rc)\n"
+                f"capture error `_mcp_saved_rc'",
+                echo=False,
+            )
+            from sfi import Macro  # type: ignore[import-not-found]
+            sentinel_rc = Macro.getLocal("_mcp_sentinel_rc") or "0"
+            return sentinel_rc.strip() == "0"
+        except Exception:
+            return True  # assume alive on error to avoid false reloads
+
+    def _reload_startup_do_files(self) -> None:
+        """Re-execute startup .do files after a program-clearing command.
+
+        When a user runs ``clear all``, ``clear programs``, or
+        ``program drop _all``, any programs defined by profile.do or the
+        startup .do file are lost.  Native Stata GUI does *not* restore
+        them, but MCP-Stata goes a step further: we silently re-run the
+        same startup files so that the session stays usable.
+
+        Preserves ``c(rc)`` so that the user's error state is not disturbed.
+        """
+        logger.info("Re-loading startup do files after program-clearing command")
+        try:
+            self.stata.run("local _mcp_saved_rc = c(rc)", echo=False)
+        except Exception:
+            pass
+        self._load_startup_do_file()
+        self._install_startup_sentinel()
+        try:
+            self.stata.run("capture error `_mcp_saved_rc'", echo=False)
+        except Exception:
+            pass
+
+    def _maybe_reload_startup_after_do_file(self) -> None:
+        """Reload startup files if a do-file cleared programs.
+
+        We cannot parse arbitrary do-file content, so we check whether
+        the sentinel program we planted at startup is still alive.
+        """
+        if not self._startup_sentinel_alive():
+            self._reload_startup_do_files()
 
     def _parse_startup_do_files(self, raw: str) -> tuple[List[str], int]:
         """Parse and deduplicate startup .do file paths from env var."""
@@ -1946,7 +2064,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 sys.modules.pop(name, None)
 
     def _prime_profile_do_cache(self) -> None:
-        """Cache profile.do resolution to avoid repeated Stata calls."""
+        """Cache sysprofile.do and profile.do resolution.
+
+        Native Stata searches for each file in this order and executes only
+        the **first** one found:
+
+        1. Stata installation directory (``c(sysdir_stata)``)
+        2. Current working directory
+        3. Along the ado-path (PERSONAL, SITE, PLUS, OLDPLACE, ...)
+        """
         if self._profile_do_checked:
             return
         self._profile_do_checked = True
@@ -1957,17 +2083,34 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             return
 
         self._profile_do_dirs = dirs
-        for adopath in dirs:
-            profile_path = os.path.join(adopath, "profile.do")
+
+        # Search for sysprofile.do — first match wins.
+        for d in dirs:
+            sysprofile_path = os.path.join(d, "sysprofile.do")
+            if os.path.exists(sysprofile_path):
+                self._sysprofile_do_path = sysprofile_path
+                break
+
+        # Search for profile.do — first match wins.
+        for d in dirs:
+            profile_path = os.path.join(d, "profile.do")
             if os.path.exists(profile_path):
                 self._profile_do_path = profile_path
                 break
 
     def _collect_profile_do_dirs(self) -> List[str]:
-        """Collect Stata profile search directories in preferred order."""
+        """Collect Stata profile search directories in native search order.
+
+        Native Stata looks for ``sysprofile.do`` / ``profile.do`` in:
+
+        1. Stata installation directory (``c(sysdir_stata)``)
+        2. Current working directory
+        3. Along the ado-path (PERSONAL, SITE, PLUS, OLDPLACE, ...)
+        """
         from sfi import Macro  # type: ignore[import-not-found]
 
         macro_names = [
+            "mcp_sysdir_stata",
             "mcp_sysdir_personal",
             "mcp_sysdir_site",
             "mcp_sysdir_plus",
@@ -1976,6 +2119,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         ]
 
         stata_code = (
+            "macro define mcp_sysdir_stata `\"`c(sysdir_stata)'\"'\n"
             "macro define mcp_sysdir_personal `\"`c(sysdir_personal)'\"'\n"
             "macro define mcp_sysdir_site `\"`c(sysdir_site)'\"'\n"
             "macro define mcp_sysdir_plus `\"`c(sysdir_plus)'\"'\n"
@@ -1987,6 +2131,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         try:
             self.stata.run(stata_code, echo=False)
+            stata_dir = (Macro.getGlobal("mcp_sysdir_stata") or "").strip()
             personal = (Macro.getGlobal("mcp_sysdir_personal") or "").strip()
             site = (Macro.getGlobal("mcp_sysdir_site") or "").strip()
             plus = (Macro.getGlobal("mcp_sysdir_plus") or "").strip()
@@ -2012,7 +2157,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             if value not in dirs:
                 dirs.append(value)
 
-        # Match Stata default order first, then extend to the full adopath.
+        # Match native Stata search order for sysprofile.do / profile.do.
+        add_dir(stata_dir)       # 1. Stata installation directory
+        add_dir(os.getcwd())     # 2. Current working directory
         add_dir(personal)
         add_dir(site)
         add_dir(plus)
@@ -2586,6 +2733,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     except Exception: pass
                     delattr(self, "_hold_name")
 
+                # Re-run startup .do files when programs have been dropped.
+                if self._code_drops_programs(code):
+                    self._reload_startup_do_files()
+
         # Output extraction
         smcl_content = self._read_persistent_log_chunk(start_off) if use_p else self._read_smcl_file(smcl_path)
         if use_p and not smcl_content:
@@ -3054,13 +3205,17 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         finally:
             tee.close()
 
+        # Re-run startup .do files when programs have been dropped.
+        if self._code_drops_programs(code):
+            self._reload_startup_do_files()
+
         # Read SMCL content as the authoritative source
         if self._break_requested:
             smcl_content = tail.get_value()
         else:
             smcl_content = self._read_smcl_file(smcl_path, start_offset=start_offset)
-        # Clean internal maintenance immediately 
-        smcl_content = self._clean_internal_smcl(smcl_content, strip_output=False) 
+        # Clean internal maintenance immediately
+        smcl_content = self._clean_internal_smcl(smcl_content, strip_output=False)
 
 
         graph_ready_emitted = 0
@@ -3413,13 +3568,19 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         finally:
             tee.close()
 
+        # For do-files we cannot reliably parse the file content for
+        # program-clearing commands, so we use a lightweight check: see
+        # whether a sentinel program we previously loaded still exists.
+        # If the startup files defined no programs this is a no-op.
+        self._maybe_reload_startup_after_do_file()
+
         # Read SMCL content as the authoritative source
         if self._break_requested:
             smcl_content = tail.get_value()
         else:
             smcl_content = self._read_smcl_file(smcl_path, start_offset=start_offset)
-        # Clean internal maintenance immediately 
-        smcl_content = self._clean_internal_smcl(smcl_content, strip_output=False) 
+        # Clean internal maintenance immediately
+        smcl_content = self._clean_internal_smcl(smcl_content, strip_output=False)
 
 
         graph_ready_emitted = 0
