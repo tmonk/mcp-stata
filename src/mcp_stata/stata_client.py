@@ -175,6 +175,10 @@ class StataClient:
         self._list_graphs_cache_lock = threading.Lock()
         self._graph_name_aliases: Dict[str, str] = {}
         self._graph_name_reverse: Dict[str, str] = {}
+        self._profile_do_checked = False
+        self._profile_do_path: Optional[str] = None
+        self._profile_do_dirs: List[str] = []
+        self._break_requested = False
         from .graph_detector import GraphCreationDetector
         self._graph_detector = GraphCreationDetector(self)
 
@@ -194,6 +198,10 @@ class StataClient:
         inst._list_graphs_cache_lock = threading.Lock()
         inst._graph_name_aliases = {}
         inst._graph_name_reverse = {}
+        inst._profile_do_checked = False
+        inst._profile_do_path = None
+        inst._profile_do_dirs = []
+        inst._break_requested = False
         from .graph_detector import GraphCreationDetector
         inst._graph_detector = GraphCreationDetector(inst)
         return inst
@@ -1414,14 +1422,54 @@ class StataClient:
             break_fn = getattr(sfi, "breakIn", None) or getattr(sfi, "break_in", None)
             if callable(break_fn):
                 try:
-                    break_fn()
+                    self._break_requested = True
+                    for _ in range(3):
+                        break_fn()
+                        time.sleep(0.05)
                     logger.info("Sent breakIn() to Stata for cancellation")
+                    self._poll_break_ack(timeout=3.0)
                 except Exception as e:  # pragma: no cover - best-effort
                     logger.warning(f"Failed to send breakIn() to Stata: {e}")
             else:  # pragma: no cover - environment without Stata runtime
                 logger.debug("sfi.breakIn not available; cannot interrupt Stata")
         except Exception as e:  # pragma: no cover - import failure or other
             logger.debug(f"Unable to import sfi for cancellation: {e}")
+
+    def _request_break_in_fast(self) -> None:
+        """Send a lightweight break signal without polling."""
+        try:
+            import sfi  # type: ignore[import-not-found]
+
+            break_fn = getattr(sfi, "breakIn", None) or getattr(sfi, "break_in", None)
+            if callable(break_fn):
+                self._break_requested = True
+                break_fn()
+        except Exception:
+            return
+
+    def _poll_break_ack(self, timeout: float = 1.0) -> None:
+        """Best-effort polling to help Stata surface a break quickly."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        try:
+            import sfi  # type: ignore[import-not-found]
+
+            toolkit = getattr(sfi, "SFIToolkit", None)
+            poll = getattr(toolkit, "pollnow", None) or getattr(toolkit, "pollstd", None)
+            BreakError = getattr(sfi, "BreakError", None)
+        except Exception:  # pragma: no cover
+            return
+
+        if not callable(poll):
+            return
+
+        while time.monotonic() < deadline:
+            try:
+                poll()
+            except Exception as e:  # pragma: no cover - depends on Stata runtime
+                if BreakError is not None and isinstance(e, BreakError):
+                    logger.info("BreakError detected during break poll")
+                    return
+            time.sleep(0.05)
 
     async def _wait_for_stata_stop(self, timeout: float = 2.0) -> bool:
         """
@@ -1647,10 +1695,16 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
                         # Manually prioritize local utilities folder to avoid shadowing by PyPI 'pystata' trap.
                         # We do this BEFORE stata_setup.config because it may attempt to import pystata.
+                        # Always ensure utilities is at position 0, even if it's already elsewhere in
+                        # sys.path — a third-party trap module could have been prepended ahead of it.
                         utils_path = os.path.join(path, "utilities")
-                        if os.path.isdir(utils_path) and utils_path not in sys.path:
+                        if os.path.isdir(utils_path):
+                            if utils_path in sys.path:
+                                sys.path.remove(utils_path)
                             sys.stderr.write(f"[mcp_stata] DEBUG: Pre-emptively inserting {utils_path} at head of sys.path\n")
                             sys.path.insert(0, utils_path)
+
+                        self._purge_pystata_modules(allowed_paths=[utils_path])
 
                         msg = f"[mcp_stata] DEBUG: In-process stata_setup.config('{path}', '{edition}')\n"
                         sys.stderr.write(msg)
@@ -1703,11 +1757,22 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     # stata_setup.config() appends to the end of sys.path, which is insufficient
                     # if the user has accidentally installed the third-party 'pystata' package from PyPI.
                     utils_path = os.path.join(path, "utilities")
-                    if os.path.isdir(utils_path) and utils_path not in sys.path:
+                    if os.path.isdir(utils_path):
+                        if utils_path in sys.path:
+                            sys.path.remove(utils_path)
                         sys.stderr.write(f"[mcp_stata] DEBUG: Inserting {utils_path} at head of sys.path\n")
                         sys.path.insert(0, utils_path)
 
-                    from pystata import stata  # type: ignore[import-not-found]
+                    stata = getattr(self, "stata", None)
+                    if stata is None:
+                        pystata_mod = sys.modules.get("pystata")
+                        if pystata_mod is not None:
+                            stata = getattr(pystata_mod, "stata", None)
+                        else:
+                            stata = None
+
+                    if stata is None:
+                        from pystata import stata  # type: ignore[import-not-found]
                     try:
                         # Disable PyStata streamout to avoid stdout corruption and SystemError
                         from pystata import config as pystata_config  # type: ignore[import-not-found]
@@ -1763,17 +1828,199 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             logger.error(msg)
             raise RuntimeError(msg) from e
 
-    def _load_startup_do_file(self):
-        """Loads a startup .do file if MCP_STATA_STARTUP_DO_FILE is set."""
+    def _load_startup_do_file(self) -> None:
+        """Load a configured startup .do file or fallback to profile.do."""
+        loaded_paths: set[str] = set()
+
         startup_do_file = os.getenv("MCP_STATA_STARTUP_DO_FILE")
-        if startup_do_file and os.path.exists(startup_do_file):
-            logger.info("Loading startup do file from %s", startup_do_file)
-            try:
-                # Run with noisily to ensure any output appears in the initial session log
-                # use compound double quotes for path safety
-                self.stata.run(f'noisily do {self._stata_quote(startup_do_file)}', echo=False)
-            except Exception as e:
-                logger.error("Failed to load startup do file %s: %s", startup_do_file, e)
+        if startup_do_file:
+            startup_files, duplicate_count = self._parse_startup_do_files(startup_do_file)
+            if duplicate_count:
+                logger.info("Deduplicated %d startup do file path(s)", duplicate_count)
+
+            existing_files = [p for p in startup_files if os.path.exists(p)]
+            if not existing_files:
+                logger.warning(
+                    "Startup do file(s) not found (MCP_STATA_STARTUP_DO_FILE): %s",
+                    ", ".join(startup_files) if startup_files else "<empty>",
+                )
+                existing_files = []
+
+            for path in existing_files:
+                normalized = self._normalize_startup_path(path)
+                if normalized in loaded_paths:
+                    logger.info("Skipping duplicate startup do file %s", path)
+                    continue
+                loaded_paths.add(normalized)
+                logger.info("Loading startup do file from %s", path)
+                try:
+                    # Run with noisily so output lands in the session log.
+                    self.stata.run(
+                        f'capture noisily do {self._stata_quote(path)}',
+                        echo=False,
+                    )
+                except Exception as e:
+                    logger.error("Failed to load startup do file %s: %s", path, e)
+        # Do not return; we still want to load profile.do if present and not already loaded.
+
+        self._prime_profile_do_cache()
+        if not self._profile_do_path:
+            return
+        try:
+            normalized_profile = self._normalize_startup_path(self._profile_do_path)
+            if normalized_profile in loaded_paths:
+                logger.info("Skipping duplicate profile.do from %s", self._profile_do_path)
+                return
+            loaded_paths.add(normalized_profile)
+            logger.info("Loading profile.do from %s", self._profile_do_path)
+            self.stata.run(
+                f'capture noisily do {self._stata_quote(self._profile_do_path)}',
+                echo=False,
+            )
+        except Exception as e:
+            logger.error("Failed to load profile.do from %s: %s", self._profile_do_path, e)
+
+    def _parse_startup_do_files(self, raw: str) -> tuple[List[str], int]:
+        """Parse and deduplicate startup .do file paths from env var."""
+        if not raw:
+            return [], 0
+
+        cleaned = raw.strip()
+        if not cleaned:
+            return [], 0
+
+        normalized = cleaned
+        separators = [os.pathsep, "\n"]
+        if os.pathsep != ";":
+            separators.append(";")
+        for sep in separators:
+            normalized = normalized.replace(sep, "\n")
+
+        parts = [p.strip() for p in normalized.split("\n") if p.strip()]
+        paths = []
+        seen = set()
+        duplicate_count = 0
+        for part in parts:
+            if (part.startswith("\"") and part.endswith("\"")) or (
+                part.startswith("'") and part.endswith("'")
+            ):
+                part = part[1:-1].strip()
+            expanded = os.path.expandvars(os.path.expanduser(part))
+            normalized_path = os.path.normpath(expanded)
+            if normalized_path in seen:
+                duplicate_count += 1
+                continue
+            seen.add(normalized_path)
+            paths.append(normalized_path)
+
+        return paths, duplicate_count
+
+    @staticmethod
+    def _normalize_startup_path(path: str) -> str:
+        normalized = os.path.normpath(os.path.expandvars(os.path.expanduser(path)))
+        try:
+            normalized = os.path.realpath(normalized)
+        except Exception:
+            pass
+        if os.name == "nt":
+            return normalized.lower()
+        return normalized
+
+    def _purge_pystata_modules(self, *, allowed_paths: Optional[List[str]] = None) -> None:
+        """Remove cached pystata/sfi modules to avoid trap imports."""
+        allowed_norm = []
+        if allowed_paths:
+            allowed_norm = [os.path.normpath(p) for p in allowed_paths if p]
+
+        for name, mod in list(sys.modules.items()):
+            if name == "pystata" or name.startswith("pystata.") or name == "sfi" or name.startswith("sfi."):
+                mod_file = getattr(mod, "__file__", None)
+                if mod_file is None:
+                    continue
+                if isinstance(mod_file, str) and allowed_norm:
+                    mod_norm = os.path.normpath(mod_file)
+                    if any(mod_norm.startswith(p) for p in allowed_norm):
+                        continue
+                if mod_file is not None and not isinstance(mod_file, str):
+                    continue
+                sys.modules.pop(name, None)
+
+    def _prime_profile_do_cache(self) -> None:
+        """Cache profile.do resolution to avoid repeated Stata calls."""
+        if self._profile_do_checked:
+            return
+        self._profile_do_checked = True
+        try:
+            dirs = self._collect_profile_do_dirs()
+        except Exception as e:
+            logger.error("Failed to collect Stata ado dirs for profile.do: %s", e)
+            return
+
+        self._profile_do_dirs = dirs
+        for adopath in dirs:
+            profile_path = os.path.join(adopath, "profile.do")
+            if os.path.exists(profile_path):
+                self._profile_do_path = profile_path
+                break
+
+    def _collect_profile_do_dirs(self) -> List[str]:
+        """Collect Stata profile search directories in preferred order."""
+        from sfi import Macro  # type: ignore[import-not-found]
+
+        macro_names = [
+            "mcp_sysdir_personal",
+            "mcp_sysdir_site",
+            "mcp_sysdir_plus",
+            "mcp_sysdir_oldplace",
+            "mcp_adopath",
+        ]
+
+        stata_code = (
+            "macro define mcp_sysdir_personal `\"`c(sysdir_personal)'\"'\n"
+            "macro define mcp_sysdir_site `\"`c(sysdir_site)'\"'\n"
+            "macro define mcp_sysdir_plus `\"`c(sysdir_plus)'\"'\n"
+            "macro define mcp_sysdir_oldplace `\"`c(sysdir_oldplace)'\"'\n"
+            "local _mcp_adopath `\"`c(adopath)'\"'\n"
+            "local _mcp_adopath = subinstr(`\"`_mcp_adopath'\"', \";\", char(10), .)\n"
+            "macro define mcp_adopath `\"`_mcp_adopath'\"'\n"
+        )
+
+        try:
+            self.stata.run(stata_code, echo=False)
+            personal = (Macro.getGlobal("mcp_sysdir_personal") or "").strip()
+            site = (Macro.getGlobal("mcp_sysdir_site") or "").strip()
+            plus = (Macro.getGlobal("mcp_sysdir_plus") or "").strip()
+            oldplace = (Macro.getGlobal("mcp_sysdir_oldplace") or "").strip()
+            adopath_raw = (Macro.getGlobal("mcp_adopath") or "")
+        finally:
+            for name in macro_names:
+                try:
+                    self.stata.run(f"macro drop {name}", echo=False)
+                except Exception:
+                    pass
+
+        def split_lines(raw: str) -> List[str]:
+            cleaned = raw.replace("\r", "")
+            return [p.strip() for p in cleaned.split("\n") if p.strip()]
+
+        adopath_list = split_lines(adopath_raw)
+        dirs: List[str] = []
+
+        def add_dir(value: str) -> None:
+            if not value:
+                return
+            if value not in dirs:
+                dirs.append(value)
+
+        # Match Stata default order first, then extend to the full adopath.
+        add_dir(personal)
+        add_dir(site)
+        add_dir(plus)
+        add_dir(oldplace)
+        for path in adopath_list:
+            add_dir(path)
+
+        return dirs
 
     def _make_valid_stata_name(self, name: str) -> str:
         """Create a valid Stata name (<=32 chars, [A-Za-z_][A-Za-z0-9_]*)."""
@@ -2635,23 +2882,24 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         )
 
     async def run_command_streaming(
-    self,
-    code: str,
-    *,
-    notify_log: Callable[[str], Awaitable[None]],
-    notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
-    echo: bool = True,
-    trace: bool = False,
-    max_output_lines: Optional[int] = None,
-    cwd: Optional[str] = None,
-    auto_cache_graphs: bool = False,
-    on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]] = None,
-    emit_graph_ready: bool = False,
-    graph_ready_task_id: Optional[str] = None,
-    graph_ready_format: str = "svg",
-) -> CommandResponse:
+        self,
+        code: str,
+        *,
+        notify_log: Callable[[str], Awaitable[None]],
+        notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
+        echo: bool = True,
+        trace: bool = False,
+        max_output_lines: Optional[int] = None,
+        cwd: Optional[str] = None,
+        auto_cache_graphs: bool = False,
+        on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]] = None,
+        emit_graph_ready: bool = False,
+        graph_ready_task_id: Optional[str] = None,
+        graph_ready_format: str = "svg",
+    ) -> CommandResponse:
         if not self._initialized:
             self.init()
+        self._break_requested = False
 
         code = self._maybe_rewrite_graph_name_in_command(code)
         auto_cache_graphs = auto_cache_graphs or emit_graph_ready
@@ -2744,6 +2992,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         try:
             async with anyio.create_task_group() as tg:
+                async def watch_break() -> None:
+                    while not done.is_set():
+                        if self._break_requested:
+                            self._request_break_in_fast()
+                        await anyio.sleep(0.1)
+
                 async def stream_smcl() -> None:
                     try:
                         await self._stream_smcl_log(
@@ -2757,6 +3011,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     except Exception as exc:
                         logger.debug("SMCL streaming failed: %s", exc)
 
+                tg.start_soon(watch_break)
                 tg.start_soon(stream_smcl)
 
                 if notify_progress is not None:
@@ -2800,7 +3055,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             tee.close()
 
         # Read SMCL content as the authoritative source
-        smcl_content = self._read_smcl_file(smcl_path, start_offset=start_offset)
+        if self._break_requested:
+            smcl_content = tail.get_value()
+        else:
+            smcl_content = self._read_smcl_file(smcl_path, start_offset=start_offset)
         # Clean internal maintenance immediately 
         smcl_content = self._clean_internal_smcl(smcl_content, strip_output=False) 
 
@@ -2944,6 +3202,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             code.replace("\n", "\\n")[:120],
         )
 
+        self._break_requested = False
+
         result = CommandResponse(
             command=code,
             rc=rc,
@@ -2961,21 +3221,25 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         return result
 
     async def run_do_file_streaming(
-    self,
-    path: str,
-    *,
-    notify_log: Callable[[str], Awaitable[None]],
-    notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
-    echo: bool = True,
-    trace: bool = False,
-    max_output_lines: Optional[int] = None,
-    cwd: Optional[str] = None,
-    auto_cache_graphs: bool = False,
-    on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]] = None,
-    emit_graph_ready: bool = False,
-    graph_ready_task_id: Optional[str] = None,
-    graph_ready_format: str = "svg",
-) -> CommandResponse:
+        self,
+        path: str,
+        *,
+        notify_log: Callable[[str], Awaitable[None]],
+        notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
+        echo: bool = True,
+        trace: bool = False,
+        max_output_lines: Optional[int] = None,
+        cwd: Optional[str] = None,
+        auto_cache_graphs: bool = False,
+        on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]] = None,
+        emit_graph_ready: bool = False,
+        graph_ready_task_id: Optional[str] = None,
+        graph_ready_format: str = "svg",
+    ) -> CommandResponse:
+        if not self._initialized:
+            self.init()
+        self._break_requested = False
+
         effective_path, command, error_response = self._resolve_do_file_path(path, cwd)
         if error_response is not None:
             return error_response
@@ -3062,6 +3326,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         try:
             async with anyio.create_task_group() as tg:
+                async def watch_break() -> None:
+                    while not done.is_set():
+                        if self._break_requested:
+                            self._request_break_in_fast()
+                        await anyio.sleep(0.1)
+
                 async def on_chunk_for_graphs(_chunk: str) -> None:
                     # Background the graph check so we don't block SMCL streaming or task completion.
                     # Use tg.start_soon instead of asyncio.create_task to ensure all checks 
@@ -3100,6 +3370,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     except Exception as exc:
                         logger.debug("SMCL streaming failed: %s", exc)
 
+                tg.start_soon(watch_break)
                 tg.start_soon(stream_smcl)
 
                 if notify_progress is not None:
@@ -3143,7 +3414,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             tee.close()
 
         # Read SMCL content as the authoritative source
-        smcl_content = self._read_smcl_file(smcl_path, start_offset=start_offset)
+        if self._break_requested:
+            smcl_content = tail.get_value()
+        else:
+            smcl_content = self._read_smcl_file(smcl_path, start_offset=start_offset)
         # Clean internal maintenance immediately 
         smcl_content = self._clean_internal_smcl(smcl_content, strip_output=False) 
 
@@ -3270,6 +3544,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             duration * 1000,
             effective_path,
         )
+
+        self._break_requested = False
 
         result = CommandResponse(
             command=command,

@@ -20,7 +20,7 @@ def test_request_break_in_invokes_breakin(monkeypatch, client):
 
     client._request_break_in()
 
-    assert called["break"] == 1
+    assert called["break"] >= 1
 
 
 @pytest.mark.anyio
