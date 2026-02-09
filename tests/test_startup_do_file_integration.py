@@ -234,3 +234,54 @@ class TestClearAllRestoresPrograms:
                 pass
             if os.path.exists(startup_path):
                 os.unlink(startup_path)
+
+    def test_startup_program_not_restored_when_reload_disabled(self, stata_client):
+        """Programs are NOT restored after ``clear all`` when reload is disabled."""
+        client = stata_client
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".do", mode="w", delete=False
+        ) as tf:
+            tf.write(
+                "capture program drop _test_noreload\n"
+                "program define _test_noreload\n"
+                "    display \"noreload_ok\"\n"
+                "end\n"
+            )
+            startup_path = tf.name
+
+        old_env = os.environ.get("MCP_STATA_STARTUP_DO_FILE")
+        old_flag = client._reload_startup_on_clear
+        os.environ["MCP_STATA_STARTUP_DO_FILE"] = startup_path
+
+        saved_checked = client._profile_do_checked
+        saved_sys = client._sysprofile_do_path
+        saved_prof = client._profile_do_path
+        try:
+            client._reload_startup_on_clear = False
+            client._load_startup_do_file()
+
+            res1 = client.run_command_structured("_test_noreload", echo=False)
+            assert res1.rc == 0, f"_test_noreload not available: {res1.stdout}"
+
+            client.run_command_structured("clear all", echo=False)
+
+            res2 = client.run_command_structured("_test_noreload", echo=False)
+            assert res2.rc != 0, "_test_noreload should not be restored when reload is disabled"
+        finally:
+            if old_env is None:
+                os.environ.pop("MCP_STATA_STARTUP_DO_FILE", None)
+            else:
+                os.environ["MCP_STATA_STARTUP_DO_FILE"] = old_env
+            client._reload_startup_on_clear = old_flag
+            client._profile_do_checked = saved_checked
+            client._sysprofile_do_path = saved_sys
+            client._profile_do_path = saved_prof
+            try:
+                client.stata.run(
+                    "capture program drop _test_noreload", echo=False
+                )
+            except Exception:
+                pass
+            if os.path.exists(startup_path):
+                os.unlink(startup_path)
