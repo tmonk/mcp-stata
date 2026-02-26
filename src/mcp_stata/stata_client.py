@@ -4091,12 +4091,21 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         return {"frame": frame, "n": n, "k": k, "sortlist": sortlist, "changed": changed}
 
     def _require_data_in_memory(self) -> None:
-        state = self.get_dataset_state()
-        if int(state.get("k", 0) or 0) == 0 and int(state.get("n", 0) or 0) == 0:
+        from sfi import Data  # type: ignore[import-not-found]
+        with self._exec_lock:
+            n = int(Data.getObsTotal())
+            k = int(Data.getVarCount())
+        if k == 0 and n == 0:
             # Stata empty dataset could still have k>0 n==0; treat that as ok.
             raise RuntimeError("No data in memory")
 
     def _get_var_index_map(self) -> Dict[str, int]:
+        # Cache is valid as long as no user command has been executed since last build.
+        cached_map = getattr(self, "_var_index_map_cache", None)
+        cached_idx = getattr(self, "_var_index_map_cmd_idx", None)
+        if cached_map is not None and cached_idx == self._command_idx:
+            return cached_map
+
         from sfi import Data  # type: ignore[import-not-found]
 
         out: Dict[str, int] = {}
@@ -4106,12 +4115,20 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     out[str(Data.getVarName(i))] = i
                 except Exception:
                     continue
+        self._var_index_map_cache: Dict[str, int] = out
+        self._var_index_map_cmd_idx: int = self._command_idx
         return out
 
     def list_variables_rich(self) -> List[Dict[str, Any]]:
         """Return variable metadata (name/type/label/format/valueLabel) without modifying the dataset."""
         if not self._initialized:
             self.init()
+
+        # Cache by _command_idx: variable schema only changes when a command runs.
+        cached_vars = getattr(self, "_list_variables_rich_cache", None)
+        cached_idx = getattr(self, "_list_variables_rich_cmd_idx", None)
+        if cached_vars is not None and cached_idx == self._command_idx:
+            return cached_vars
 
         from sfi import Data  # type: ignore[import-not-found]
 
@@ -4144,6 +4161,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     "valueLabel": value_label,
                 }
             )
+
+        self._list_variables_rich_cache: List[Dict[str, Any]] = vars_info
+        self._list_variables_rich_cmd_idx: int = self._command_idx
         return vars_info
 
     @staticmethod
@@ -4177,11 +4197,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if not self._initialized:
             self.init()
 
-        from sfi import Data  # type: ignore[import-not-found]
+        from sfi import Data, Macro  # type: ignore[import-not-found]
 
-        state = self.get_dataset_state()
-        n = int(state.get("n", 0) or 0)
-        k = int(state.get("k", 0) or 0)
+        with self._exec_lock:
+            n = int(Data.getObsTotal())
+            k = int(Data.getVarCount())
+            frame = Macro.getGlobal("c(frame)")
         if k == 0 and n == 0:
             raise RuntimeError("No data in memory")
 
@@ -4233,6 +4254,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             "rows": out_rows,
             "returned": returned,
             "truncated_cells": truncated_cells,
+            "frame": frame,
+            "n": n,
+            "k": k,
         }
 
     def get_arrow_stream(
@@ -4260,9 +4284,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         else:
             import pandas as pd
         
-        state = self.get_dataset_state()
-        n = int(state.get("n", 0) or 0)
-        k = int(state.get("k", 0) or 0)
+        # Use direct sfi calls instead of get_dataset_state() to avoid
+        # running Stata macro commands (stata.run) just for n and k.
+        with self._exec_lock:
+            n = int(Data.getObsTotal())
+            k = int(Data.getVarCount())
         if k == 0 and n == 0:
             raise RuntimeError("No data in memory")
             
@@ -4354,8 +4380,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
     def validate_filter_expr(self, filter_expr: str) -> None:
         if not self._initialized:
             self.init()
-        state = self.get_dataset_state()
-        if int(state.get("k", 0) or 0) == 0 and int(state.get("n", 0) or 0) == 0:
+        from sfi import Data  # type: ignore[import-not-found]
+        with self._exec_lock:
+            n = int(Data.getObsTotal())
+            k = int(Data.getVarCount())
+        if k == 0 and n == 0:
             raise RuntimeError("No data in memory")
 
         vars_used = self._extract_filter_vars(filter_expr)
@@ -4371,9 +4400,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         from sfi import Data  # type: ignore[import-not-found]
 
-        state = self.get_dataset_state()
-        n = int(state.get("n", 0) or 0)
-        k = int(state.get("k", 0) or 0)
+        with self._exec_lock:
+            n = int(Data.getObsTotal())
+            k = int(Data.getVarCount())
         if k == 0 and n == 0:
             raise RuntimeError("No data in memory")
 
@@ -4454,8 +4483,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if not self._initialized:
             self.init()
 
-        state = self.get_dataset_state()
-        if int(state.get("k", 0) or 0) == 0 and int(state.get("n", 0) or 0) == 0:
+        from sfi import Data  # type: ignore[import-not-found]
+        with self._exec_lock:
+            n = int(Data.getObsTotal())
+            k = int(Data.getVarCount())
+        if k == 0 and n == 0:
             raise RuntimeError("No data in memory")
 
         if not sort_spec or not isinstance(sort_spec, list):

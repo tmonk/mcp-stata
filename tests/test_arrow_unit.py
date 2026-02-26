@@ -58,6 +58,8 @@ class TestArrowUnit:
     def test_get_arrow_stream_with_obs_no(self, client):
         mock_data_ns = MagicMock()
         mock_data_ns.get.return_value = [[10.5]]
+        mock_data_ns.getObsTotal.return_value = 10
+        mock_data_ns.getVarCount.return_value = 1
         
         with patch.dict(sys.modules, {"sfi": MagicMock(Data=mock_data_ns)}):
             with patch.object(client, "get_dataset_state", return_value={"n": 10, "k": 1}):

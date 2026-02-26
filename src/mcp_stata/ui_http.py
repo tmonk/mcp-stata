@@ -191,8 +191,6 @@ class UIChannelManager:
         self._expires_at: int = 0
 
         self._dataset_version: int = 0
-        self._dataset_id_cache: str | None = None
-        self._dataset_id_cache_at_version: int = -1
 
         self._views: dict[str, dict[str, ViewHandle]] = {} # session_id -> {view_id -> ViewHandle}
         self._sort_index_cache: dict[tuple[str, str, tuple[str, ...]], list[int]] = {} # (session_id, dataset_id, sort_spec)
@@ -291,15 +289,12 @@ class UIChannelManager:
 
         # Use an appropriate client for the session
         proxy = self._get_proxy_for_session(session_id)
-        state = proxy.get_dataset_state()
-        n = int(state.get("n", 0) or 0)
-        if n <= 0:
-            return None
-
-        # Pull full columns once via Arrow stream (Stata -> Arrow), then sort in Polars.
+        # get_arrow_stream reads n directly via sfi.Data — no need to call get_dataset_state.
+        # Pass a very large limit; Arrow stream will cap at actual obs count.
+        import sys as _sys
         arrow_bytes = proxy.get_arrow_stream(
             offset=0,
-            limit=n,
+            limit=_sys.maxsize,
             vars=sort_cols,
             include_obs_no=True,
             obs_indices=None,
@@ -309,6 +304,9 @@ class UIChannelManager:
 
         with pa.ipc.open_stream(io.BytesIO(arrow_bytes)) as reader:
             table = reader.read_all()
+
+        if table.num_rows == 0:
+            return None
 
         self._set_cached_sort_table(session_id, dataset_id, sort_cols_key, table)
         return table
@@ -347,6 +345,14 @@ class UIChannelManager:
 
         proxy = self._get_proxy_for_session(session_id)
         state = proxy.get_dataset_state()
+        return self._dataset_id_from_state(session_id, state)
+
+    def _dataset_id_from_state(self, session_id: str, state: dict[str, Any]) -> str:
+        """Compute and cache a dataset digest from an already-fetched state dict.
+
+        Callers that have already obtained ``state`` from ``proxy.get_dataset_state()``
+        can use this to avoid a redundant second round-trip.
+        """
         payload = {
             "version": self._dataset_version,
             "frame": state.get("frame"),
@@ -522,7 +528,7 @@ class UIChannelManager:
                         try:
                             proxy = manager._get_proxy_for_session(session_id)
                             state = proxy.get_dataset_state()
-                            dataset_id = manager.current_dataset_id(session_id)
+                            dataset_id = manager._dataset_id_from_state(session_id, state)
                             self._send_json(
                                 200,
                                 {
@@ -552,7 +558,7 @@ class UIChannelManager:
                         try:
                             proxy = manager._get_proxy_for_session(session_id)
                             state = proxy.get_dataset_state()
-                            dataset_id = manager.current_dataset_id(session_id)
+                            dataset_id = manager._dataset_id_from_state(session_id, state)
                             variables = proxy.list_variables_rich()
                             self._send_json(
                                 200,
@@ -885,7 +891,6 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
                     obs_indices = obs_indices_sorted
 
         proxy = _resolve_proxy(manager, session_id)
-        dataset_state = proxy.get_dataset_state()
         page = proxy.get_page(
             offset=offset,
             limit=limit,
@@ -894,6 +899,7 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
             max_chars=max_chars_req,
             obs_indices=obs_indices,
         )
+        # frame/n/k are returned directly by get_page via fast sfi calls — no get_dataset_state needed.
 
         view_obj: dict[str, Any] = {
             "offset": offset,
@@ -907,9 +913,9 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
         return {
             "dataset": {
                 "id": current_id,
-                "frame": dataset_state.get("frame"),
-                "n": dataset_state.get("n"),
-                "k": dataset_state.get("k"),
+                "frame": page.get("frame"),
+                "n": page.get("n"),
+                "k": page.get("k"),
             },
             "view": view_obj,
             "vars": page["vars"],
