@@ -26,6 +26,7 @@ class CommandResponse(BaseModel):
     success: bool
     error: Optional[ErrorEnvelope] = None
     smcl_output: Optional[str] = None
+    artifacts: Optional[List[Dict[str, Any]]] = None
 
 
 class DataResponse(BaseModel):

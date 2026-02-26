@@ -254,6 +254,33 @@ class StataClient:
             sys.stdout, sys.stderr = backup_stdout, backup_stderr
 
     @staticmethod
+    def _extract_help_topic(code: str) -> Optional[str]:
+        """Detect help commands and extract the topic.
+        
+        Matches: help, h, hel, ? followed by a topic.
+        """
+        if not code:
+            return None
+        
+        # Strip leading whitespace and period (local command prefix)
+        code = code.strip()
+        if code.startswith('.'):
+            code = code[1:].strip()
+            
+        # Regex for help commands
+        # Match: ^(?i)(help|h|hel|\?)\s+(\S+)
+        import re
+        match = re.match(r"(?i)^(?:help|h|hel|\?)\s+([\w\-\.]+)", code)
+        if match:
+            return match.group(1)
+        
+        # Also match bare help (no topic)
+        if re.match(r"(?i)^(?:help|h|hel|\?)$", code):
+            return "contents"
+            
+        return None
+
+    @staticmethod
     def _safe_unlink(path: str) -> None:
         if not path:
             return
@@ -3562,8 +3589,38 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             duration * 1000,
             code.replace("\n", "\\n")[:120],
         )
-
+        
         self._break_requested = False
+
+        # Intercept help and add artifact
+        artifacts = []
+        help_topic = self._extract_help_topic(code)
+        if help_topic:
+            try:
+                help_md = self.get_help(help_topic)
+                if help_md and "not found" not in help_md.lower():
+                    # Create a temporary file for the help content
+                    help_dir = get_writable_temp_dir()
+                    help_filename = f"help_{help_topic}_{uuid.uuid4().hex[:8]}.md"
+                    help_path = os.path.join(help_dir, help_filename)
+                    with open(help_path, "w") as f:
+                        f.write(help_md)
+                    register_temp_file(help_path)
+                    
+                    artifacts.append({
+                        "type": "help",
+                        "label": f"Help: {help_topic}",
+                        "path": help_path,
+                        "baseDir": help_dir,
+                        "artifactType": "help"
+                    })
+                    
+                    # Also stream the help content to the terminal if it's not going there naturally
+                    if notify_log:
+                        # Convert MD back to plain text or just stream MD
+                        await notify_log(f"\n{help_md}\n")
+            except Exception as e:
+                logger.warning(f"Failed to capture help artifact for {help_topic}: {e}")
 
         result = CommandResponse(
             command=code,
@@ -3574,6 +3631,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             success=success,
             error=error,
             smcl_output=smcl_content,
+            artifacts=artifacts if artifacts else None,
         )
 
         if notify_progress is not None:
