@@ -5248,16 +5248,28 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             
             # The most reliable and efficient strategy for capturing distinct graphs in 
             # PyStata background tasks:
-            # 1. Ensure the specific graph is active in the Stata engine via 'graph display'.
-            # 2. Export with the explicit name() option to ensure isolation.
-            # Graph names in Stata should NOT be quoted.
+            # 1. Try to export with the explicit unquoted name() option to ensure isolation.
+            # 2. Fallback to quoted name() if unquoted fails (unless r(1)).
+            # 3. Final resort: display the graph to make it active, then export without name().
             
-            maintenance = [
-                f"quietly graph display {safe_name}",
-                f"quietly graph export \"{cache_path_for_stata}\", name({safe_name}) replace as(svg)"
-            ]
-            
-            resp = self._exec_no_capture_silent("\n".join(maintenance), echo=False)
+            export_cmd = f'quietly graph export "{cache_path_for_stata}", name({safe_name}) replace as(svg)'
+            resp = self._exec_no_capture_silent(export_cmd, echo=False)
+ 
+            if not resp.success:
+                # Fallback for complex names if the unquoted version failed
+                if getattr(resp, 'rc', None) != 1:
+                    export_cmd_quoted = f'quietly graph export "{cache_path_for_stata}", name("{safe_name}") replace as(svg)'
+                    resp = self._exec_no_capture_silent(export_cmd_quoted, echo=False)
+                
+                if not resp.success:
+                    # Final resort: display and then export active
+                    display_cmd = f'quietly graph display {safe_name}'
+                    display_resp = self._exec_no_capture_silent(display_cmd, echo=False)
+                    if display_resp.success:
+                        export_cmd2 = f'quietly graph export "{cache_path_for_stata}", replace as(svg)'
+                        resp = self._exec_no_capture_silent(export_cmd2, echo=False)
+                    else:
+                        resp = display_resp
             
             if resp.success and os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
                 # Read the data to compute hash

@@ -11,7 +11,6 @@ from conftest import configure_stata_for_tests
 
 try:
     stata_dir, stata_flavor = configure_stata_for_tests()
-    stata_setup.config(stata_dir, stata_flavor)
 except (FileNotFoundError, PermissionError) as e:
     pytest.skip(f"Stata not found or not executable: {e}", allow_module_level=True)
 
@@ -222,6 +221,57 @@ class TestPystataGraphIntegration:
         stata.run("clear", quietly=True)
         if os.path.isfile(svg_path):
             os.remove(svg_path)
+
+    def test_cache_graph_on_creation_integration(self, client):
+        """Test cache_graph_on_creation fallback logic with a standard graph name."""
+        stata = client.stata
+        
+        # Create a graph
+        stata.run("sysuse auto, clear", quietly=True)
+        stata.run("scatter price mpg, name(NormalGraph)", quietly=True)
+        
+        # Manually cache the graph using the new robust fallback logic
+        success = client.cache_graph_on_creation("NormalGraph")
+        
+        assert success is True, "Graph caching should succeed for normal graph names"
+        
+        # Verify it exists in cache
+        cached_path = client._preemptive_cache.get("NormalGraph")
+        assert cached_path is not None
+        assert os.path.exists(cached_path)
+        assert os.path.getsize(cached_path) > 0
+
+        # Clean up
+        stata.run("graph drop NormalGraph", quietly=True)
+        stata.run("clear", quietly=True)
+
+
+    def test_cache_graph_on_creation_complex_name(self, client):
+        """Test cache_graph_on_creation fallback logic with a complex graph name (requires quoting/fallback)."""
+        stata = client.stata
+        
+        # Create a graph with underscores in name
+        stata.run("sysuse auto, clear", quietly=True)
+        name_with_underscores = '"Complex_Graph_Name"'
+        stata.run(f"scatter price mpg, name({name_with_underscores})", quietly=True)
+        
+        # The internal system tracks it without the quotes.
+        internal_name = "Complex_Graph_Name"
+        
+        # Manually cache the graph using the new robust fallback logic
+        success = client.cache_graph_on_creation(internal_name)
+        
+        assert success is True, "Graph caching should succeed for complex graph names via fallback mechanisms"
+        
+        # Verify it exists in cache
+        cached_path = client._preemptive_cache.get(internal_name)
+        assert cached_path is not None
+        assert os.path.exists(cached_path)
+        assert os.path.getsize(cached_path) > 0
+
+        # Clean up
+        stata.run(f"graph drop {name_with_underscores}", quietly=True)
+        stata.run("clear", quietly=True)
 
 
 if __name__ == "__main__":
