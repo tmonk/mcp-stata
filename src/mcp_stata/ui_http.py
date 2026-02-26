@@ -8,7 +8,9 @@ import time
 import uuid
 import logging
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import ThreadingMixIn
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
 from .stata_client import StataClient
@@ -181,8 +183,9 @@ class UIChannelManager:
         self._max_arrow_limit = max_arrow_limit
 
         self._lock = threading.Lock()
-        self._httpd: ThreadingHTTPServer | None = None
+        self._httpd: HTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="UI-HTTP-Worker")
 
         self._token: str | None = None
         self._expires_at: int = 0
@@ -736,7 +739,15 @@ class UIChannelManager:
                 def log_message(self, format: str, *args: Any) -> None:
                     return
 
-            httpd = ThreadingHTTPServer((self._host, self._port), Handler)
+            class ThreadPoolHTTPServer(ThreadingMixIn, HTTPServer):
+                def __init__(self, server_address, RequestHandlerClass, executor):
+                    super().__init__(server_address, RequestHandlerClass)
+                    self.pool = executor
+
+                def process_request(self, request, client_address):
+                    self.pool.submit(self.process_request_thread, request, client_address)
+
+            httpd = ThreadPoolHTTPServer((self._host, self._port), Handler, self._executor)
             t = threading.Thread(target=httpd.serve_forever, daemon=True)
             t.start()
             self._httpd = httpd
