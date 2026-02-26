@@ -3615,10 +3615,16 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                         "artifactType": "help"
                     })
                     
-                    # Also stream the help content to the terminal if it's not going there naturally
+                    # Emit a structured help_ready notification so the client can
+                    # open the help panel even after the log_path has been set
+                    # (plain notify_log text would be ignored once logPath is known).
                     if notify_log:
-                        # Convert MD back to plain text or just stream MD
-                        await notify_log(f"\n{help_md}\n")
+                        await notify_log(json.dumps({
+                            "event": "help_ready",
+                            "path": help_path,
+                            "label": f"Help: {help_topic}",
+                            "base_dir": help_dir,
+                        }))
             except Exception as e:
                 logger.warning(f"Failed to capture help artifact for {help_topic}: {e}")
 
