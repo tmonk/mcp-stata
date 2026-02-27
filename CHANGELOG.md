@@ -2,6 +2,41 @@
 
 <!-- version list -->
 
+## v1.26.0 (2026-02-27)
+
+### Chores
+
+- Update version numbers in Cargo.toml, pyproject.toml, and server.json to 1.25.1.dev4cea
+  ([`5df7be9`](https://github.com/tmonk/mcp-stata/commit/5df7be98fb098ed5358cd66e8f0ce7f87190e869))
+
+- Update version numbers in Cargo.toml, pyproject.toml, and server.json to 1.25.1.dev6520
+  ([`0fb3015`](https://github.com/tmonk/mcp-stata/commit/0fb3015f97db73fd8308f834cce7e87a7910f711))
+
+### Features
+
+- Add help topic extraction and artifact handling in StataClient
+  ([`af1aa92`](https://github.com/tmonk/mcp-stata/commit/af1aa920dc5a08658b5590f3f9da4356772a46e1))
+
+- Emit structured help_ready notification for help panel activation
+  ([`2efd06b`](https://github.com/tmonk/mcp-stata/commit/2efd06bc57f66966f464c1e7b08ca47ada1ca1d0))
+
+- Enhance graph caching logic with robust fallback mechanisms and add integration tests
+  ([`964688e`](https://github.com/tmonk/mcp-stata/commit/964688e5bb96e6917aa066928bd0f0773f3a1974))
+
+- Enhance SMCL to Markdown conversion with comprehensive inline tag support and structured output
+  ([`573dd51`](https://github.com/tmonk/mcp-stata/commit/573dd518a53dd81db2f8f2e1d1df974321cbb5cd))
+
+- Implement a thread pool for concurrent UI HTTP server requests and add a dedicated concurrency
+  test.
+  ([`5359d99`](https://github.com/tmonk/mcp-stata/commit/5359d99f646e36578ea0e99e72e511c489e59681))
+
+- Optimize data retrieval by replacing get_dataset_state calls with direct sfi.Data access
+  ([`ab26cb1`](https://github.com/tmonk/mcp-stata/commit/ab26cb103677b3670763787315f8ebb799934ec0))
+
+- Streamline help command handling and improve break signal processing
+  ([`5f5280d`](https://github.com/tmonk/mcp-stata/commit/5f5280dec8831b71e92534e4c48a03b65a1d5369))
+
+
 ## v1.25.0 (2026-02-09)
 
 ### Bug Fixes
