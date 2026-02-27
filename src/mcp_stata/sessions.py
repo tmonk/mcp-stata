@@ -166,9 +166,7 @@ class StataSession:
     async def send_break(self):
         """Send an out-of-band break signal to the worker."""
         try:
-            for _ in range(3):
-                self._parent_conn.send({"type": "break"})
-                await asyncio.sleep(0.05)
+            self._parent_conn.send({"type": "break"})
             logger.info(f"Break signal sent to session {self.id}")
         except Exception as e:
             logger.warning(f"Failed to send break command to session {self.id}: {e}")

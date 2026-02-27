@@ -254,6 +254,33 @@ class StataClient:
             sys.stdout, sys.stderr = backup_stdout, backup_stderr
 
     @staticmethod
+    def _extract_help_topic(code: str) -> Optional[str]:
+        """Detect help commands and extract the topic.
+        
+        Matches: help, h, hel, ? followed by a topic.
+        """
+        if not code:
+            return None
+        
+        # Strip leading whitespace and period (local command prefix)
+        code = code.strip()
+        if code.startswith('.'):
+            code = code[1:].strip()
+            
+        # Regex for help commands
+        # Match: ^(?i)(help|h|hel|\?)\s+(\S+)
+        import re
+        match = re.match(r"(?i)^(?:help|h|hel|\?)\s+([\w\-\.]+)", code)
+        if match:
+            return match.group(1)
+        
+        # Also match bare help (no topic)
+        if re.match(r"(?i)^(?:help|h|hel|\?)$", code):
+            return "contents"
+            
+        return None
+
+    @staticmethod
     def _safe_unlink(path: str) -> None:
         if not path:
             return
@@ -3277,6 +3304,39 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 ),
             )
 
+        # Early interception for help commands: skip full Stata execution and
+        # call get_help() directly so help commands are fast and don't run
+        # Stata twice (which causes "queued" status to persist in the UI).
+        early_help_topic = self._extract_help_topic(code)
+        if early_help_topic:
+            try:
+                help_md = self.get_help(early_help_topic)
+                if help_md and "not found" not in help_md.lower() and notify_log:
+                    help_dir = get_writable_temp_dir()
+                    help_filename = f"help_{early_help_topic}_{uuid.uuid4().hex[:8]}.md"
+                    help_path = os.path.join(help_dir, help_filename)
+                    with open(help_path, "w") as f:
+                        f.write(help_md)
+                    register_temp_file(help_path)
+                    await notify_log(json.dumps({
+                        "event": "help_ready",
+                        "path": help_path,
+                        "label": f"Help: {early_help_topic}",
+                        "base_dir": help_dir,
+                    }))
+            except Exception as e:
+                logger.warning("Early help interception failed for %s: %s", early_help_topic, e)
+            return CommandResponse(
+                command=code,
+                rc=0,
+                stdout="",
+                stderr=None,
+                log_path=None,
+                success=True,
+                error=None,
+                smcl_output=None,
+            )
+
         start_time = time.time()
         exc: Optional[Exception] = None
         smcl_content = ""
@@ -3562,8 +3622,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             duration * 1000,
             code.replace("\n", "\\n")[:120],
         )
-
+        
         self._break_requested = False
+
+        # Intercept help and add artifact
+        artifacts = []
 
         result = CommandResponse(
             command=code,
@@ -3574,6 +3637,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             success=success,
             error=error,
             smcl_output=smcl_content,
+            artifacts=artifacts if artifacts else None,
         )
 
         if notify_progress is not None:
@@ -4033,12 +4097,21 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         return {"frame": frame, "n": n, "k": k, "sortlist": sortlist, "changed": changed}
 
     def _require_data_in_memory(self) -> None:
-        state = self.get_dataset_state()
-        if int(state.get("k", 0) or 0) == 0 and int(state.get("n", 0) or 0) == 0:
+        from sfi import Data  # type: ignore[import-not-found]
+        with self._exec_lock:
+            n = int(Data.getObsTotal())
+            k = int(Data.getVarCount())
+        if k == 0 and n == 0:
             # Stata empty dataset could still have k>0 n==0; treat that as ok.
             raise RuntimeError("No data in memory")
 
     def _get_var_index_map(self) -> Dict[str, int]:
+        # Cache is valid as long as no user command has been executed since last build.
+        cached_map = getattr(self, "_var_index_map_cache", None)
+        cached_idx = getattr(self, "_var_index_map_cmd_idx", None)
+        if cached_map is not None and cached_idx == self._command_idx:
+            return cached_map
+
         from sfi import Data  # type: ignore[import-not-found]
 
         out: Dict[str, int] = {}
@@ -4048,12 +4121,20 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     out[str(Data.getVarName(i))] = i
                 except Exception:
                     continue
+        self._var_index_map_cache: Dict[str, int] = out
+        self._var_index_map_cmd_idx: int = self._command_idx
         return out
 
     def list_variables_rich(self) -> List[Dict[str, Any]]:
         """Return variable metadata (name/type/label/format/valueLabel) without modifying the dataset."""
         if not self._initialized:
             self.init()
+
+        # Cache by _command_idx: variable schema only changes when a command runs.
+        cached_vars = getattr(self, "_list_variables_rich_cache", None)
+        cached_idx = getattr(self, "_list_variables_rich_cmd_idx", None)
+        if cached_vars is not None and cached_idx == self._command_idx:
+            return cached_vars
 
         from sfi import Data  # type: ignore[import-not-found]
 
@@ -4086,6 +4167,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     "valueLabel": value_label,
                 }
             )
+
+        self._list_variables_rich_cache: List[Dict[str, Any]] = vars_info
+        self._list_variables_rich_cmd_idx: int = self._command_idx
         return vars_info
 
     @staticmethod
@@ -4119,11 +4203,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if not self._initialized:
             self.init()
 
-        from sfi import Data  # type: ignore[import-not-found]
+        from sfi import Data, Macro  # type: ignore[import-not-found]
 
-        state = self.get_dataset_state()
-        n = int(state.get("n", 0) or 0)
-        k = int(state.get("k", 0) or 0)
+        with self._exec_lock:
+            n = int(Data.getObsTotal())
+            k = int(Data.getVarCount())
+            frame = Macro.getGlobal("c(frame)")
         if k == 0 and n == 0:
             raise RuntimeError("No data in memory")
 
@@ -4175,6 +4260,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             "rows": out_rows,
             "returned": returned,
             "truncated_cells": truncated_cells,
+            "frame": frame,
+            "n": n,
+            "k": k,
         }
 
     def get_arrow_stream(
@@ -4202,9 +4290,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         else:
             import pandas as pd
         
-        state = self.get_dataset_state()
-        n = int(state.get("n", 0) or 0)
-        k = int(state.get("k", 0) or 0)
+        # Use direct sfi calls instead of get_dataset_state() to avoid
+        # running Stata macro commands (stata.run) just for n and k.
+        with self._exec_lock:
+            n = int(Data.getObsTotal())
+            k = int(Data.getVarCount())
         if k == 0 and n == 0:
             raise RuntimeError("No data in memory")
             
@@ -4296,8 +4386,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
     def validate_filter_expr(self, filter_expr: str) -> None:
         if not self._initialized:
             self.init()
-        state = self.get_dataset_state()
-        if int(state.get("k", 0) or 0) == 0 and int(state.get("n", 0) or 0) == 0:
+        from sfi import Data  # type: ignore[import-not-found]
+        with self._exec_lock:
+            n = int(Data.getObsTotal())
+            k = int(Data.getVarCount())
+        if k == 0 and n == 0:
             raise RuntimeError("No data in memory")
 
         vars_used = self._extract_filter_vars(filter_expr)
@@ -4313,9 +4406,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         from sfi import Data  # type: ignore[import-not-found]
 
-        state = self.get_dataset_state()
-        n = int(state.get("n", 0) or 0)
-        k = int(state.get("k", 0) or 0)
+        with self._exec_lock:
+            n = int(Data.getObsTotal())
+            k = int(Data.getVarCount())
         if k == 0 and n == 0:
             raise RuntimeError("No data in memory")
 
@@ -4396,8 +4489,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if not self._initialized:
             self.init()
 
-        state = self.get_dataset_state()
-        if int(state.get("k", 0) or 0) == 0 and int(state.get("n", 0) or 0) == 0:
+        from sfi import Data  # type: ignore[import-not-found]
+        with self._exec_lock:
+            n = int(Data.getObsTotal())
+            k = int(Data.getVarCount())
+        if k == 0 and n == 0:
             raise RuntimeError("No data in memory")
 
         if not sort_spec or not isinstance(sort_spec, list):
@@ -5248,16 +5344,28 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             
             # The most reliable and efficient strategy for capturing distinct graphs in 
             # PyStata background tasks:
-            # 1. Ensure the specific graph is active in the Stata engine via 'graph display'.
-            # 2. Export with the explicit name() option to ensure isolation.
-            # Graph names in Stata should NOT be quoted.
+            # 1. Try to export with the explicit unquoted name() option to ensure isolation.
+            # 2. Fallback to quoted name() if unquoted fails (unless r(1)).
+            # 3. Final resort: display the graph to make it active, then export without name().
             
-            maintenance = [
-                f"quietly graph display {safe_name}",
-                f"quietly graph export \"{cache_path_for_stata}\", name({safe_name}) replace as(svg)"
-            ]
-            
-            resp = self._exec_no_capture_silent("\n".join(maintenance), echo=False)
+            export_cmd = f'quietly graph export "{cache_path_for_stata}", name({safe_name}) replace as(svg)'
+            resp = self._exec_no_capture_silent(export_cmd, echo=False)
+ 
+            if not resp.success:
+                # Fallback for complex names if the unquoted version failed
+                if getattr(resp, 'rc', None) != 1:
+                    export_cmd_quoted = f'quietly graph export "{cache_path_for_stata}", name("{safe_name}") replace as(svg)'
+                    resp = self._exec_no_capture_silent(export_cmd_quoted, echo=False)
+                
+                if not resp.success:
+                    # Final resort: display and then export active
+                    display_cmd = f'quietly graph display {safe_name}'
+                    display_resp = self._exec_no_capture_silent(display_cmd, echo=False)
+                    if display_resp.success:
+                        export_cmd2 = f'quietly graph export "{cache_path_for_stata}", replace as(svg)'
+                        resp = self._exec_no_capture_silent(export_cmd2, echo=False)
+                    else:
+                        resp = display_resp
             
             if resp.success and os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
                 # Read the data to compute hash

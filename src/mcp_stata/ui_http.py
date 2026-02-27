@@ -8,7 +8,9 @@ import time
 import uuid
 import logging
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import ThreadingMixIn
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
 from .stata_client import StataClient
@@ -181,15 +183,14 @@ class UIChannelManager:
         self._max_arrow_limit = max_arrow_limit
 
         self._lock = threading.Lock()
-        self._httpd: ThreadingHTTPServer | None = None
+        self._httpd: HTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="UI-HTTP-Worker")
 
         self._token: str | None = None
         self._expires_at: int = 0
 
         self._dataset_version: int = 0
-        self._dataset_id_cache: str | None = None
-        self._dataset_id_cache_at_version: int = -1
 
         self._views: dict[str, dict[str, ViewHandle]] = {} # session_id -> {view_id -> ViewHandle}
         self._sort_index_cache: dict[tuple[str, str, tuple[str, ...]], list[int]] = {} # (session_id, dataset_id, sort_spec)
@@ -288,15 +289,12 @@ class UIChannelManager:
 
         # Use an appropriate client for the session
         proxy = self._get_proxy_for_session(session_id)
-        state = proxy.get_dataset_state()
-        n = int(state.get("n", 0) or 0)
-        if n <= 0:
-            return None
-
-        # Pull full columns once via Arrow stream (Stata -> Arrow), then sort in Polars.
+        # get_arrow_stream reads n directly via sfi.Data — no need to call get_dataset_state.
+        # Pass a very large limit; Arrow stream will cap at actual obs count.
+        import sys as _sys
         arrow_bytes = proxy.get_arrow_stream(
             offset=0,
-            limit=n,
+            limit=_sys.maxsize,
             vars=sort_cols,
             include_obs_no=True,
             obs_indices=None,
@@ -306,6 +304,9 @@ class UIChannelManager:
 
         with pa.ipc.open_stream(io.BytesIO(arrow_bytes)) as reader:
             table = reader.read_all()
+
+        if table.num_rows == 0:
+            return None
 
         self._set_cached_sort_table(session_id, dataset_id, sort_cols_key, table)
         return table
@@ -344,6 +345,14 @@ class UIChannelManager:
 
         proxy = self._get_proxy_for_session(session_id)
         state = proxy.get_dataset_state()
+        return self._dataset_id_from_state(session_id, state)
+
+    def _dataset_id_from_state(self, session_id: str, state: dict[str, Any]) -> str:
+        """Compute and cache a dataset digest from an already-fetched state dict.
+
+        Callers that have already obtained ``state`` from ``proxy.get_dataset_state()``
+        can use this to avoid a redundant second round-trip.
+        """
         payload = {
             "version": self._dataset_version,
             "frame": state.get("frame"),
@@ -519,7 +528,7 @@ class UIChannelManager:
                         try:
                             proxy = manager._get_proxy_for_session(session_id)
                             state = proxy.get_dataset_state()
-                            dataset_id = manager.current_dataset_id(session_id)
+                            dataset_id = manager._dataset_id_from_state(session_id, state)
                             self._send_json(
                                 200,
                                 {
@@ -549,7 +558,7 @@ class UIChannelManager:
                         try:
                             proxy = manager._get_proxy_for_session(session_id)
                             state = proxy.get_dataset_state()
-                            dataset_id = manager.current_dataset_id(session_id)
+                            dataset_id = manager._dataset_id_from_state(session_id, state)
                             variables = proxy.list_variables_rich()
                             self._send_json(
                                 200,
@@ -736,7 +745,15 @@ class UIChannelManager:
                 def log_message(self, format: str, *args: Any) -> None:
                     return
 
-            httpd = ThreadingHTTPServer((self._host, self._port), Handler)
+            class ThreadPoolHTTPServer(ThreadingMixIn, HTTPServer):
+                def __init__(self, server_address, RequestHandlerClass, executor):
+                    super().__init__(server_address, RequestHandlerClass)
+                    self.pool = executor
+
+                def process_request(self, request, client_address):
+                    self.pool.submit(self.process_request_thread, request, client_address)
+
+            httpd = ThreadPoolHTTPServer((self._host, self._port), Handler, self._executor)
             t = threading.Thread(target=httpd.serve_forever, daemon=True)
             t.start()
             self._httpd = httpd
@@ -874,7 +891,6 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
                     obs_indices = obs_indices_sorted
 
         proxy = _resolve_proxy(manager, session_id)
-        dataset_state = proxy.get_dataset_state()
         page = proxy.get_page(
             offset=offset,
             limit=limit,
@@ -883,6 +899,7 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
             max_chars=max_chars_req,
             obs_indices=obs_indices,
         )
+        # frame/n/k are returned directly by get_page via fast sfi calls — no get_dataset_state needed.
 
         view_obj: dict[str, Any] = {
             "offset": offset,
@@ -896,9 +913,9 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
         return {
             "dataset": {
                 "id": current_id,
-                "frame": dataset_state.get("frame"),
-                "n": dataset_state.get("n"),
-                "k": dataset_state.get("k"),
+                "frame": page.get("frame"),
+                "n": page.get("n"),
+                "k": page.get("k"),
             },
             "view": view_obj,
             "vars": page["vars"],

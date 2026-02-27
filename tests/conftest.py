@@ -89,21 +89,11 @@ def stata_client():
     from mcp_stata.stata_client import StataClient
     from mcp_stata import discovery
     
-    # Speed up tests by skipping the heavy subprocess pre-flight check in StataClient.init()
-    os.environ["MCP_STATA_SKIP_PREFLIGHT"] = "1"
-    
     force_mock = os.environ.get("MCP_STATA_MOCK") == "1"
     
     if not force_mock:
         stata_path = os.environ.get("STATA_PATH")
-        if not stata_path or not os.path.exists(stata_path):
-            try:
-                stata_path, _ = discovery.find_stata_path()
-                os.environ["STATA_PATH"] = stata_path
-            except Exception:
-                # If discovery fails and we're not forcing mock, 
-                # we'll probably fail later, but let's let init() handle it
-                pass
+        # If not set, let StataClient's internal discovery handle multi-edition fallback
     
     c = StataClient()
     if force_mock:
