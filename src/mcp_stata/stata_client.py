@@ -3304,6 +3304,39 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 ),
             )
 
+        # Early interception for help commands: skip full Stata execution and
+        # call get_help() directly so help commands are fast and don't run
+        # Stata twice (which causes "queued" status to persist in the UI).
+        early_help_topic = self._extract_help_topic(code)
+        if early_help_topic:
+            try:
+                help_md = self.get_help(early_help_topic)
+                if help_md and "not found" not in help_md.lower() and notify_log:
+                    help_dir = get_writable_temp_dir()
+                    help_filename = f"help_{early_help_topic}_{uuid.uuid4().hex[:8]}.md"
+                    help_path = os.path.join(help_dir, help_filename)
+                    with open(help_path, "w") as f:
+                        f.write(help_md)
+                    register_temp_file(help_path)
+                    await notify_log(json.dumps({
+                        "event": "help_ready",
+                        "path": help_path,
+                        "label": f"Help: {early_help_topic}",
+                        "base_dir": help_dir,
+                    }))
+            except Exception as e:
+                logger.warning("Early help interception failed for %s: %s", early_help_topic, e)
+            return CommandResponse(
+                command=code,
+                rc=0,
+                stdout="",
+                stderr=None,
+                log_path=None,
+                success=True,
+                error=None,
+                smcl_output=None,
+            )
+
         start_time = time.time()
         exc: Optional[Exception] = None
         smcl_content = ""
@@ -3594,39 +3627,6 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         # Intercept help and add artifact
         artifacts = []
-        help_topic = self._extract_help_topic(code)
-        if help_topic:
-            try:
-                help_md = self.get_help(help_topic)
-                if help_md and "not found" not in help_md.lower():
-                    # Create a temporary file for the help content
-                    help_dir = get_writable_temp_dir()
-                    help_filename = f"help_{help_topic}_{uuid.uuid4().hex[:8]}.md"
-                    help_path = os.path.join(help_dir, help_filename)
-                    with open(help_path, "w") as f:
-                        f.write(help_md)
-                    register_temp_file(help_path)
-                    
-                    artifacts.append({
-                        "type": "help",
-                        "label": f"Help: {help_topic}",
-                        "path": help_path,
-                        "baseDir": help_dir,
-                        "artifactType": "help"
-                    })
-                    
-                    # Emit a structured help_ready notification so the client can
-                    # open the help panel even after the log_path has been set
-                    # (plain notify_log text would be ignored once logPath is known).
-                    if notify_log:
-                        await notify_log(json.dumps({
-                            "event": "help_ready",
-                            "path": help_path,
-                            "label": f"Help: {help_topic}",
-                            "base_dir": help_dir,
-                        }))
-            except Exception as e:
-                logger.warning(f"Failed to capture help artifact for {help_topic}: {e}")
 
         result = CommandResponse(
             command=code,

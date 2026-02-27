@@ -37,12 +37,7 @@ class StataWorker:
                     
                     if msg_type == "break":
                         # Out-of-band break request.
-                        # sfi.breakIn() is thread-safe and signals the Stata engine
-                        # directly at the C level, so we call it from this thread
-                        # rather than scheduling on the event loop. Using
-                        # call_soon_threadsafe would block the event loop during the
-                        # polling phase and prevent it from processing the thread
-                        # result when Stata actually breaks.
+                        # sfi.breakIn() is thread-safe and signals the Stata engine.
                         logger.info("Received out-of-band break signal from session")
                         if self.client:
                             self.client._request_break_in()
