@@ -12,7 +12,7 @@ import anyio
 import pytest
 from mcp import ClientSession, StdioServerParameters, stdio_client
 
-pytestmark = [pytest.mark.requires_stata, pytest.mark.integration]
+pytestmark = [pytest.mark.requires_stata, pytest.mark.integration, pytest.mark.xdist_group("stata_heavy")]
 
 def find_mcp_stata_cli():
     cli = shutil.which("mcp-stata")

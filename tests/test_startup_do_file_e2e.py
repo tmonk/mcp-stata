@@ -7,6 +7,8 @@ import shutil
 from pathlib import Path
 from mcp_stata.sessions import SessionManager
 
+pytestmark = pytest.mark.xdist_group("stata_heavy")
+
 @pytest.mark.skipif(os.getenv("STATA_BIN") is None and shutil.which("stata") is None, reason="Stata not found")
 @pytest.mark.requires_stata
 @pytest.mark.asyncio

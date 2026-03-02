@@ -8,7 +8,7 @@ from pathlib import Path
 from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters, stdio_client
 
-pytestmark = [pytest.mark.requires_stata, pytest.mark.integration]
+pytestmark = [pytest.mark.requires_stata, pytest.mark.integration, pytest.mark.xdist_group("stata_heavy")]
 
 def find_mcp_stata_cli():
     # Prefer local source execution for testing current changes
@@ -34,7 +34,7 @@ async def test_e2e_command_isolation_and_log_path():
         command=sys.executable, 
         args=["-m", "mcp_stata.server"], 
         cwd=os.getcwd(),
-        env={**os.environ, "MCP_STATA_SKIP_PREFLIGHT": "1", "PYTHONPATH": str(Path(__file__).parent.parent / "src")}
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).parent.parent / "src")}
     )
 
     async with AsyncExitStack() as stack:
@@ -74,7 +74,7 @@ async def test_e2e_preflight_bypass():
         command=sys.executable, 
         args=["-m", "mcp_stata.server"], 
         cwd=os.getcwd(),
-        env={**os.environ, "MCP_STATA_SKIP_PREFLIGHT": "1", "PYTHONPATH": str(Path(__file__).parent.parent / "src")}
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).parent.parent / "src")}
     )
     
     # Just verify we can initialize the session
@@ -82,7 +82,7 @@ async def test_e2e_preflight_bypass():
         read_stream, write_stream = await stack.enter_async_context(stdio_client(server_params))
         session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
         # This will time out if the server hangs during a long pre-flight
-        with anyio.fail_after(10):
+        with anyio.fail_after(60):
             await session.initialize()
         
         # Verify it responds

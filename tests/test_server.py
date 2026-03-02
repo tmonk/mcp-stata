@@ -29,7 +29,7 @@ from mcp_stata.server import (
 )
 
 # Mark all tests in this module as requiring Stata and being async
-pytestmark = [pytest.mark.requires_stata, pytest.mark.asyncio]
+pytestmark = [pytest.mark.requires_stata, pytest.mark.asyncio, pytest.mark.xdist_group("stata_heavy")]
 
 async def wait_for_task_result(task_id, timeout=5.0):
     with anyio.fail_after(timeout):

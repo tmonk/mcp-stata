@@ -16,6 +16,8 @@ from typing import Tuple, List, Optional
 
 logger = logging.getLogger("mcp_stata.discovery")
 
+_VERSION_DIGITS_RE = re.compile(r"(\d{1,3})")
+
 
 def _exists_with_retry(path: str, max_attempts: int = 1, delay: float = 0.01) -> bool:
     """
@@ -188,7 +190,7 @@ def _extract_version_number(path: str) -> int:
     for part in normalized.split(os.sep):
         if "stata" not in part:
             continue
-        for match in re.findall(r"(\d{1,3})", part):
+        for match in _VERSION_DIGITS_RE.findall(part):
             try:
                 version = max(version, int(match))
             except ValueError:

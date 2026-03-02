@@ -54,7 +54,6 @@ def get_server_version() -> str:
             pyproject_path = os.path.join(base_dir, "pyproject.toml")
             if os.path.exists(pyproject_path):
                 with open(pyproject_path, "r") as f:
-                    import re
                     content = f.read()
                     match = re.search(r'^version\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE)
                     if match:
@@ -71,17 +70,18 @@ def setup_logging():
         return
     _LOGGING_CONFIGURED = True
     log_level = os.getenv("MCP_STATA_LOGLEVEL", "DEBUG").upper()
+    fmt = logging.Formatter("[%(name)s] %(levelname)s: %(message)s")
     app_handler = logging.StreamHandler(sys.stderr)
     app_handler.setLevel(getattr(logging, log_level, logging.DEBUG))
-    app_handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
+    app_handler.setFormatter(fmt)
 
     mcp_handler = logging.StreamHandler(sys.stderr)
     mcp_handler.setLevel(getattr(logging, log_level, logging.DEBUG))
-    mcp_handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
+    mcp_handler.setFormatter(fmt)
 
     payload_handler = logging.StreamHandler(sys.stderr)
     payload_handler.setLevel(getattr(logging, log_level, logging.DEBUG))
-    payload_handler.setFormatter(logging.Formatter("[%(name)s] %(levelname)s: %(message)s"))
+    payload_handler.setFormatter(fmt)
 
     root_logger = logging.getLogger()
     root_logger.handlers = []

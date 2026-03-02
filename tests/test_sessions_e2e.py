@@ -8,8 +8,8 @@ from mcp_stata.server import (
     session_manager
 )
 
-# Mark as requiring Stata
-pytestmark = pytest.mark.requires_stata
+# Mark as requiring Stata; group together so xdist doesn't run them in parallel
+pytestmark = [pytest.mark.requires_stata, pytest.mark.xdist_group("stata_heavy")]
 
 @pytest.mark.asyncio
 async def test_mcp_session_tools():

@@ -9,7 +9,7 @@ import pyarrow as pa
 
 from mcp_stata.server import get_ui_channel, run_command
 
-pytestmark = [pytest.mark.requires_stata, pytest.mark.integration]
+pytestmark = [pytest.mark.requires_stata, pytest.mark.integration, pytest.mark.xdist_group("stata_heavy")]
 
 def _run_command_sync(code: str) -> str:
     async def _main() -> str:

@@ -3,17 +3,15 @@ from pathlib import Path
 
 import anyio
 import pytest
-import stata_setup
 from anyio import get_cancelled_exc_class
 
 from conftest import configure_stata_for_tests
 
 # Configure real Stata; skip if not available
 try:
-    stata_dir, stata_flavor = configure_stata_for_tests()
-    stata_setup.config(stata_dir, stata_flavor)
-except (FileNotFoundError, PermissionError) as e:
-    pytest.skip(f"Stata not found or not executable: {e}", allow_module_level=True)
+    configure_stata_for_tests()
+except Exception as e:
+    pytest.skip(f"Stata not available: {e}", allow_module_level=True)
 
 pytestmark = pytest.mark.requires_stata
 

@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from mcp_stata.stata_client import StataClient
 
-pytestmark = pytest.mark.requires_stata
+pytestmark = [pytest.mark.requires_stata, pytest.mark.xdist_group("stata_heavy")]
 
 @pytest.fixture
 def client():
