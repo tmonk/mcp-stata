@@ -278,7 +278,9 @@ def smcl_to_markdown(smcl_text: str, adopath: str = None, current_file: str = "h
         out.append("| Option | Description |")
         out.append("|--------|-------------|")
         for opt, desc in synopt_rows:
-            out.append(f"| {opt.replace('|', '\\|')} | {desc.replace('|', '\\|')} |")
+            opt_escaped = opt.replace("|", "\\|")
+            desc_escaped = desc.replace("|", "\\|")
+            out.append(f"| {opt_escaped} | {desc_escaped} |")
         out.append("")
         synopt_rows.clear()
 
