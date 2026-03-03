@@ -12,7 +12,7 @@ import json
 from mcp import ClientSession, StdioServerParameters, stdio_client
 
 
-pytestmark = [pytest.mark.requires_stata, pytest.mark.integration]
+pytestmark = [pytest.mark.requires_stata, pytest.mark.integration, pytest.mark.xdist_group("stata_heavy")]
 
 
 def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):

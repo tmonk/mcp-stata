@@ -53,7 +53,8 @@ def test_preflight_diagnostics_present(mock_discovery):
     client = StataClient()
     
     with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout="PREFLIGHT_OK", stderr="")
+        # Return rc=1 so init() stops after preflight without attempting in-process init
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="preflight failed")
         
         with patch.dict(os.environ, {"MCP_STATA_SKIP_PREFLIGHT": "0"}), \
              patch("sys.stderr.write"):
@@ -101,7 +102,8 @@ def test_sys_path_reordering_in_preflight(mock_discovery):
     client = StataClient()
     
     with patch("subprocess.run") as mock_run:
-        mock_run.return_value = MagicMock(returncode=0, stdout="PREFLIGHT_OK", stderr="")
+        # Return rc=1 so init() stops after preflight without attempting in-process init
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="preflight failed")
         
         with patch.dict(os.environ, {"MCP_STATA_SKIP_PREFLIGHT": "0"}), \
              patch("sys.stderr.write"):

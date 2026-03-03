@@ -156,9 +156,6 @@ class GraphCreationDetector:
         except Exception as e:
             logger.debug(f"Inventory fetch failed: {e}")
             return [], {}
-        except Exception as e:
-            logger.debug(f"Inventory fetch failed: {e}")
-            return [], {}
 
     def _get_graph_timestamp(self, graph_name: str) -> str:
         """Get the creation/modification timestamp of a graph using graph describe.

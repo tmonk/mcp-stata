@@ -2,7 +2,7 @@ import pytest
 import asyncio
 from mcp_stata.sessions import SessionManager
 
-pytestmark = pytest.mark.requires_stata
+pytestmark = [pytest.mark.requires_stata, pytest.mark.xdist_group("stata_heavy")]
 
 @pytest.mark.asyncio
 async def test_session_process_isolation():

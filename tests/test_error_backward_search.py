@@ -8,13 +8,11 @@ import tempfile
 import pytest
 from pathlib import Path
 
-import stata_setup
 from conftest import configure_stata_for_tests
 try:
-    stata_dir, stata_flavor = configure_stata_for_tests()
-    stata_setup.config(stata_dir, stata_flavor)
-except (FileNotFoundError, PermissionError) as e:
-    pytest.skip(f"Stata not found or not executable: {e}", allow_module_level=True)
+    configure_stata_for_tests()
+except Exception as e:
+    pytest.skip(f"Stata not available: {e}", allow_module_level=True)
 pytestmark = pytest.mark.requires_stata
 
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections import OrderedDict
 import hashlib
 import io
 import json
@@ -193,11 +194,9 @@ class UIChannelManager:
         self._dataset_version: int = 0
 
         self._views: dict[str, dict[str, ViewHandle]] = {} # session_id -> {view_id -> ViewHandle}
-        self._sort_index_cache: dict[tuple[str, str, tuple[str, ...]], list[int]] = {} # (session_id, dataset_id, sort_spec)
-        self._sort_cache_order: list[tuple[str, str, tuple[str, ...]]] = []
+        self._sort_index_cache: OrderedDict[tuple[str, str, tuple[str, ...]], list[int]] = OrderedDict()
         self._sort_cache_max_entries: int = 10
-        self._sort_table_cache: dict[tuple[str, str, tuple[str, ...]], Any] = {} # (session_id, dataset_id, sort_cols)
-        self._sort_table_order: list[tuple[str, str, tuple[str, ...]]] = []
+        self._sort_table_cache: OrderedDict[tuple[str, str, tuple[str, ...]], Any] = OrderedDict()
         self._sort_table_max_entries: int = 4
         self._dataset_id_caches: dict[str, tuple[str, int]] = {} # session_id -> (digest, version)
 
@@ -208,10 +207,10 @@ class UIChannelManager:
                 self._views[session_id].clear()
             
             # Clear caches for this session
-            self._sort_cache_order = [k for k in self._sort_cache_order if k[0] != session_id]
-            self._sort_index_cache = {k: v for k, v in self._sort_index_cache.items() if k[0] != session_id}
-            self._sort_table_order = [k for k in self._sort_table_order if k[0] != session_id]
-            self._sort_table_cache = {k: v for k, v in self._sort_table_cache.items() if k[0] != session_id}
+            for k in [k for k in self._sort_index_cache if k[0] == session_id]:
+                del self._sort_index_cache[k]
+            for k in [k for k in self._sort_table_cache if k[0] == session_id]:
+                del self._sort_table_cache[k]
 
     @staticmethod
     def _normalize_sort_spec(sort_spec: list[str]) -> tuple[str, ...]:
@@ -237,9 +236,7 @@ class UIChannelManager:
             cached = self._sort_index_cache.get(key)
             if cached is None:
                 return None
-            if key in self._sort_cache_order:
-                self._sort_cache_order.remove(key)
-            self._sort_cache_order.append(key)
+            self._sort_index_cache.move_to_end(key)
             return cached
 
     def _set_cached_sort_indices(
@@ -248,12 +245,10 @@ class UIChannelManager:
         key = (session_id, dataset_id, sort_spec)
         with self._lock:
             if key in self._sort_index_cache:
-                self._sort_cache_order.remove(key)
+                self._sort_index_cache.move_to_end(key)
             self._sort_index_cache[key] = indices
-            self._sort_cache_order.append(key)
-            while len(self._sort_cache_order) > self._sort_cache_max_entries:
-                evict = self._sort_cache_order.pop(0)
-                self._sort_index_cache.pop(evict, None)
+            while len(self._sort_index_cache) > self._sort_cache_max_entries:
+                self._sort_index_cache.popitem(last=False)
 
     def _get_cached_sort_table(
         self, session_id: str, dataset_id: str, sort_cols: tuple[str, ...]
@@ -263,9 +258,7 @@ class UIChannelManager:
             cached = self._sort_table_cache.get(key)
             if cached is None:
                 return None
-            if key in self._sort_table_order:
-                self._sort_table_order.remove(key)
-            self._sort_table_order.append(key)
+            self._sort_table_cache.move_to_end(key)
             return cached
 
     def _set_cached_sort_table(
@@ -274,12 +267,10 @@ class UIChannelManager:
         key = (session_id, dataset_id, sort_cols)
         with self._lock:
             if key in self._sort_table_cache:
-                self._sort_table_order.remove(key)
+                self._sort_table_cache.move_to_end(key)
             self._sort_table_cache[key] = table
-            self._sort_table_order.append(key)
-            while len(self._sort_table_order) > self._sort_table_max_entries:
-                evict = self._sort_table_order.pop(0)
-                self._sort_table_cache.pop(evict, None)
+            while len(self._sort_table_cache) > self._sort_table_max_entries:
+                self._sort_table_cache.popitem(last=False)
 
     def _get_sort_table(self, session_id: str, dataset_id: str, sort_cols: list[str]) -> Any:
         sort_cols_key = tuple(sort_cols)

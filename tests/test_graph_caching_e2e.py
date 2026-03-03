@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 from mcp_stata.stata_client import StataClient
 from mcp_stata.graph_detector import GraphCreationDetector, StreamingGraphCache
 
-pytestmark = pytest.mark.requires_stata
+pytestmark = [pytest.mark.requires_stata, pytest.mark.xdist_group("stata_heavy")]
 
 @pytest.fixture(scope="module")
 def real_client():

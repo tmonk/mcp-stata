@@ -175,17 +175,49 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_marker)
 
 
+_stata_detection_cache = None  # None = not checked; (path, edition, version) or Exception
+
+
+def detect_stata_version():
+    """
+    Detect Stata installation via the discovery module (filesystem checks only).
+
+    Returns (stata_exec_path, edition, version_number) when Stata is found.
+    Raises FileNotFoundError when no installation is detected.
+
+    This intentionally avoids loading the Stata C library or calling
+    stata_setup.config(), which can trigger an uncatchable C-level exit()
+    on incompatible Python versions.
+    """
+    global _stata_detection_cache
+    if _stata_detection_cache is not None:
+        if isinstance(_stata_detection_cache, Exception):
+            raise _stata_detection_cache
+        return _stata_detection_cache
+
+    try:
+        from mcp_stata.discovery import find_stata_path, _extract_version_number
+        stata_exec_path, edition = find_stata_path()
+        version = _extract_version_number(stata_exec_path)
+        result = (stata_exec_path, edition, version)
+        _stata_detection_cache = result
+        return result
+    except Exception as exc:
+        _stata_detection_cache = exc
+        raise
+
+
 def configure_stata_for_tests():
     """
     Helper function to configure Stata for tests that need it.
     Returns (stata_dir, stata_flavor) for stata_setup.config().
-    Raises exceptions if Stata is not found.
-    """
-    import stata_setup
-    from mcp_stata.discovery import find_stata_path
 
-    stata_exec_path, stata_flavor = find_stata_path()
-    # stata_setup.config needs the directory, not the binary
+    Uses the discovery module (filesystem-only) to locate Stata.
+    Does NOT call stata_setup.config() — that is left to the StataClient
+    fixture which handles it safely via its own subprocess preflight.
+    """
+    stata_exec_path, stata_flavor, _version = detect_stata_version()
+
     bin_dir = os.path.dirname(stata_exec_path)
 
     # For macOS .app bundles, use the parent directory of the .app

@@ -46,6 +46,91 @@ logger = logging.getLogger("mcp_stata")
 _POLARS_AVAILABLE: Optional[bool] = None
 _GRAPH_NAME_PATTERN = re.compile(r"name\(\s*(\"[^\"]+\"|'[^']+'|[^,\)\s]+)", re.IGNORECASE)
 
+# Pre-compiled regex patterns (avoids re-compilation per call)
+_HELP_TOPIC_RE = re.compile(r"(?i)^(?:help|h|hel|\?)\s+([\w\-\.]+)")
+_HELP_BARE_RE = re.compile(r"(?i)^(?:help|h|hel|\?)$")
+_SEARCH_RC_RE = re.compile(r"\{search r\((\d+)\)")
+_STANDALONE_RC_RE = re.compile(r"(?<!\w)r\((\d+)\);?")
+_SEARCH_RC_TEXT_RE = re.compile(r"search r\((\d+)\)")
+_RC_TEXT_RE = re.compile(r"(?<!\w)r\((\d+)\);?")
+_LINE_NUM_RE = re.compile(r"line\s+(\d+)", re.IGNORECASE)
+_SMCL_TAG_RE = re.compile(r"\{[^}]*\}")
+_SMCL_INLINE_RE = re.compile(r"\{[^}:]+:([^}]*)\}")
+_DOT_PROMPT_RE = re.compile(r"^\.\s+\S")
+_VALID_STATA_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SANITIZE_SPECIAL_RE = re.compile(r'[<>:"/\\|?*]')
+_SANITIZE_NON_WORD_RE = re.compile(r'[^\w\-_.]')
+_MAKE_VALID_NAME_STRIP_RE = re.compile(r"[^A-Za-z0-9_]")
+_MAKE_VALID_NAME_CHECK_RE = re.compile(r"^[A-Za-z_]")
+_GRAPH_REWRITE_RE = re.compile(
+    r"name\(\s*(?:`\"(?P<cq>[^\"]*)\"'|\"(?P<dq>[^\"]*)\"|(?P<uq>[^,\s\)]+))\s*(?P<rest>[^)]*)\)"
+)
+_FILTER_IDENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+_FILTER_MISSING_DOT_RE = re.compile(r"(?<![0-9])\.(?![0-9A-Za-z_])")
+
+# Pre-compiled patterns for _clean_internal_smcl
+_SMCL_TAGS_PATTERN = r"(?:\{[^}]+\})*"
+_LEADING_TXT_RE = re.compile(r"^\s*\{txt\}\s*(\r?\n\s*)+")
+_LEADING_BLANK_RE = re.compile(r"^\s*\r?\n+")
+_SMCL_HEADER_RE = re.compile(
+    r"(?:\{smcl\}\s*)?\{txt\}\{sf\}\{ul off\}\{\.-\}.*?opened on:.*?(?:\r?\n){1,2}",
+    re.DOTALL,
+)
+_SMCL_ORPHAN_RE = re.compile(r"^\s*\{smcl\}\s*$", re.MULTILINE)
+_SMCL_SF_UL_RE = re.compile(r"^\s*\{txt\}\{sf\}\{ul off\}\s*$", re.MULTILINE)
+_SMCL_SF_UL_SMCL_RE = re.compile(r"^\s*\{txt\}\{sf\}\{ul off\}\{smcl\}\s*$", re.MULTILINE)
+_SMCL_TAG_ONLY_LINE_RE = re.compile(r"(?:\{[^}]+\})+")
+_TRIPLE_NEWLINE_RE = re.compile(r"\n{3,}")
+
+# Block marker patterns for _clean_internal_smcl (pre-compiled)
+_BLOCK_MARKER_RES = [
+    re.compile(r"^" + _SMCL_TAGS_PATTERN + r"\. " + _SMCL_TAGS_PATTERN + p + _SMCL_TAGS_PATTERN + r"\s*(\r?\n|$)", re.MULTILINE)
+    for p in [
+        r"capture noisily \{c -\(\}",
+        r"capture noisily \{",
+        r"noisily \{c -\(\}",
+        r"noisily \{",
+        r"\{c \)\-\}",
+        r"\}",
+    ]
+]
+
+# Internal maintenance command pattern (pre-compiled)
+_INTERNAL_CMD_RE = re.compile(
+    r"^" + _SMCL_TAGS_PATTERN + r"\. " + _SMCL_TAGS_PATTERN
+    + r"(?:(?:capture|quietly)\s+)*"
+    + r"(?:"
+    + "|".join([
+        r"scalar _mcp_rc\b",
+        r"scalar _mcp_.*?\b",
+        r"macro drop _mcp_.*?\b",
+        r"log flush\b",
+        r"log close\b",
+        r"capture _return hold\b",
+        r"_return hold\b",
+        r"preemptive_cache\b",
+    ])
+    + r").*?" + _SMCL_TAGS_PATTERN + r"\s*(\r?\n|$)",
+    re.MULTILINE,
+)
+
+# Internal file notification patterns (pre-compiled)
+_INTERNAL_FILE_RES = [
+    re.compile(
+        r"^" + _SMCL_TAGS_PATTERN + r"\(file " + _SMCL_TAGS_PATTERN
+        + r".*?" + p + r".*?" + _SMCL_TAGS_PATTERN
+        + r" (?:saved|not found)(?: as [^)]+)?\).*?(\r?\n|$)",
+        re.MULTILINE,
+    )
+    for p in [r"mcp_(?:stata|hold|ghold|det|session)_", r"preemptive_cache"]
+]
+
+# Prompt-only line pattern (pre-compiled)
+_PROMPT_ONLY_RE = re.compile(
+    r"^" + _SMCL_TAGS_PATTERN + r"\. " + r"(?:\{txt\})+" + _SMCL_TAGS_PATTERN + r"(\s*\r?\n|$)",
+    re.MULTILINE,
+)
+
 def _check_polars_available() -> bool:
     """
     Check if Polars can be safely imported.
@@ -187,35 +272,6 @@ class StataClient:
         from .graph_detector import GraphCreationDetector
         self._graph_detector = GraphCreationDetector(self)
 
-    def __new__(cls):
-        inst = super(StataClient, cls).__new__(cls)
-        inst._exec_lock = threading.RLock()
-        inst._is_executing = False
-        inst._command_idx = 0
-        inst._initialized = False
-        inst._persistent_log_path = None
-        inst._persistent_log_name = None
-        inst._graph_signature_cache = {}
-        inst._graph_signature_cache_cmd_idx = None
-        inst._last_results = None
-        inst._list_graphs_cache = None
-        inst._list_graphs_cache_time = 0
-        inst._list_graphs_cache_lock = threading.Lock()
-        inst._graph_name_aliases = {}
-        inst._graph_name_reverse = {}
-        inst._profile_do_checked = False
-        inst._sysprofile_do_path = None
-        inst._profile_do_path = None
-        inst._profile_do_dirs = []
-        inst._reload_startup_on_clear = (
-            (os.getenv("MCP_STATA_NO_RELOAD_ON_CLEAR") or "").strip() not in ("1", "true", "yes")
-        )
-        inst._global_macro_cache = {}
-        inst._break_requested = False
-        from .graph_detector import GraphCreationDetector
-        inst._graph_detector = GraphCreationDetector(inst)
-        return inst
-
     def _increment_command_idx(self) -> int:
         """Increment and return the command counter."""
         self._command_idx += 1
@@ -268,14 +324,12 @@ class StataClient:
             code = code[1:].strip()
             
         # Regex for help commands
-        # Match: ^(?i)(help|h|hel|\?)\s+(\S+)
-        import re
-        match = re.match(r"(?i)^(?:help|h|hel|\?)\s+([\w\-\.]+)", code)
+        match = _HELP_TOPIC_RE.match(code)
         if match:
             return match.group(1)
         
         # Also match bare help (no topic)
-        if re.match(r"(?i)^(?:help|h|hel|\?)$", code):
+        if _HELP_BARE_RE.match(code):
             return "contents"
             
         return None
@@ -375,21 +429,6 @@ class StataClient:
         except Exception as e:
             logger.warning("SMCL log open exception: %s", e)
             
-        return False
-            
-        # Fallback to unnamed log
-        try:
-            unnamed_cmd = f"{'quietly ' if quiet else ''}log using \"{path_for_stata}\", replace smcl"
-            self._run_internal(f"capture quietly log close", echo=False)
-            self._run_internal(f"capture {unnamed_cmd}", echo=False)
-            try:
-                if Scalar.getValue("c(log)") == "on":
-                    self._last_smcl_log_named = False
-                    return True
-            except:
-                pass
-        except Exception:
-            pass
         return False
 
     def _close_smcl_log(self, log_name: str) -> None:
@@ -1014,7 +1053,7 @@ class StataClient:
             clean_lines = []
             for line in error_lines:
                 # Remove SMCL tags but keep the text content
-                cleaned = re.sub(r'\{[^}]*\}', '', line).strip()
+                cleaned = _SMCL_TAG_RE.sub('', line).strip()
                 if cleaned:
                     clean_lines.append(cleaned)
             
@@ -2404,10 +2443,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
     def _make_valid_stata_name(self, name: str) -> str:
         """Create a valid Stata name (<=32 chars, [A-Za-z_][A-Za-z0-9_]*)."""
-        base = re.sub(r"[^A-Za-z0-9_]", "_", name or "")
+        base = _MAKE_VALID_NAME_STRIP_RE.sub("_", name or "")
         if not base:
             base = "Graph"
-        if not re.match(r"^[A-Za-z_]", base):
+        if not _MAKE_VALID_NAME_CHECK_RE.match(base):
             base = f"G_{base}"
         base = base[:32]
 
@@ -2438,7 +2477,6 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             self._graph_name_reverse = {}
 
         # Handle common patterns: name("..." ...), name(`"..."' ...), or name(unquoted ...)
-        pat = re.compile(r"name\(\s*(?:`\"(?P<cq>[^\"]*)\"'|\"(?P<dq>[^\"]*)\"|(?P<uq>[^,\s\)]+))\s*(?P<rest>[^)]*)\)")
 
         def repl(m: re.Match) -> str:
             original = m.group("cq") or m.group("dq") or m.group("uq")
@@ -2451,7 +2489,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             internal = self._graph_name_aliases.get(original)
             if not internal:
                 # Only rewrite if it's NOT a valid Stata name or has special characters
-                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", original) or len(original) > 32:
+                if not _VALID_STATA_NAME_RE.match(original) or len(original) > 32:
                     internal = self._make_valid_stata_name(original)
                     self._graph_name_aliases[original] = internal
                     self._graph_name_reverse[internal] = original
@@ -2462,7 +2500,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             rest = m.group("rest") or ""
             return f"name({internal}{rest})"
 
-        return pat.sub(repl, code)
+        return _GRAPH_REWRITE_RE.sub(repl, code)
 
     def _get_rc_from_scalar(self, Scalar=None) -> int:
         """Safely get return code using sfi.Scalar access to c(rc)."""
@@ -2510,7 +2548,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         return None
 
     def _parse_line_from_text(self, text: str) -> Optional[int]:
-        match = re.search(r"line\s+(\d+)", text, re.IGNORECASE)
+        match = _LINE_NUM_RE.search(text)
         if match:
             try:
                 return int(match.group(1))
@@ -2720,11 +2758,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         cleaned = cleaned.replace("__G_L__", "__L__").replace("__G_R__", "__R__")
         
         # Keep inline directive content if present (e.g., {bf:word} -> word)
-        cleaned = re.sub(r"\{[^}:]+:([^}]*)\}", r"\1", cleaned)
+        cleaned = _SMCL_INLINE_RE.sub(r"\1", cleaned)
 
         # Remove remaining SMCL tags like {smcl}, {txt}, {res}, {com}, etc.
-        # We use a non-greedy match.
-        cleaned = re.sub(r"\{[^}]*\}", "", cleaned)
+        cleaned = _SMCL_TAG_RE.sub("", cleaned)
         
         # Convert placeholders back to literal braces
         cleaned = cleaned.replace("__L__", "{").replace("__R__", "}")
@@ -2751,28 +2788,19 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if content.startswith("\ufeff"):
             content = content.lstrip("\ufeff")
 
-        # Pattern for arbitrary SMCL tags: {txt}, {com}, etc.
-        tags = r"(?:\{[^}]+\})*"
-
         # Only remove leading boilerplate when explicitly requested
         if strip_leading_boilerplate:
             # Remove leading standalone {txt} boilerplate.
-            content = re.sub(r"^\s*\{txt\}\s*(\r?\n\s*)+", "", content)
+            content = _LEADING_TXT_RE.sub("", content)
             # Remove leading blank lines.
-            content = re.sub(r"^\s*\r?\n+", "", content)
+            content = _LEADING_BLANK_RE.sub("", content)
 
         # 1. Strip SMCL log headers and footers (multiple possible due to append/reopen)
-        # Headers typically run from {smcl} until the line after "opened on:".
-        content = re.sub(
-            r"(?:\{smcl\}\s*)?\{txt\}\{sf\}\{ul off\}\{\.-\}.*?opened on:.*?(?:\r?\n){1,2}",
-            "",
-            content,
-            flags=re.DOTALL,
-        )
+        content = _SMCL_HEADER_RE.sub("", content)
         # Remove orphan header markers that sometimes leak into output
-        content = re.sub(r"^\s*\{smcl\}\s*$", "", content, flags=re.MULTILINE)
-        content = re.sub(r"^\s*\{txt\}\{sf\}\{ul off\}\s*$", "", content, flags=re.MULTILINE)
-        content = re.sub(r"^\s*\{txt\}\{sf\}\{ul off\}\{smcl\}\s*$", "", content, flags=re.MULTILINE)
+        content = _SMCL_ORPHAN_RE.sub("", content)
+        content = _SMCL_SF_UL_RE.sub("", content)
+        content = _SMCL_SF_UL_SMCL_RE.sub("", content)
 
         # Remove leading boilerplate-only lines (blank or SMCL tag-only)
         if strip_leading_boilerplate:
@@ -2783,7 +2811,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 if not line:
                     lead += 1
                     continue
-                if re.fullmatch(r"(?:\{[^}]+\})+", line):
+                if _SMCL_TAG_ONLY_LINE_RE.fullmatch(line):
                     lead += 1
                     continue
                 break
@@ -2792,56 +2820,27 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
             # Remove leading tag-only {txt} lines and blank lines that can leak
             # from log open headers in streaming mode.
-            content = re.sub(r"^\s*\{txt\}\s*(\r?\n\s*)+", "", content)
-            content = re.sub(r"^\s*\r?\n+", "", content)
+            content = _LEADING_TXT_RE.sub("", content)
+            content = _LEADING_BLANK_RE.sub("", content)
 
         # 2. Strip our injected capture/noisily blocks
-        # We match start-of-line followed by optional tags, prompt, optional tags, 
-        # then the block markers. Must match the entire line to be safe.
-        block_markers = [
-            r"capture noisily \{c -\(\}",
-            r"capture noisily \{",
-            r"noisily \{c -\(\}",
-            r"noisily \{",
-            r"\{c \)\-\}",
-            r"\}"
-        ]
-        for p in block_markers:
-            # Match exactly the marker line (with optional trailing tags/whitespace)
-            pattern = r"^" + tags + r"\. " + tags + p + tags + r"\s*(\r?\n|$)"
-            content = re.sub(pattern, "", content, flags=re.MULTILINE)
+        for pat in _BLOCK_MARKER_RES:
+            content = pat.sub("", content)
 
         # 3. Strip internal maintenance commands
-        # These can optionally be prefixed with 'capture' and/or 'quietly'
-        internal_cmds = [
-            r"scalar _mcp_rc\b",
-            r"scalar _mcp_.*?\b",
-            r"macro drop _mcp_.*?\b",
-            r"log flush\b",
-            r"log close\b",
-            r"capture _return hold\b",
-            r"_return hold\b",
-            r"preemptive_cache\b"
-        ]
-        internal_regex = r"^" + tags + r"\. " + tags + r"(?:(?:capture|quietly)\s+)*" + r"(?:" + "|".join(internal_cmds) + r").*?" + tags + r"\s*(\r?\n|$)"
-        content = re.sub(internal_regex, "", content, flags=re.MULTILINE)
+        content = _INTERNAL_CMD_RE.sub("", content)
 
         # 4. Strip internal file notifications (e.g. from graph exports or internal logs)
-        internal_file_patterns = [
-            r"mcp_(?:stata|hold|ghold|det|session)_",
-            r"preemptive_cache"
-        ]
-        for p in internal_file_patterns:
-            content = re.sub(r"^" + tags + r"\(file " + tags + r".*?" + p + r".*?" + tags + r" (?:saved|not found)(?: as [^)]+)?\).*?(\r?\n|$)", "", content, flags=re.MULTILINE)
+        for pat in _INTERNAL_FILE_RES:
+            content = pat.sub("", content)
 
         # 5. Strip prompt-only lines that include our injected {txt} tag
-        # Preserve native Stata prompts like "{com}." which are part of verbatim output.
-        content = re.sub(r"^" + tags + r"\. " + r"(?:\{txt\})+" + tags + r"(\s*\r?\n|$)", "", content, flags=re.MULTILINE)
+        content = _PROMPT_ONLY_RE.sub("", content)
 
         # Do not add SMCL tags heuristically; preserve original output.
 
         # 6. Final cleanup of potential double newlines introduced by stripping
-        content = re.sub(r"\n{3,}", "\n\n", content)
+        content = _TRIPLE_NEWLINE_RE.sub("\n\n", content)
         # Remove leading blank lines that may remain after cleanup
         content = content.lstrip("\r\n")
 
@@ -2991,7 +2990,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # If RC looks wrong but SMCL shows no error markers, treat as success.
         if rc != 0 and smcl_content:
             has_err_tag = "{err}" in smcl_content
-            rc_match = re.search(r"(?<!\w)r\((\d+)\)", smcl_content)
+            rc_match = _STANDALONE_RC_RE.search(smcl_content)
             if rc_match:
                 try:
                     rc = int(rc_match.group(1))
@@ -3547,25 +3546,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # If RC looks wrong but SMCL shows no error markers, treat as success.
         if rc != 0 and smcl_content:
             has_err_tag = "{err}" in smcl_content
-            rc_match = re.search(r"(?<!\w)r\((\d+)\)", smcl_content)
-            if rc_match:
-                try:
-                    rc = int(rc_match.group(1))
-                except Exception:
-                    pass
-            else:
-                text_rc = None
-                try:
-                    text_rc = self._parse_rc_from_text(self._smcl_to_text(smcl_content))
-                except Exception:
-                    text_rc = None
-                if not has_err_tag and text_rc is None:
-                    rc = 0
-
-        # If RC looks wrong but SMCL shows no error markers, treat as success.
-        if rc != 0 and smcl_content:
-            has_err_tag = "{err}" in smcl_content
-            rc_match = re.search(r"(?<!\w)r\((\d+)\)", smcl_content)
+            rc_match = _STANDALONE_RC_RE.search(smcl_content)
             if rc_match:
                 try:
                     rc = int(rc_match.group(1))
@@ -3677,7 +3658,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             dofile_text = ""
         executed_lines = 0
         last_progress_time = 0.0
-        dot_prompt = re.compile(r"^\.\s+\S")
+        dot_prompt = _DOT_PROMPT_RE
 
         async def on_chunk_for_progress(chunk: str) -> None:
             nonlocal executed_lines, last_progress_time
@@ -3916,7 +3897,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # If RC looks wrong but SMCL shows no error markers, treat as success.
         if rc != 0 and smcl_content:
             has_err_tag = "{err}" in smcl_content
-            rc_match = re.search(r"(?<!\w)r\((\d+)\)", smcl_content)
+            rc_match = _STANDALONE_RC_RE.search(smcl_content)
             if rc_match:
                 try:
                     rc = int(rc_match.group(1))
@@ -4376,7 +4357,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         expr = expr.replace("&", " and ").replace("|", " or ")
 
         # Replace missing literal '.' (but not numeric decimals like 0.5).
-        expr = re.sub(r"(?<![0-9])\.(?![0-9A-Za-z_])", "None", expr)
+        expr = _FILTER_MISSING_DOT_RE.sub("None", expr)
 
         try:
             return compile(expr, "<filterExpr>", "eval")
@@ -5084,10 +5065,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
     
     def _sanitize_filename(self, name: str) -> str:
         """Sanitize graph name for safe file system usage."""
-        import re
         # Remove or replace problematic characters
-        safe_name = re.sub(r'[<>:"/\\|?*]', '_', name)
-        safe_name = re.sub(r'[^\w\-_.]', '_', safe_name)
+        safe_name = _SANITIZE_SPECIAL_RE.sub('_', name)
+        safe_name = _SANITIZE_NON_WORD_RE.sub('_', safe_name)
         # Limit length
         return safe_name[:100] if len(safe_name) > 100 else safe_name
     
@@ -5469,7 +5449,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # If RC looks wrong but SMCL shows no error markers, treat as success.
         if rc != 0 and smcl_content:
             has_err_tag = "{err}" in smcl_content
-            rc_match = re.search(r"(?<!\w)r\((\d+)\)", smcl_content)
+            rc_match = _STANDALONE_RC_RE.search(smcl_content)
             if rc_match:
                 try:
                     rc = int(rc_match.group(1))

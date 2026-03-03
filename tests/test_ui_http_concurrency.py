@@ -7,10 +7,6 @@ from mcp_stata.ui_http import UIChannelManager
 from mcp_stata.stata_client import StataClient
 
 class SlowMockStataClient(StataClient):
-    def __new__(cls, *args, **kwargs):
-        # StataClient uses __new__ with no args, so we must intercept it
-        return super(StataClient, cls).__new__(cls)
-        
     def __init__(self, *args, session_id: str = "default", **kwargs):
         self.session_id = session_id
         
