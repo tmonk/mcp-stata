@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v1.26.1 (2026-03-03)
+
+### Bug Fixes
+
+- Escape pipe characters in synopt table output to ensure proper Markdown formatting
+  ([`51bff0c`](https://github.com/tmonk/mcp-stata/commit/51bff0cdc94247a9560a4b5d89204bc59a08f6ba))
+
+### Refactoring
+
+- Refactor caching mechanisms in UIChannelManager to use OrderedDict for improved performance and
+  memory management. Update test configurations to streamline Stata detection and ensure
+  compatibility with xdist for parallel test execution. Adjust various test cases to handle Stata
+  initialization more gracefully, enhancing robustness and error handling.
+  ([`6c40c96`](https://github.com/tmonk/mcp-stata/commit/6c40c965990498cbb1fcdb8abb1e95fc3a438324))
+
+
 ## v1.26.0 (2026-02-27)
 
 ### Chores
