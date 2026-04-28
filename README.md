@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/tmonk-mcp-stata-badge.png)](https://mseep.ai/app/tmonk-mcp-stata)
+
 # Stata MCP Server
 
 <a href="https://cursor.com/en-US/install-mcp?name=mcp-stata&config=eyJjb21tYW5kIjogInV2eCAtLXJlZnJlc2ggLS1yZWZyZXNoLXBhY2thZ2UgbWNwLXN0YXRhIC0tZnJvbSBtY3Atc3RhdGFAbGF0ZXN0IG1jcC1zdGF0YSJ9"><img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Install MCP Server" height="20"></a>&nbsp;
