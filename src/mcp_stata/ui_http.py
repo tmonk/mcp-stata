@@ -37,6 +37,16 @@ except Exception:
     _native_argsort_numeric = None
     _native_argsort_mixed = None
 
+try:
+    import pyarrow as pa
+except ImportError:
+    pa = None
+
+try:
+    import polars as pl
+except ImportError:
+    pl = None
+
 
 def _try_native_argsort(
     table: Any,
@@ -47,8 +57,9 @@ def _try_native_argsort(
 ) -> list[int] | None:
     if _native_argsort_numeric is None and _native_argsort_mixed is None:
         return None
+    if pa is None:
+        return None
     try:
-        import pyarrow as pa
         import numpy as np
 
         is_string: list[bool] = []
@@ -92,7 +103,8 @@ def _get_sorted_indices_polars(
     nulls_last: list[bool],
     missing_threshold: float = 8.0e307,
 ) -> list[int]:
-    import polars as pl
+    if pl is None:
+        raise ImportError("polars is required for this operation")
 
     df = pl.from_arrow(table)
     # Normalize Stata missing values for numeric columns
@@ -262,7 +274,6 @@ class UIChannelManager:
                 return None
             self._sort_table_cache.move_to_end(key)
             return cached
-
     def _set_cached_sort_table(
         self, session_id: str, dataset_id: str, sort_cols: tuple[str, ...], table: Any
     ) -> None:
@@ -275,6 +286,8 @@ class UIChannelManager:
                 self._sort_table_cache.popitem(last=False)
 
     def _get_sort_table(self, session_id: str, dataset_id: str, sort_cols: list[str]) -> Any:
+        if pa is None:
+            raise ImportError("pyarrow is required for sorting")
         sort_cols_key = tuple(sort_cols)
         cached = self._get_cached_sort_table(session_id, dataset_id, sort_cols_key)
         if cached is not None:
@@ -293,8 +306,6 @@ class UIChannelManager:
             obs_indices=None,
         )
 
-        import pyarrow as pa
-
         with pa.ipc.open_stream(io.BytesIO(arrow_bytes)) as reader:
             table = reader.read_all()
 
@@ -303,6 +314,17 @@ class UIChannelManager:
 
         self._set_cached_sort_table(session_id, dataset_id, sort_cols_key, table)
         return table
+
+    def _get_nulls_last_for_sort(self, table: Any, sort_cols: list[str], descending: list[bool]) -> list[bool]:
+        if pa is None:
+            return [False] * len(sort_cols)
+        schema = table.schema
+        # Optimized lookup for large schemas
+        return [
+            descending[i] if pa.types.is_string(schema.field(col).type) or pa.types.is_large_string(schema.field(col).type)
+            else not descending[i]
+            for i, col in enumerate(sort_cols)
+        ]
 
     def get_channel(self) -> UIChannelInfo:
         self._ensure_http_server()
@@ -867,10 +889,10 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
             if obs_indices_sorted is None:
                 sort_cols = [s.lstrip("+-") for s in sort_spec]
                 descending = [s.startswith("-") for s in sort_spec]
-                nulls_last = [False] * len(sort_spec)
 
                 table = manager._get_sort_table(session_id, dataset_id, sort_cols)
                 if table is not None:
+                    nulls_last = manager._get_nulls_last_for_sort(table, sort_cols, descending)
                     threshold = _resolve_proxy(manager, session_id).get_stata_missing_threshold()
                     obs_indices_sorted = _try_native_argsort(table, sort_cols, descending, nulls_last, missing_threshold=threshold)
                     if obs_indices_sorted is None:
@@ -1003,10 +1025,10 @@ def handle_arrow_request(manager: UIChannelManager, body: dict[str, Any], *, vie
             if obs_indices_sorted is None:
                 sort_cols = [s.lstrip("+-") for s in sort_spec]
                 descending = [s.startswith("-") for s in sort_spec]
-                nulls_last = [False] * len(sort_spec)
 
                 table = manager._get_sort_table(session_id, dataset_id, sort_cols)
                 if table is not None:
+                    nulls_last = manager._get_nulls_last_for_sort(table, sort_cols, descending)
                     threshold = _resolve_proxy(manager, session_id).get_stata_missing_threshold()
                     obs_indices_sorted = _try_native_argsort(table, sort_cols, descending, nulls_last, missing_threshold=threshold)
                     if obs_indices_sorted is None:

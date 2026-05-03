@@ -278,6 +278,7 @@ def test_handle_page_request_sort_polars_fallback(monkeypatch):
         "truncated_cells": [],
     }
 
+    manager._client.get_stata_missing_threshold.return_value = 8e307
     table = pa.table(
         {
             "_n": [1, 2, 3],
@@ -286,6 +287,7 @@ def test_handle_page_request_sort_polars_fallback(monkeypatch):
         }
     )
     manager._get_sort_table.return_value = table
+    manager._get_nulls_last_for_sort.return_value = [True]
 
     monkeypatch.setattr(ui_http, "_native_argsort_numeric", None)
     monkeypatch.setattr(ui_http, "_native_argsort_mixed", None)
