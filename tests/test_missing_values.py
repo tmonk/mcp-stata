@@ -6,7 +6,11 @@ import pyarrow as pa
 import sys
 
 # Unit tests for StataClient missing value detection
-def test_is_stata_missing_unit(client):
+def test_is_stata_missing_unit():
+    from mcp_stata.stata_client import StataClient
+    client = StataClient()
+    client._initialized = True # Skip real init
+    
     # Test with standard None
     assert client._is_stata_missing(None) is True
     
@@ -26,8 +30,6 @@ def test_is_stata_missing_unit(client):
     with patch.dict(sys.modules, {'sfi': MagicMock()}):
         import sfi
         sfi.Missing.isMissing.return_value = True
-        # Note: we need to re-import or re-patch inside the method if it was imported locally
-        # but since our current implementation imports locally, it should pick up the mock.
         assert client._is_stata_missing(12345) is True
         sfi.Missing.isMissing.assert_called_with(12345)
 

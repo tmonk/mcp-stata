@@ -162,14 +162,17 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.requires_stata)
 
     force_mock = os.environ.get("MCP_STATA_MOCK") == "1"
-    if force_mock:
-        try:
-            import stata_setup
-            # If Stata is available, do not skip.
-            return
-        except (ImportError, ModuleNotFoundError):
-            pass
-        skip_marker = pytest.mark.skip(reason="Stata tests skipped in MCP_STATA_MOCK mode")
+    
+    stata_available = False
+    try:
+        import stata_setup
+        stata_available = True
+    except (ImportError, ModuleNotFoundError):
+        pass
+
+    if force_mock or not stata_available:
+        reason = "Stata tests skipped in MCP_STATA_MOCK mode" if force_mock else "Stata installation not found"
+        skip_marker = pytest.mark.skip(reason=reason)
         for item in items:
             if "requires_stata" in item.keywords:
                 item.add_marker(skip_marker)
