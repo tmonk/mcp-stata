@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.30.1 (2026-05-03)
+
+### Bug Fixes
+
+- Add Stata news
+  ([`00ecbc2`](https://github.com/tmonk/mcp-stata/commit/00ecbc2bb268ab5566e896485d391d52cf3292db))
+
+
 ## v1.30.0 (2026-05-03)
 
 ### Features
