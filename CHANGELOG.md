@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.30.0 (2026-05-03)
+
+### Features
+
+- Add optional help paragraph merging
+  ([`e5bbbd6`](https://github.com/tmonk/mcp-stata/commit/e5bbbd6e529e7ce9ede41fc2c888dedc35f13cd1))
+
+
 ## v1.29.0 (2026-05-03)
 
 
