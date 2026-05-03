@@ -150,7 +150,11 @@ class StataWorker:
                 self.conn.send({"event": "result", "id": msg_id, "result": path})
 
             elif msg_type == "get_help":
-                help_text = self.client.get_help(args["topic"], plain_text=args.get("plain_text", False))
+                help_text = self.client.get_help(
+                    args["topic"],
+                    plain_text=args.get("plain_text", False),
+                    merge_paragraphs=args.get("merge_paragraphs", True),
+                )
                 self.conn.send({"event": "result", "id": msg_id, "result": help_text})
 
             elif msg_type == "run_command_structured":

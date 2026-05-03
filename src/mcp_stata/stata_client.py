@@ -2781,28 +2781,86 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             total += 1
         return total
 
-    def _smcl_to_text(self, smcl: str) -> str:
+    def _smcl_to_text(self, smcl: str, merge_paragraphs: bool = True) -> str:
         """Convert simple SMCL markup into plain text for LLM-friendly help."""
-        # First, clean internal maintenance
+        if merge_paragraphs:
+            # Merge paragraph continuations on raw SMCL *before* tag stripping.
+            # Paragraph tags ({pstd}, {phang}, {phang2}, {pmore}, {pin}, etc.) open a
+            # paragraph; all subsequent lines belong to that paragraph until {p_end}
+            # or a blank line. We join them so fixed-width line-wrapping disappears.
+            _PARA_OPEN_RE = re.compile(
+                r"^\s*\{(?:pstd|phang2?|pmore2?|pin\d*|p\d*std|p\b[^}]*)\}",
+                re.IGNORECASE,
+            )
+            raw_lines = smcl.replace("\r", "").splitlines()
+            merged_raw: list[str] = []
+            in_para = False
+            para_buf: list[str] = []
+
+            def flush_para() -> None:
+                if para_buf:
+                    merged_raw.append(" ".join(para_buf))
+                    para_buf.clear()
+
+            for raw_line in raw_lines:
+                if in_para:
+                    if "{p_end}" in raw_line:
+                        before = raw_line.split("{p_end}", 1)[0].strip()
+                        if before:
+                            para_buf.append(before)
+                        flush_para()
+                        in_para = False
+                        continue
+
+                    stripped = raw_line.strip()
+                    if not stripped:
+                        # Blank line closes the paragraph
+                        flush_para()
+                        in_para = False
+                        merged_raw.append("")
+                    else:
+                        para_buf.append(stripped)
+                    continue
+
+                para_m = _PARA_OPEN_RE.match(raw_line)
+                if para_m:
+                    flush_para()
+                    remainder = raw_line[para_m.end():].strip()
+                    if "{p_end}" in remainder:
+                        before = remainder.split("{p_end}", 1)[0].strip()
+                        if before:
+                            para_buf.append(before)
+                        flush_para()
+                        in_para = False
+                    else:
+                        in_para = True
+                        if remainder:
+                            para_buf.append(remainder)
+                else:
+                    if "{p_end}" in raw_line:
+                        merged_raw.append(raw_line.split("{p_end}", 1)[0].strip())
+                        continue
+                    merged_raw.append(raw_line)
+
+            flush_para()
+            smcl = "\n".join(merged_raw)
+
+        # Clean internal maintenance after optional paragraph merge.
         smcl = self._clean_internal_smcl(smcl)
-        
-        # Protect escape sequences for curly braces 
-        # SMCL uses {c -(} for { and {c )-} for }
+
+        # Protect literal brace escapes before tag stripping
         cleaned = smcl.replace("{c -(}", "__L__").replace("{c )-}", "__R__")
-        
-        # Handle SMCL escape variations that might have been partially processed
         cleaned = cleaned.replace("__G_L__", "__L__").replace("__G_R__", "__R__")
-        
-        # Keep inline directive content if present (e.g., {bf:word} -> word)
+
+        # Keep inline directive content (e.g., {bf:word} → word)
         cleaned = _SMCL_INLINE_RE.sub(r"\1", cleaned)
 
-        # Remove remaining SMCL tags like {smcl}, {txt}, {res}, {com}, etc.
+        # Remove remaining SMCL tags
         cleaned = _SMCL_TAG_RE.sub("", cleaned)
-        
-        # Convert placeholders back to literal braces
+
+        # Restore literal braces
         cleaned = cleaned.replace("__L__", "{").replace("__R__", "}")
-        
-        # Normalize whitespace
+
         cleaned = cleaned.replace("\r", "")
         lines = [line.rstrip() for line in cleaned.splitlines()]
         return "\n".join(lines).strip()
@@ -5001,7 +5059,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         msg = resp.error.message if resp.error else "graph export failed: file missing"
         raise RuntimeError(msg)
 
-    def get_help(self, topic: str, plain_text: bool = False) -> str:
+    def get_help(self, topic: str, plain_text: bool = False, merge_paragraphs: bool = True) -> str:
         """Returns help text as Markdown (default) or plain text."""
         if not self._initialized:
             self.init()
@@ -5023,12 +5081,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 with open(fn, 'r', encoding='utf-8', errors='replace') as f:
                     smcl = f.read()
                 if plain_text:
-                    return self._smcl_to_text(smcl)
+                    return self._smcl_to_text(smcl, merge_paragraphs=merge_paragraphs)
                 try:
-                    return smcl_to_markdown(smcl, adopath=os.path.dirname(fn), current_file=os.path.splitext(os.path.basename(fn))[0])
+                    return smcl_to_markdown(smcl, adopath=os.path.dirname(fn), current_file=os.path.splitext(os.path.basename(fn))[0], merge_paragraphs=merge_paragraphs)
                 except Exception as parse_err:
                     logger.warning("SMCL to Markdown failed, falling back to plain text: %s", parse_err)
-                    return self._smcl_to_text(smcl)
+                    return self._smcl_to_text(smcl, merge_paragraphs=merge_paragraphs)
             except Exception as e:
                 logger.warning("Help file read failed for %s: %s", topic, e)
 

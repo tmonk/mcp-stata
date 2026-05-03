@@ -230,11 +230,14 @@ def _collect_paragraph(lines: list, start_idx: int, initial: str) -> tuple:
     return content.strip(), idx
 
 
+
+
+
 # ---------------------------------------------------------------------------
 # Main converter
 # ---------------------------------------------------------------------------
 
-def smcl_to_markdown(smcl_text: str, adopath: str = None, current_file: str = "help") -> str:
+def smcl_to_markdown(smcl_text: str, adopath: str = None, current_file: str = "help", merge_paragraphs: bool = True) -> str:
     """Convert SMCL text to structured Markdown.
 
     Produces:

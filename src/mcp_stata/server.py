@@ -1224,10 +1224,17 @@ async def export_graph(graph_name: str = None, format: str = "pdf", session_id: 
 
 @mcp.tool()
 @log_call
-async def get_help(topic: str, plain_text: bool = False, session_id: str = "default") -> str:
-    """Returns help for a Stata command."""
+async def get_help(topic: str, plain_text: bool = False, merge_paragraphs: bool = True, session_id: str = "default") -> str:
+    """Returns help for a Stata command.
+    
+    Args:
+        topic: The command or topic to get help for.
+        plain_text: If True, returns plain text instead of Markdown.
+        merge_paragraphs: If True, merges fixed-width split paragraphs.
+        session_id: The ID of the Stata session.
+    """
     session = await session_manager.get_or_create_session(session_id)
-    return await session.call("get_help", {"topic": topic, "plain_text": plain_text})
+    return await session.call("get_help", {"topic": topic, "plain_text": plain_text, "merge_paragraphs": merge_paragraphs})
 
 @mcp.tool()
 async def get_stored_results(session_id: str = "default") -> str:
