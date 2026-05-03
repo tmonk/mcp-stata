@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.30.2 (2026-05-03)
+
+### Bug Fixes
+
+- Fix README Stata image URL
+  ([`92b819e`](https://github.com/tmonk/mcp-stata/commit/92b819ec44609c2db6cfff2ab5fdf7f27495d746))
+
+
 ## v1.30.1 (2026-05-03)
 
 ### Bug Fixes
