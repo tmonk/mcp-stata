@@ -42,6 +42,7 @@ def _try_native_argsort(
     sort_cols: list[str],
     descending: list[bool],
     nulls_last: list[bool],
+    missing_threshold: float = 8.0e307,
 ) -> list[int] | None:
     if _native_argsort_numeric is None and _native_argsort_mixed is None:
         return None
@@ -64,7 +65,7 @@ def _try_native_argsort(
             if np_arr.dtype != np.float64:
                 np_arr = np_arr.astype(np.float64, copy=False)
             # Normalize Stata missing values for numeric columns
-            np_arr = np.where(np_arr > 8.0e307, np.nan, np_arr)
+            np_arr = np.where((np_arr >= missing_threshold) | np.isnan(np_arr), np.nan, np_arr)
             cols.append(np_arr)
 
         if "_n" not in table.column_names:
@@ -88,6 +89,7 @@ def _get_sorted_indices_polars(
     sort_cols: list[str],
     descending: list[bool],
     nulls_last: list[bool],
+    missing_threshold: float = 8.0e307,
 ) -> list[int]:
     import polars as pl
 
@@ -100,7 +102,7 @@ def _get_sorted_indices_polars(
             continue
         if dtype in (pl.Float32, pl.Float64):
             exprs.append(
-                pl.when(pl.col(col) > 8.0e307)
+                pl.when((pl.col(col) >= missing_threshold) | pl.col(col).is_nan())
                 .then(None)
                 .otherwise(pl.col(col))
                 .alias(col)
@@ -878,9 +880,10 @@ def handle_page_request(manager: UIChannelManager, body: dict[str, Any], *, view
 
                 table = manager._get_sort_table(session_id, dataset_id, sort_cols)
                 if table is not None:
-                    obs_indices_sorted = _try_native_argsort(table, sort_cols, descending, nulls_last)
+                    threshold = _resolve_proxy(manager, session_id).get_stata_missing_threshold()
+                    obs_indices_sorted = _try_native_argsort(table, sort_cols, descending, nulls_last, missing_threshold=threshold)
                     if obs_indices_sorted is None:
-                        obs_indices_sorted = _get_sorted_indices_polars(table, sort_cols, descending, nulls_last)
+                        obs_indices_sorted = _get_sorted_indices_polars(table, sort_cols, descending, nulls_last, missing_threshold=threshold)
                     manager._set_cached_sort_indices(session_id, dataset_id, sort_spec, obs_indices_sorted)
 
             if obs_indices_sorted:
@@ -1013,9 +1016,10 @@ def handle_arrow_request(manager: UIChannelManager, body: dict[str, Any], *, vie
 
                 table = manager._get_sort_table(session_id, dataset_id, sort_cols)
                 if table is not None:
-                    obs_indices_sorted = _try_native_argsort(table, sort_cols, descending, nulls_last)
+                    threshold = _resolve_proxy(manager, session_id).get_stata_missing_threshold()
+                    obs_indices_sorted = _try_native_argsort(table, sort_cols, descending, nulls_last, missing_threshold=threshold)
                     if obs_indices_sorted is None:
-                        obs_indices_sorted = _get_sorted_indices_polars(table, sort_cols, descending, nulls_last)
+                        obs_indices_sorted = _get_sorted_indices_polars(table, sort_cols, descending, nulls_last, missing_threshold=threshold)
                     manager._set_cached_sort_indices(session_id, dataset_id, sort_spec, obs_indices_sorted)
 
             if obs_indices_sorted:

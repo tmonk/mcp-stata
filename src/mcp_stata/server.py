@@ -164,6 +164,9 @@ class StataClientProxy:
 
     def get_dataset_state(self) -> dict[str, Any]:
         return self._call_sync("get_dataset_state", {})
+    
+    def get_stata_missing_threshold(self) -> float:
+        return self._call_sync("get_stata_missing_threshold", {})
 
     def get_arrow_stream(self, **kwargs) -> bytes:
         return self._call_sync("get_arrow_stream", kwargs)
