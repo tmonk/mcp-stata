@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.27.0 (2026-05-03)
+
+### Features
+
+- Bump version
+  ([`0b24345`](https://github.com/tmonk/mcp-stata/commit/0b24345b499950244ca1c661826a93efc9abc414))
+
+
 ## v1.26.1 (2026-03-03)
 
 ### Bug Fixes
