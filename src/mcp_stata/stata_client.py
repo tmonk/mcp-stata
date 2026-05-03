@@ -271,6 +271,42 @@ class StataClient:
         self._break_requested = False
         from .graph_detector import GraphCreationDetector
         self._graph_detector = GraphCreationDetector(self)
+        self._missing_threshold = None
+
+    def get_stata_missing_threshold(self) -> float:
+        """Returns the Stata missing value threshold (smallest double missing value).
+        
+        Values greater than or equal to this threshold are considered missing values in Stata 
+        (e.g., '.', '.a', '.b', ..., '.z').
+        """
+        if self._missing_threshold is not None:
+            return self._missing_threshold
+        
+        try:
+            from sfi import Missing
+            self._missing_threshold = Missing.getValue()
+        except (ImportError, AttributeError):
+            # Fallback to double missing value (.) which is 8.988...e+307
+            # but we use a slightly lower bound to be safe for magic number checks.
+            self._missing_threshold = 1e307
+            
+        return self._missing_threshold
+
+    def _normalize_stata_value(self, val: Any) -> Any:
+        """Normalizes a single Stata value to None if it is a missing value (., .a, .b, ...)."""
+        if val is None:
+            return None
+        
+        try:
+            threshold = self.get_stata_missing_threshold()
+            # Stata missing values are >= threshold
+            # Handles ., .a, .b, ..., .z
+            if isinstance(val, (int, float)) and val >= threshold:
+                return None
+        except Exception:
+            pass
+            
+        return val
 
     def _increment_command_idx(self) -> int:
         """Increment and return the command counter."""
@@ -3466,8 +3502,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     raise
                 finally:
                     done.set()
-        except* Exception as exc_group:
-            logger.debug("SMCL streaming task group failed: %s", exc_group)
+        except Exception as exc:
+            logger.debug("SMCL streaming task group failed: %s", exc)
         finally:
             tee.close()
 
@@ -3814,8 +3850,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     raise
                 finally:
                     done.set()
-        except* Exception as exc_group:
-            logger.debug("SMCL streaming task group failed: %s", exc_group)
+        except Exception as exc:
+            logger.debug("SMCL streaming task group failed: %s", exc)
         finally:
             tee.close()
 
@@ -4001,7 +4037,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         return self._truncate_command_output(result, max_output_lines)
 
     def get_data(self, start: int = 0, count: int = 50) -> List[Dict[str, Any]]:
-        """Returns valid JSON-serializable data. Efficiently fetches only the requested slice."""
+        """Returns valid JSON-serializable data. Efficiently fetches only the requested slice.
+        
+        All Stata missing value variants (., .a, .b, ..., .z) are normalized to null/None.
+        """
         if not self._initialized:
             self.init()
 
@@ -4016,7 +4055,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 stata_end = start + count
                 
                 # Verify total observations to avoid out-of-bounds requests
-                from sfi import Data
+                from sfi import Data, Missing
                 total_obs = int(Data.getObsTotal())
                 if stata_start >= total_obs:
                     return []
@@ -4024,25 +4063,103 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     stata_end = total_obs
 
                 # Much more memory efficient than loading the entire dataset
-                # obs=range(0, 10) fetches rows 0 through 9 (equivalent to Stata _n 1 to 10).
                 df = self.stata.pdataframe_from_data(obs=range(stata_start, stata_end))
 
                 # Normalize Stata missing values to None for JSON serialization
                 try:
-                    from sfi import Missing
-                    threshold = Missing.getValue()
                     import numpy as np
+                    threshold = self.get_stata_missing_threshold()
+                    
                     for col in df.columns:
-                        if df[col].dtype in (np.float64, np.float32):
-                            df[col] = df[col].where(df[col] < threshold, np.nan)
+                        # Stata missing values are >= threshold
+                        # This handles ., .a, .b, ..., .z
+                        if df[col].dtype in (np.float64, np.float32, np.int64, np.int32):
+                            # Ensure we handle potential promotion to float
+                            mask = df[col] >= threshold
+                            if mask.any():
+                                if df[col].dtype not in (np.float64, np.float32):
+                                    df[col] = df[col].astype(np.float64)
+                                df[col] = df[col].where(~mask, np.nan)
                     
                     # Convert to dict and ensure NaNs are None for JSON null
                     return df.replace({np.nan: None}).to_dict(orient="records")
-                except (ImportError, AttributeError):
+                except Exception as e:
+                    logger.debug(f"Normalization failed, falling back to raw: {e}")
                     return df.to_dict(orient="records")
             except Exception as e:
                 logger.error("Failed to retrieve data: %s", e)
                 return [{"error": f"Failed to retrieve data: {e}"}]
+
+    def find_variables(self, query: str) -> Dict[str, Any]:
+        """Search for variables by name or label (case-insensitive)."""
+        if not self._initialized:
+            self.init()
+
+        from sfi import Data
+        query = query.lower()
+        vars_info = []
+        
+        with self._exec_lock:
+            for i in range(Data.getVarCount()):
+                name = Data.getVarName(i)
+                label = Data.getVarLabel(i)
+                
+                if query in name.lower() or query in label.lower():
+                    vars_info.append(VariableInfo(
+                        name=name,
+                        label=label,
+                        type=str(Data.getVarType(i))
+                    ))
+        
+        return VariablesResponse(variables=vars_info).model_dump()
+
+    def get_data_summary(self, variables: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Returns a quick summary (mean, min, max, N) for specified variables.
+        
+        Numerical summary statistics are normalized to ensure Stata missing values do not leak.
+        """
+        if not self._initialized:
+            self.init()
+
+        from sfi import Data, Scalar, Missing
+        
+        if variables is None:
+            variables = [Data.getVarName(i) for i in range(Data.getVarCount())]
+        
+        summary = {}
+        threshold = Missing.getValue()
+        
+        with self._exec_lock:
+            for var in variables:
+                try:
+                    # We run summarize quietly and pull results from r()
+                    # This is more robust than manual calculation for complex types
+                    self._run_internal(f"capture quietly summarize {var}", echo=False)
+                    
+                    # Check if variable is numeric by looking at r(N)
+                    n = Scalar.getValue("r(N)")
+                    if n is None or n == 0:
+                        # Might be string or all missing
+                        summary[var] = {"N": 0, "error": "No observations or non-numeric"}
+                        continue
+                    
+                    mean = Scalar.getValue("r(mean)")
+                    min_val = Scalar.getValue("r(min)")
+                    max_val = Scalar.getValue("r(max)")
+                    sd = Scalar.getValue("r(sd)")
+                    
+                    # Normalize missing values in scalars if they somehow leaked
+                    summary[var] = {
+                        "N": int(n),
+                        "mean": self._normalize_stata_value(mean),
+                        "min": self._normalize_stata_value(min_val),
+                        "max": self._normalize_stata_value(max_val),
+                        "sd": self._normalize_stata_value(sd)
+                    }
+                except Exception as e:
+                    summary[var] = {"error": str(e)}
+        
+        return summary
 
     def list_variables(self) -> List[Dict[str, str]]:
         """Returns list of variables with labels."""
@@ -4283,6 +4400,8 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         """
         Returns an Apache Arrow IPC stream (as bytes) for the requested data page.
         Uses Polars if available (faster), falls back to Pandas.
+        
+        All Stata missing value variants (., .a, .b, ..., .z) are normalized to null/None.
         """
         if not self._initialized:
             self.init()
@@ -4346,8 +4465,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     
                     # Normalize Stata missing values to null
                     try:
-                        from sfi import Missing
-                        threshold = Missing.getValue()
+                        threshold = self.get_stata_missing_threshold()
                         for col in vars:
                             if df[col].dtype in (pl.Float64, pl.Float32):
                                 df = df.with_columns(
@@ -4356,7 +4474,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                                     .otherwise(pl.col(col))
                                     .alias(col)
                                 )
-                    except (ImportError, AttributeError):
+                    except Exception:
                         pass
 
                     if include_obs_no:
@@ -4371,12 +4489,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
                     # Normalize Stata missing values to null
                     try:
-                        from sfi import Missing
-                        threshold = Missing.getValue()
+                        threshold = self.get_stata_missing_threshold()
                         for col in vars:
                             if df[col].dtype in (np.float64, np.float32):
                                 df[col] = df[col].where(df[col] < threshold, None)
-                    except (ImportError, AttributeError):
+                    except Exception:
                         pass
 
                     if include_obs_no:
@@ -4956,7 +5073,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     for name in sc_names:
                         try:
                             val = Scalar.getValue(f"{rclass}({name})")
-                            results[rclass][name] = val
+                            results[rclass][name] = self._normalize_stata_value(val)
                         except Exception:
                             pass
                     

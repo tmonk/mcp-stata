@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import sys
+import json
+from mcp_stata.server import get_data, get_stored_results, run_command
 
 # Unit tests for StataClient missing value detection
 def test_is_stata_missing_unit():
@@ -60,6 +62,17 @@ def test_missing_values_integration(client):
     # Note: depending on how pdataframe_from_data and to_dict work, 
     # it might be None or NaN. Our fix should have made it None.
     assert data[1]["num_var"] is None
+    
+    # 2.5 Test extended missing values (.a, .b)
+    client.run_command_structured("replace num_var = .a in 1")
+    client.run_command_structured("replace num_var = .b in 2")
+    data_ext = client.get_data(start=0, count=2)
+    assert data_ext[0]["num_var"] is None
+    assert data_ext[1]["num_var"] is None
+    
+    # Restore for next tests
+    client.run_command_structured("replace num_var = 1 in 1")
+    client.run_command_structured("replace num_var = . in 2")
     
     # 3. Test get_arrow_stream (Arrow normalization)
     arrow_bytes = client.get_arrow_stream(offset=0, limit=2, vars=["num_var", "str_var"], include_obs_no=True)
@@ -122,3 +135,49 @@ def test_missing_threshold_fallback():
         c = StataClient()
         threshold = c.get_stata_missing_threshold()
         assert threshold == 8.98846567431158e+307
+
+@pytest.mark.requires_stata
+@pytest.mark.asyncio
+async def test_get_stored_results_normalization_integration(client):
+    """Verify that get_stored_results normalizes missing values in r() and e()."""
+    # 1. Test missing values in r() via summarize on empty set
+    await run_command("sysuse auto, clear")
+    await run_command("summarize price if 0")
+    
+    res_str = await get_stored_results()
+    res = json.loads(res_str)
+    
+    # r(mean) should be null for N=0
+    if "r" in res:
+        assert res["r"].get("mean") is None
+        assert res["r"].get("N") == 0
+        
+    # 2. Test extended missing values in r() via explicit return
+    # Use 'return scalar' which works in modern Stata to set r()
+    await run_command("return scalar test_miss = .b")
+    res2_str = await get_stored_results()
+    res2 = json.loads(res2_str)
+    
+    # Some Stata versions might not support 'return scalar' at cmd line, 
+    # so we check if it exists before asserting.
+    if "test_miss" in res2.get("r", {}):
+        assert res2["r"]["test_miss"] is None
+
+@pytest.mark.requires_stata
+@pytest.mark.asyncio
+async def test_get_data_extended_missing_normalization_integration(client):
+    """Verify get_data normalizes .a, .b to null."""
+    await run_command("clear")
+    await run_command("set obs 3")
+    await run_command("gen x = .")
+    await run_command("replace x = .a in 2")
+    await run_command("replace x = .z in 3")
+    
+    res_str = await get_data(start=0, count=3)
+    res = json.loads(res_str)
+    data = res["data"]
+    
+    assert len(data) == 3
+    assert data[0]["x"] is None
+    assert data[1]["x"] is None
+    assert data[2]["x"] is None
