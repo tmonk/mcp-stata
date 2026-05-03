@@ -3978,6 +3978,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         return result
 
+    def get_stata_missing_threshold(self) -> float:
+        """Returns the official Stata missing value threshold (value of '.') from sfi.Missing."""
+        try:
+            from sfi import Missing
+            return Missing.getValue()
+        except (ImportError, AttributeError):
+            # Fallback to the standard Stata double missing value if sfi is not fully available
+            return 8.98846567431158e+307
+
     def run_command_structured(self, code: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None, cwd: Optional[str] = None) -> CommandResponse:
         """Runs a Stata command and returns a structured envelope.
 
@@ -4018,8 +4027,19 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 # obs=range(0, 10) fetches rows 0 through 9 (equivalent to Stata _n 1 to 10).
                 df = self.stata.pdataframe_from_data(obs=range(stata_start, stata_end))
 
-                # Convert to dict
-                return df.to_dict(orient="records")
+                # Normalize Stata missing values to None for JSON serialization
+                try:
+                    from sfi import Missing
+                    threshold = Missing.getValue()
+                    import numpy as np
+                    for col in df.columns:
+                        if df[col].dtype in (np.float64, np.float32):
+                            df[col] = df[col].where(df[col] < threshold, np.nan)
+                    
+                    # Convert to dict and ensure NaNs are None for JSON null
+                    return df.replace({np.nan: None}).to_dict(orient="records")
+                except (ImportError, AttributeError):
+                    return df.to_dict(orient="records")
             except Exception as e:
                 logger.error("Failed to retrieve data: %s", e)
                 return [{"error": f"Failed to retrieve data: {e}"}]
@@ -4157,10 +4177,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
     def _is_stata_missing(value: Any) -> bool:
         if value is None:
             return True
-        if isinstance(value, float):
-            # Stata missing values typically show up as very large floats via sfi.Data.get
-            return value > 8.0e307
-        return False
+        try:
+            from sfi import Missing
+            return Missing.isMissing(value)
+        except (ImportError, AttributeError):
+            if isinstance(value, float):
+                # Stata missing values typically show up as very large floats via sfi.Data.get
+                # 8.0e307 is a safe lower bound for all Stata missing values (. to .z)
+                return value > 8.0e307
+            return False
 
     def _normalize_cell(self, value: Any, *, max_chars: int) -> tuple[Any, bool]:
         if self._is_stata_missing(value):
@@ -4316,14 +4341,44 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 raw_data = Data.get(var=vars, obs=obs_list, valuelabel=False)
                 
                 if use_polars:
+                    import polars as pl
                     df = pl.DataFrame(raw_data, schema=vars, orient="row")
+                    
+                    # Normalize Stata missing values to null
+                    try:
+                        from sfi import Missing
+                        threshold = Missing.getValue()
+                        for col in vars:
+                            if df[col].dtype in (pl.Float64, pl.Float32):
+                                df = df.with_columns(
+                                    pl.when(pl.col(col) >= threshold)
+                                    .then(None)
+                                    .otherwise(pl.col(col))
+                                    .alias(col)
+                                )
+                    except (ImportError, AttributeError):
+                        pass
+
                     if include_obs_no:
                         obs_nums = [i + 1 for i in obs_list]
                         df = df.with_columns(pl.Series("_n", obs_nums, dtype=pl.Int64))
                         df = df.select(["_n"] + vars)
                     table = df.to_arrow()
                 else:
+                    import pandas as pd
+                    import numpy as np
                     df = pd.DataFrame(raw_data, columns=vars)
+
+                    # Normalize Stata missing values to null
+                    try:
+                        from sfi import Missing
+                        threshold = Missing.getValue()
+                        for col in vars:
+                            if df[col].dtype in (np.float64, np.float32):
+                                df[col] = df[col].where(df[col] < threshold, None)
+                    except (ImportError, AttributeError):
+                        pass
+
                     if include_obs_no:
                         df.insert(0, "_n", [i + 1 for i in obs_list])
                     table = pa.Table.from_pandas(df, preserve_index=False)
