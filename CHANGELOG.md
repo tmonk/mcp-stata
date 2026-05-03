@@ -4,10 +4,20 @@
 
 ## v1.27.0 (2026-05-03)
 
+### Bug Fixes
+
+- Handle Stata missing values and sorting threshold
+  ([`a26bfb3`](https://github.com/tmonk/mcp-stata/commit/a26bfb3dcef42b8b04459aada7779f2ae5636815))
+
 ### Features
 
 - Bump version
   ([`0b24345`](https://github.com/tmonk/mcp-stata/commit/0b24345b499950244ca1c661826a93efc9abc414))
+
+### Testing
+
+- Refine Stata test skipping and update test mocks
+  ([`a2c29e7`](https://github.com/tmonk/mcp-stata/commit/a2c29e79c1642f487090d33e9254bf6a0acb3634))
 
 
 ## v1.26.1 (2026-03-03)
