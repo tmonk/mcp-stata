@@ -51,7 +51,6 @@ def _make_sfi_mock(*, n: int = 5, k: int = 2, frame: str = "default") -> MagicMo
     
     return mock_sfi
 
-
 # ---------------------------------------------------------------------------
 # 1. _require_data_in_memory – must not call get_dataset_state
 # ---------------------------------------------------------------------------
