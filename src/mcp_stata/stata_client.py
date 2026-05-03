@@ -4294,19 +4294,19 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
     def _is_stata_missing(value: Any) -> bool:
         if value is None:
             return True
+        if not isinstance(value, (int, float)):
+            return False
         try:
             from sfi import Missing
             return Missing.isMissing(value)
-        except (ImportError, AttributeError):
-            if isinstance(value, float):
-                # Stata missing values typically show up as very large floats via sfi.Data.get
-                # 8.0e307 is a safe lower bound for all Stata missing values (. to .z)
-                return value > 8.0e307
-            return False
+        except (ImportError, AttributeError, TypeError):
+            # Stata missing values typically show up as very large floats via sfi.Data.get
+            # 8.0e307 is a safe lower bound for all Stata missing values (. to .z)
+            return value > 8.0e307
 
     def _normalize_cell(self, value: Any, *, max_chars: int) -> tuple[Any, bool]:
         if self._is_stata_missing(value):
-            return ".", False
+            return None, False
         if isinstance(value, str):
             if len(value) > max_chars:
                 return value[:max_chars], True
