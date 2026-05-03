@@ -206,6 +206,14 @@ class StataWorker:
                 threshold = self.client.get_stata_missing_threshold()
                 self.conn.send({"event": "result", "id": msg_id, "result": threshold})
 
+            elif msg_type == "find_variables":
+                res = self.client.find_variables(args.get("query", ""))
+                self.conn.send({"event": "result", "id": msg_id, "result": res})
+
+            elif msg_type == "get_data_summary":
+                res = self.client.get_data_summary(args.get("variables"))
+                self.conn.send({"event": "result", "id": msg_id, "result": res})
+
             else:
                 self.conn.send({"event": "error", "id": msg_id, "message": f"Unknown message type: {msg_type}"})
 

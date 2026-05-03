@@ -10,6 +10,8 @@ from mcp_stata.server import (
     find_in_log,
     get_data,
     describe,
+    find_variables,
+    get_data_summary,
     list_graphs,
     list_graphs_resource,
     export_graph,
@@ -287,4 +289,64 @@ async def test_export_graphs_all_multiple(client):
 
     # Ensure we did not overwrite graphs due to cache filename collisions
     assert len(set(paths)) == 3
+
+
+async def test_find_variables_integration(client):
+    """Verify find_variables tool searching by name and label."""
+    await run_command("sysuse auto, clear")
+    
+    # 1. Search by name
+    res_str = await find_variables("price")
+    res = json.loads(res_str)
+    assert "variables" in res
+    assert any(v["name"] == "price" for v in res["variables"])
+    
+    # 2. Search by label (case-insensitive)
+    res_str = await find_variables("repair record") # Label for rep78 is "Repair Record 1978"
+    res = json.loads(res_str)
+    assert any(v["name"] == "rep78" for v in res["variables"])
+    
+    # 3. Search with no matches
+    res_str = await find_variables("nonexistent_var_name_xyz")
+    res = json.loads(res_str)
+    assert res["variables"] == []
+
+
+async def test_get_data_summary_integration(client):
+    """Verify get_data_summary tool returns correct metrics and normalizes missing values."""
+    await run_command("sysuse auto, clear")
+    # Set some values to missing
+    await run_command("replace price = . in 1")
+    await run_command("replace mpg = .a in 2")
+    
+    # 1. Summarize specific variables
+    res_str = await get_data_summary(variables=["price", "mpg"])
+    res = json.loads(res_str)
+    
+    assert "price" in res
+    assert "mpg" in res
+    assert res["price"]["N"] == 73 # 74 - 1
+    assert res["mpg"]["N"] == 73 # 74 - 1
+    
+    # Check normalization: if all values were missing, mean would be missing (null)
+    await run_command("replace price = .")
+    res_str_all_missing = await get_data_summary(variables=["price"])
+    res_all_missing = json.loads(res_str_all_missing)
+    # Stata summarize on all missing returns N=0
+    assert res_all_missing["price"]["N"] == 0
+    assert "error" in res_all_missing["price"] or res_all_missing["price"].get("mean") is None
+
+
+async def test_polling_friction_fix_e2e(client):
+    """Verify that get_task_status works without explicitly passing allow_polling=True."""
+    # Start a background task
+    cmd_resp = json.loads(await run_command_background("display 123", as_json=True))
+    task_id = cmd_resp["task_id"]
+    
+    # Call get_task_status WITHOUT allow_polling argument (should use default True)
+    status_str = get_task_status(task_id) # No error should be raised, and status should not be 'polling_not_allowed'
+    status = json.loads(status_str)
+    
+    assert status["status"] in {"running", "done"}
+    assert not status.get("error") or "Polling is disabled" not in str(status["error"])
 

@@ -621,10 +621,10 @@ async def run_do_file_background(
 
 @mcp.tool()
 @log_call
-def get_task_status(task_id: str, allow_polling: bool = False) -> str:
+def get_task_status(task_id: str, allow_polling: bool = True) -> str:
     """Return task status for background executions.
-
-    Polling is disabled by default; set allow_polling=True for legacy callers.
+    
+    Note: Notifications are preferred over polling.
     """
     notice = "Prefer task_done logMessage notifications over polling get_task_status."
     if not allow_polling:
@@ -658,10 +658,10 @@ def get_task_status(task_id: str, allow_polling: bool = False) -> str:
 
 @mcp.tool()
 @log_call
-def get_task_result(task_id: str, allow_polling: bool = False) -> str:
+def get_task_result(task_id: str, allow_polling: bool = True) -> str:
     """Return task result for background executions.
-
-    Polling is disabled by default; set allow_polling=True for legacy callers.
+    
+    Note: Notifications are preferred over polling.
     """
     notice = "Prefer task_done logMessage notifications over polling get_task_result."
     if not allow_polling:
@@ -1114,6 +1114,8 @@ async def get_data(start: int = 0, count: int = 50, session_id: str = "default")
 
     Use this to inspect the actual data values in memory. Useful for checking data quality or content.
     
+    All Stata missing value variants (., .a, .b, ..., .z) are normalized to null.
+    
     Args:
         start: The zero-based index of the first observation to retrieve.
         count: The number of observations to retrieve. Defaults to 50.
@@ -1169,6 +1171,36 @@ async def describe(session_id: str = "default") -> str:
     if result.error:
         return result.error.message
     return ""
+
+@mcp.tool()
+@log_call
+async def find_variables(query: str, session_id: str = "default") -> str:
+    """Search for variables by name or label.
+    
+    Args:
+        query: The search term to look for in variable names or labels.
+        session_id: The ID of the Stata session.
+    """
+    session = await session_manager.get_or_create_session(session_id)
+    variables_dict = await session.call("find_variables", {"query": query})
+    
+    variables = VariablesResponse.model_validate(variables_dict)
+    return variables.model_dump_json()
+
+@mcp.tool()
+@log_call
+async def get_data_summary(variables: Optional[list[str]] = None, session_id: str = "default") -> str:
+    """Returns a quick summary (mean, min, max, N) for specified variables.
+    
+    Numerical summary statistics are normalized to ensure Stata missing values (., .a, .b, ...) do not leak.
+    
+    Args:
+        variables: Optional list of variable names. If omitted, summarizes all variables.
+        session_id: The ID of the Stata session.
+    """
+    session = await session_manager.get_or_create_session(session_id)
+    summary_data = await session.call("get_data_summary", {"variables": variables})
+    return json.dumps(summary_data)
 
 @mcp.tool()
 @log_call
