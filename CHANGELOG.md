@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.28.1 (2026-05-03)
+
+### Bug Fixes
+
+- Improve Stata missing detection and normalize None
+  ([`42c8fdf`](https://github.com/tmonk/mcp-stata/commit/42c8fdfa20054b5e7e2cc7365dcb36f41b8a8c3f))
+
+
 ## v1.28.0 (2026-05-03)
 
 ### Features
