@@ -39,6 +39,16 @@ def _make_sfi_mock(*, n: int = 5, k: int = 2, frame: str = "default") -> MagicMo
     mock_sfi.Data.getObsTotal.return_value = n
     mock_sfi.Data.getVarCount.return_value = k
     mock_sfi.Macro.getGlobal.return_value = frame
+    
+    # Sensible defaults for variable metadata and missing checks
+    # By default MagicMocks are truthy, which causes logic like
+    # 'None if Missing.isMissing(val) else val' to always return None.
+    mock_sfi.Missing.isMissing.return_value = False
+    mock_sfi.Variable.isString.return_value = False
+    mock_sfi.Data.isVarTypeStr.return_value = False
+    mock_sfi.Data.isVarTypeStrL.return_value = False
+    mock_sfi.Data.isVarTypeString.return_value = False
+    
     return mock_sfi
 
 
