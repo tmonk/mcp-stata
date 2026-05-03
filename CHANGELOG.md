@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.28.0 (2026-05-03)
+
+### Features
+
+- Normalize Stata missing values & add tools
+  ([`f9c4d24`](https://github.com/tmonk/mcp-stata/commit/f9c4d244efa59ce957dd76ad26b5499bc5fced51))
+
+
 ## v1.27.0 (2026-05-03)
 
 ### Bug Fixes
