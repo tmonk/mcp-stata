@@ -261,8 +261,7 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 * `stata_inspect_data(action, query=None, variables=None, start=0, count=50, session_id="default")`: Unified data inspector.
   - `action`: `describe`, `codebook`, `summary`, `search`, `list`, or `get`.
 * `stata_manage_graphs(action, graph_name=None, format="svg", session_id="default")`: Graph management (`list`, `export`, `export_all`).
-* `stata_inspect_results(session_id="default")`: Get current `r()`, `e()`, and `s()` results as JSON.
-* `stata_get_results(session_id="default", include_formatting=False, include_matrices=True, matrix_max_rows=200, matrix_max_cols=200, include_mata=False)`: Coherent structured `r()`/`e()`/`s()` payload with optional structured Mata snapshot.
+* `stata_get_results(session_id="default", include_formatting=False, include_matrices=True, matrix_max_rows=200, matrix_max_cols=200, include_mata=False, as_json=True)`: Unified stored-results tool for coherent structured `r()`/`e()`/`s()` payloads with optional structured Mata snapshot.
 * `stata_get_help(topic, plain_text=False, merge_paragraphs=True, session_id="default")`: Markdown or plain-text Stata help.
 * `stata_manage_session(action, session_id="default", code=None, since_command=None)`: Session lifecycle, state history, and UI channel orchestration.
   - `action`: `create`, `stop`, `list`, `set_profile`, `history_diff`, `history_stats`, or `get_ui_channel`.
@@ -297,7 +296,6 @@ stata_manage_graphs(action="export_all", session_id="analysis")
 
 # Help and stored results
 stata_get_help(topic="regress", session_id="analysis")
-stata_inspect_results(session_id="analysis")
 stata_get_results(session_id="analysis", include_mata=True)
 
 # UI data browser channel
