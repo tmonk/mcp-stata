@@ -581,7 +581,7 @@ async def stata_task_status(
         task_info = _background_tasks.get(task_id)
         if task_info is None:
             return json.dumps({"task_id": task_id, "status": "not_found"})
-        
+
         if task_info.done or not wait or (time.time() - start_time >= timeout):
             res = {
                 "task_id": task_id,
@@ -598,7 +598,7 @@ async def stata_task_status(
                 res["status"] = "timeout"
                 res["error"] = f"Task did not complete within {timeout} seconds."
             return json.dumps(res)
-        
+
         await asyncio.sleep(poll_interval)
 
 
@@ -1124,6 +1124,7 @@ async def get_metadata() -> str:
     return result.stdout if result.success else (result.error.message if result.error else "")
 
 @mcp.resource("stata://graphs/list")
+@log_call
 async def list_graphs_resource() -> str:
     """Resource wrapper for the graph list."""
     return await stata_manage_graphs(action="list", session_id="default")

@@ -10,19 +10,33 @@ from mcp_stata.server import (
 @pytest.mark.asyncio
 async def test_stata_wait_for_task_unit():
     """Test blocking wait logic with mocked status polling."""
-    # Mock stata_task_status to return 'running' then 'done'
-    with patch("mcp_stata.server.stata_task_status") as mock_status:
-        mock_status.side_effect = [
-            json.dumps({"status": "running"}),
-            json.dumps({"status": "done", "log_path": "/tmp/test.log"})
-        ]
-        
-        # Use a short poll interval for testing
-        result_json = await stata_task_status("test_id", action="wait", timeout=2, poll_interval=0.01)
+    from mcp_stata.server import BackgroundTask, _background_tasks
+    import datetime
+
+    task_id = "wait_test_task"
+    task_info = BackgroundTask(
+        task_id=task_id,
+        kind="command",
+        task=None,
+        log_path="/tmp/test.log",
+        created_at=datetime.datetime.now(),
+    )
+    _background_tasks[task_id] = task_info
+
+    async def _mark_done():
+        await asyncio.sleep(0.02)
+        task_info.done = True
+        task_info.result = json.dumps({"ok": True})
+
+    marker_task = asyncio.create_task(_mark_done())
+    try:
+        result_json = await stata_task_status(task_id, wait=True, timeout=2, poll_interval=0.01)
         result = json.loads(result_json)
-        
         assert result["status"] == "done"
-        assert mock_status.call_count == 2
+    finally:
+        marker_task.cancel()
+        if task_id in _background_tasks:
+            del _background_tasks[task_id]
 
 @pytest.mark.asyncio
 async def test_stata_list_variables_unit():
@@ -42,7 +56,8 @@ async def test_stata_list_variables_unit():
         assert res["variables"][0]["name"] == "price"
         mock_session.call.assert_called_with("list_variables_structured", {})
 
-def test_get_task_status_unit():
+@pytest.mark.asyncio
+async def test_get_task_status_unit():
     """Test get_task_status tool returns correct JSON structure."""
     from mcp_stata.server import BackgroundTask, _background_tasks
     import datetime
@@ -57,7 +72,7 @@ def test_get_task_status_unit():
     )
     
     try:
-        res_json = stata_task_status(task_id, allow_polling=True)
+        res_json = await stata_task_status(task_id)
         res = json.loads(res_json)
         assert res["task_id"] == task_id
         assert res["status"] == "running"

@@ -81,7 +81,7 @@ def test_cancel_task_tool_works():
             # Check result
             status_res = await session.call_tool(
                 "stata_task_status",
-                {"task_id": task_id, "allow_polling": True}
+                {"task_id": task_id}
             )
             status_payload = json.loads(status_res.content[0].text)
             
