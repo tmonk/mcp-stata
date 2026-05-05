@@ -71,17 +71,17 @@ async def test_session_stability_after_break():
         await session.initialize()
 
         # 1. sysuse auto, clear
-        await session.call_tool("run_command", {"code": "sysuse auto, clear"})
-
+        await session.call_tool("stata_run", {"code": "sysuse auto, clear"})
+        
         # 2. desc' DESC OUTPUT long running code' (Save baseline)
-        desc_res1 = await session.call_tool("run_command", {"code": "desc", "raw": False})
+        desc_res1 = await session.call_tool("stata_run", {"code": "desc", "raw": False})
         baseline = normalize_describe(desc_res1.content[0].text)
         print(f"\n[DEBUG] Baseline describe length: {len(baseline)}")
 
         # 3. long running background code
         # We use a display in a loop but with mod to keep output manageable
         code = "forvalues i = 1/1000000 { if mod(`i', 1000) == 0 { display `i' } }"
-        bg_res = await session.call_tool("run_command_background", {"code": code})
+        bg_res = await session.call_tool("stata_run", {"code": code, "background": True})
         task_id = json.loads(bg_res.content[0].text)["task_id"]
 
         # 4. Wait a bit for it to be mid-flight
@@ -90,11 +90,11 @@ async def test_session_stability_after_break():
         # 5. BREAK
         print("[DEBUG] Sending cancel_task...")
         cancel_start = time.perf_counter()
-        await session.call_tool("cancel_task", {"task_id": task_id})
+        await session.call_tool("stata_control", {"action": "cancel", "id": task_id})
         
         # 6. Immediately call desc
         print("[DEBUG] Calling describe immediately...")
-        desc_res2 = await session.call_tool("run_command", {"code": "desc", "raw": False})
+        desc_res2 = await session.call_tool("stata_run", {"code": "desc", "raw": False})
         immediacy_duration = time.perf_counter() - cancel_start
         print(f"[DEBUG] Immediate desc call took: {immediacy_duration:.4f}s")
 
@@ -114,7 +114,7 @@ async def test_session_stability_after_break():
         assert baseline == after_break, "Dataset state changed or describe output mismatched after break"
 
         # Final check on task state
-        status_res = await session.call_tool("get_task_result", {"task_id": task_id, "allow_polling": True})
+        status_res = await session.call_tool("stata_task_status", {"task_id": task_id, "allow_polling": True})
         status_payload = json.loads(status_res.content[0].text)
         assert status_payload["status"] == "done", "Interrupted task should be marked as done"
 
@@ -138,13 +138,13 @@ async def test_session_stability_after_break_session_tool():
         await session.initialize()
 
         # 1. Setup
-        await session.call_tool("run_command", {"code": "sysuse auto, clear"})
-        desc_res1 = await session.call_tool("run_command", {"code": "desc", "raw": False})
+        await session.call_tool("stata_run", {"code": "sysuse auto, clear"})
+        desc_res1 = await session.call_tool("stata_run", {"code": "desc", "raw": False})
         baseline = normalize_describe(desc_res1.content[0].text)
 
         # 2. Run background command
         code = "forvalues i = 1/1000000 { if mod(`i', 1000) == 0 { display `i' } }"
-        bg_res = await session.call_tool("run_command_background", {"code": code})
+        bg_res = await session.call_tool("stata_run", {"code": code, "background": True})
         task_id = json.loads(bg_res.content[0].text)["task_id"]
 
         await anyio.sleep(1.0)
@@ -152,11 +152,11 @@ async def test_session_stability_after_break_session_tool():
         # 3. Use break_session tool instead of cancel_task
         print("[DEBUG] Sending break_session...")
         cancel_start = time.perf_counter()
-        await session.call_tool("break_session", {"session_id": "default"})
+        await session.call_tool("stata_control", {"action": "break", "id": "default"})
         
         # 4. Immediately call desc
         print("[DEBUG] Calling describe immediately...")
-        desc_res2 = await session.call_tool("run_command", {"code": "desc", "raw": False})
+        desc_res2 = await session.call_tool("stata_run", {"code": "desc", "raw": False})
         immediacy_duration = time.perf_counter() - cancel_start
         print(f"[DEBUG] Immediate desc call after break_session took: {immediacy_duration:.4f}s")
 
@@ -167,7 +167,7 @@ async def test_session_stability_after_break_session_tool():
         assert baseline == after_break
         
         # Check background task also finished
-        status_res = await session.call_tool("get_task_result", {"task_id": task_id, "allow_polling": True})
+        status_res = await session.call_tool("stata_task_status", {"task_id": task_id, "allow_polling": True})
         status_payload = json.loads(status_res.content[0].text)
         assert status_payload["status"] == "done"
 
@@ -190,7 +190,7 @@ async def test_foreground_break_session_immediacy():
         )
         await session.initialize()
 
-        await session.call_tool("run_command", {"code": "sysuse auto, clear"})
+        await session.call_tool("stata_run", {"code": "sysuse auto, clear"})
 
         # Large loop in foreground - this WILL block the tool call
         code = "forvalues i = 1/10000000 { if mod(`i', 10000) == 0 { display `i' } }"
@@ -202,7 +202,7 @@ async def test_foreground_break_session_immediacy():
             foreground_results = []
             async def run_foreground():
                 print("[DEBUG] Starting foreground blocking command...")
-                res = await session.call_tool("run_command", {"code": code})
+                res = await session.call_tool("stata_run", {"code": code})
                 foreground_results.append(res)
                 print(f"[DEBUG] Foreground command finished after {time.perf_counter() - start_time:.4f}s")
 
@@ -213,7 +213,7 @@ async def test_foreground_break_session_immediacy():
             
             # Task 2: Break it
             print("[DEBUG] Sending out-of-band break_session...")
-            break_res = await session.call_tool("break_session", {"session_id": "default"})
+            break_res = await session.call_tool("stata_control", {"action": "break", "id": "default"})
             print(f"[DEBUG] break_session response: {break_res.content[0].text}")
 
         # After the task group exits, the foreground command should have returned
@@ -226,5 +226,5 @@ async def test_foreground_break_session_immediacy():
         assert duration < 10.0, f"Foreground command took too long to break: {duration:.4f}s"
         
         # Verify state is still OK
-        desc_res = await session.call_tool("run_command", {"code": "desc", "raw": False})
+        desc_res = await session.call_tool("stata_run", {"code": "desc", "raw": False})
         assert "Variable label" in desc_res.content[0].text

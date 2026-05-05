@@ -43,7 +43,7 @@ async def test_e2e_command_isolation_and_log_path():
         await session.initialize()
 
         # Command 1
-        res1 = await session.call_tool("run_command", {"code": "display \"E2E_TOKEN_1\""})
+        res1 = await session.call_tool("stata_run", {"code": "display \"E2E_TOKEN_1\""})
         out1 = json.loads(res1.content[0].text)
         path1 = out1.get("log_path")
         assert path1 and os.path.exists(path1)
@@ -54,7 +54,7 @@ async def test_e2e_command_isolation_and_log_path():
         assert "E2E_TOKEN_2" not in content1
 
         # Command 2
-        res2 = await session.call_tool("run_command", {"code": "display \"E2E_TOKEN_2\""})
+        res2 = await session.call_tool("stata_run", {"code": "display \"E2E_TOKEN_2\""})
         out2 = json.loads(res2.content[0].text)
         path2 = out2.get("log_path")
         assert path2 and os.path.exists(path2)

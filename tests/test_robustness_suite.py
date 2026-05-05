@@ -154,7 +154,7 @@ def test_initialization_failure_diagnostic(monkeypatch, clean_client):
 @pytest.mark.asyncio
 async def test_server_tool_load_data_heuristic(clean_client):
     """Test the load_data tool heuristic with various inputs."""
-    from mcp_stata.server import load_data
+    from mcp_stata.server import stata_load_data
     
     # Note: load_data uses the global mcp state/stata_client, 
     # but for integration tests we can just call it.

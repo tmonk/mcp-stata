@@ -5,7 +5,7 @@ import pandas as pd
 import pyarrow as pa
 import sys
 import json
-from mcp_stata.server import get_data, get_stored_results, run_command
+from mcp_stata.server import stata_inspect_data, stata_inspect_results, stata_run
 
 # Unit tests for StataClient missing value detection
 def test_is_stata_missing_unit():
@@ -141,10 +141,10 @@ def test_missing_threshold_fallback():
 async def test_get_stored_results_normalization_integration(client):
     """Verify that get_stored_results normalizes missing values in r() and e()."""
     # 1. Test missing values in r() via summarize on empty set
-    await run_command("sysuse auto, clear")
-    await run_command("summarize price if 0")
+    await stata_run("sysuse auto, clear")
+    await stata_run("summarize price if 0")
     
-    res_str = await get_stored_results()
+    res_str = await stata_inspect_results()
     res = json.loads(res_str)
     
     # r(mean) should be null for N=0
@@ -154,8 +154,8 @@ async def test_get_stored_results_normalization_integration(client):
         
     # 2. Test extended missing values in r() via explicit return
     # Use 'return scalar' which works in modern Stata to set r()
-    await run_command("return scalar test_miss = .b")
-    res2_str = await get_stored_results()
+    await stata_run("return scalar test_miss = .b")
+    res2_str = await stata_inspect_results()
     res2 = json.loads(res2_str)
     
     # Some Stata versions might not support 'return scalar' at cmd line, 
@@ -167,13 +167,13 @@ async def test_get_stored_results_normalization_integration(client):
 @pytest.mark.asyncio
 async def test_get_data_extended_missing_normalization_integration(client):
     """Verify get_data normalizes .a, .b to null."""
-    await run_command("clear")
-    await run_command("set obs 3")
-    await run_command("gen x = .")
-    await run_command("replace x = .a in 2")
-    await run_command("replace x = .z in 3")
+    await stata_run("clear")
+    await stata_run("set obs 3")
+    await stata_run("gen x = .")
+    await stata_run("replace x = .a in 2")
+    await stata_run("replace x = .z in 3")
     
-    res_str = await get_data(start=0, count=3)
+    res_str = await stata_inspect_data(action="get", start=0, count=3)
     res = json.loads(res_str)
     data = res["data"]
     

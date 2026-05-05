@@ -76,8 +76,8 @@ def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):
 
             tools = await session.list_tools()
             tool_names = {t.name for t in tools.tools}
-            if "run_do_file" not in tool_names:
-                pytest.skip("Server does not expose run_do_file")
+            if "stata_run" not in tool_names:
+                pytest.skip("Server does not expose stata_run")
 
             saw_start = anyio.Event()
             done = anyio.Event()
@@ -106,9 +106,10 @@ def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):
             async def call_tool() -> None:
                 try:
                     result = await session.call_tool(
-                        "run_do_file",
+                        "stata_run",
                         {
-                            "path": str(dofile),
+                            "code": str(dofile),
+                            "is_file": True,
                             "echo": True,
                             "as_json": True,
                             "trace": False,
@@ -192,13 +193,15 @@ def test_e2e_background_do_file_streams_output(tmp_path):
 
             tools = await session.list_tools()
             tool_names = {t.name for t in tools.tools}
-            if "run_do_file_background" not in tool_names:
-                pytest.skip("Server does not expose run_do_file_background")
+            if "stata_run" not in tool_names:
+                pytest.skip("Server does not expose stata_run")
 
             result = await session.call_tool(
-                "run_do_file_background",
+                "stata_run",
                 {
-                    "path": str(dofile),
+                    "code": str(dofile),
+                    "is_file": True,
+                    "background": True,
                     "echo": True,
                     "as_json": True,
                     "trace": False,
@@ -228,7 +231,7 @@ def test_e2e_background_do_file_streams_output(tmp_path):
             with anyio.fail_after(30):
                 while True:
                     task_result = await session.call_tool(
-                        "get_task_result",
+                        "stata_task_status",
                         {"task_id": task_id, "allow_polling": True},
                     )
                     parsed = json.loads(task_result.content[0].text)
@@ -296,14 +299,15 @@ def test_e2e_graph_ready_emitted_on_repeated_runs(tmp_path):
 
             tools = await session.list_tools()
             tool_names = {t.name for t in tools.tools}
-            if "run_do_file" not in tool_names:
-                pytest.skip("Server does not expose run_do_file")
+            if "stata_run" not in tool_names:
+                pytest.skip("Server does not expose stata_run")
 
             for _ in range(2):
                 result = await session.call_tool(
-                    "run_do_file",
+                    "stata_run",
                     {
-                        "path": str(dofile),
+                        "code": str(dofile),
+                        "is_file": True,
                         "echo": True,
                         "as_json": True,
                         "trace": False,
@@ -381,13 +385,14 @@ def test_e2e_graph_ready_emitted_for_do_file(tmp_path):
 
             tools = await session.list_tools()
             tool_names = {t.name for t in tools.tools}
-            if "run_do_file" not in tool_names:
-                pytest.skip("Server does not expose run_do_file")
+            if "stata_run" not in tool_names:
+                pytest.skip("Server does not expose stata_run")
 
             result = await session.call_tool(
-                "run_do_file",
+                "stata_run",
                 {
-                    "path": str(dofile),
+                    "code": str(dofile),
+                    "is_file": True,
                     "echo": True,
                     "as_json": True,
                     "trace": False,
@@ -443,13 +448,14 @@ def test_e2e_background_command_returns_log_path():
 
             tools = await session.list_tools()
             tool_names = {t.name for t in tools.tools}
-            if "run_command_background" not in tool_names:
-                pytest.skip("Server does not expose run_command_background")
+            if "stata_run" not in tool_names:
+                pytest.skip("Server does not expose stata_run")
 
             result = await session.call_tool(
-                "run_command_background",
+                "stata_run",
                 {
                     "code": "display 123",
+                    "background": True,
                     "echo": True,
                     "as_json": True,
                     "trace": False,
@@ -466,7 +472,7 @@ def test_e2e_background_command_returns_log_path():
             with anyio.fail_after(30):
                 while True:
                     task_result = await session.call_tool(
-                        "get_task_result",
+                        "stata_task_status",
                         {"task_id": task_id, "allow_polling": True},
                     )
                     parsed = json.loads(task_result.content[0].text)
@@ -517,13 +523,15 @@ def test_e2e_background_do_file_returns_log_path(tmp_path):
 
             tools = await session.list_tools()
             tool_names = {t.name for t in tools.tools}
-            if "run_do_file_background" not in tool_names:
-                pytest.skip("Server does not expose run_do_file_background")
+            if "stata_run" not in tool_names:
+                pytest.skip("Server does not expose stata_run")
 
             result = await session.call_tool(
-                "run_do_file_background",
+                "stata_run",
                 {
-                    "path": str(dofile),
+                    "code": str(dofile),
+                    "is_file": True,
+                    "background": True,
                     "echo": True,
                     "as_json": True,
                     "trace": False,
@@ -540,7 +548,7 @@ def test_e2e_background_do_file_returns_log_path(tmp_path):
             with anyio.fail_after(30):
                 while True:
                     task_result = await session.call_tool(
-                        "get_task_result",
+                        "stata_task_status",
                         {"task_id": task_id, "allow_polling": True},
                     )
                     parsed = json.loads(task_result.content[0].text)

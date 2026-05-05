@@ -100,9 +100,9 @@ class TestJSONCompactness:
     """Test that JSON responses are compact (no indentation)."""
     async def _run_command_async(self, command: str) -> str:
         """Helper to run command and get JSON response."""
-        from mcp_stata.server import run_command, session_manager
+        from mcp_stata.server import stata_run, session_manager
         await session_manager.start()
-        return await run_command(command)
+        return await stata_run(command)
 
     async def test_run_command_returns_compact_json(self):
         """Server tools should return compact JSON without indentation."""
@@ -123,8 +123,8 @@ class TestJSONCompactness:
         await self._run_command_async("sysuse auto, clear")
         await self._run_command_async("scatter price mpg, name(CompactTest, replace)")
 
-        from mcp_stata.server import export_graphs_all
-        result_str = await export_graphs_all()  # Already returns JSON string
+        from mcp_stata.server import stata_manage_graphs
+        result_str = await stata_manage_graphs(action="export_all")  # Already returns JSON string
         result = json.loads(result_str)
 
         # Should be valid JSON

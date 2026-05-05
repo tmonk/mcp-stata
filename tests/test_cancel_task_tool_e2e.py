@@ -55,8 +55,8 @@ def test_cancel_task_tool_works():
             # Use a loop that is long but doesn't print too much
             code = "forvalues i = 1/1000000 { \n if mod(`i', 10000) == 0 { \n display `i' \n } \n }"
             result = await session.call_tool(
-                "run_command_background",
-                {"code": code}
+                "stata_run",
+                {"code": code, "background": True}
             )
             
             payload = json.loads(result.content[0].text)
@@ -68,8 +68,8 @@ def test_cancel_task_tool_works():
             
             # Cancel it
             cancel_res = await session.call_tool(
-                "cancel_task",
-                {"task_id": task_id}
+                "stata_control",
+                {"action": "cancel", "id": task_id}
             )
             cancel_payload = json.loads(cancel_res.content[0].text)
             assert cancel_payload.get("status") == "cancelling"
@@ -80,7 +80,7 @@ def test_cancel_task_tool_works():
             
             # Check result
             status_res = await session.call_tool(
-                "get_task_result",
+                "stata_task_status",
                 {"task_id": task_id, "allow_polling": True}
             )
             status_payload = json.loads(status_res.content[0].text)
@@ -92,7 +92,7 @@ def test_cancel_task_tool_works():
             # and just let it happen.
             
             # The session should be responsive
-            check_res = await session.call_tool("run_command", {"code": "display 999", "raw": False})
+            check_res = await session.call_tool("stata_run", {"code": "display 999", "raw": False})
             assert "999" in check_res.content[0].text
 
     anyio.run(main)

@@ -7,20 +7,20 @@ import httpx
 import pytest
 import pyarrow as pa
 
-from mcp_stata.server import get_ui_channel, run_command
+from mcp_stata.server import stata_manage_session, stata_run
 
 pytestmark = [pytest.mark.requires_stata, pytest.mark.integration, pytest.mark.xdist_group("stata_heavy")]
 
 def _run_command_sync(code: str) -> str:
     async def _main() -> str:
-        return await run_command(code)
+        return await stata_run(code)
     return anyio.run(_main)
 
 def test_ui_http_arrow_basic():
     """Verify that /v1/arrow returns a valid Arrow stream with expected data"""
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(get_ui_channel())
+    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -66,7 +66,7 @@ def test_ui_http_arrow_sorting():
     """Verify that /v1/arrow respects the sortBy parameter"""
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(get_ui_channel())
+    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -99,7 +99,7 @@ def test_ui_http_arrow_large_limit():
     """Verify that /v1/arrow supports much larger limits than /v1/page"""
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(get_ui_channel())
+    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -127,7 +127,7 @@ def test_ui_http_arrow_with_view():
     """Verify that /v1/arrow works within a filtered view"""
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(get_ui_channel())
+    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}

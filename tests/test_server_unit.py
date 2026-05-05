@@ -3,23 +3,22 @@ import json
 import asyncio
 from unittest.mock import MagicMock, patch
 from mcp_stata.server import (
-    stata_wait_for_task,
-    stata_list_variables,
-    get_task_status
+    stata_task_status,
+    stata_inspect_data
 )
 
 @pytest.mark.asyncio
 async def test_stata_wait_for_task_unit():
     """Test blocking wait logic with mocked status polling."""
-    # Mock get_task_status to return 'running' then 'done'
-    with patch("mcp_stata.server.get_task_status") as mock_status:
+    # Mock stata_task_status to return 'running' then 'done'
+    with patch("mcp_stata.server.stata_task_status") as mock_status:
         mock_status.side_effect = [
             json.dumps({"status": "running"}),
             json.dumps({"status": "done", "log_path": "/tmp/test.log"})
         ]
         
         # Use a short poll interval for testing
-        result_json = await stata_wait_for_task("test_id", timeout=2, poll_interval=0.01)
+        result_json = await stata_task_status("test_id", action="wait", timeout=2, poll_interval=0.01)
         result = json.loads(result_json)
         
         assert result["status"] == "done"
@@ -36,7 +35,7 @@ async def test_stata_list_variables_unit():
     mock_session.call.return_value = future
     
     with patch("mcp_stata.server.session_manager.get_or_create_session", return_value=mock_session):
-        res_json = await stata_list_variables(session_id="test_id")
+        res_json = await stata_inspect_data(action="list", session_id="test_id")
         res = json.loads(res_json)
         
         assert "variables" in res
@@ -58,7 +57,7 @@ def test_get_task_status_unit():
     )
     
     try:
-        res_json = get_task_status(task_id, allow_polling=True)
+        res_json = stata_task_status(task_id, allow_polling=True)
         res = json.loads(res_json)
         assert res["task_id"] == task_id
         assert res["status"] == "running"

@@ -40,8 +40,8 @@ from .ui_http import UIChannelManager
 
 
 # Configure logging
-logger = logging.getLogger("mcp_stata")
-payload_logger = logging.getLogger("mcp_stata.payloads")
+logger = logging.getLogger("mcp-stata")
+payload_logger = logging.getLogger("mcp-stata.payloads")
 _LOGGING_CONFIGURED = False
 
 def get_server_version() -> str:
@@ -72,7 +72,7 @@ def setup_logging():
         return
     _LOGGING_CONFIGURED = True
     log_level = os.getenv("MCP_STATA_LOGLEVEL", "DEBUG").upper()
-    fmt = logging.Formatter("[%(name)s] %(levelname)s: %(message)s")
+    fmt = logging.Formatter("[mcp-stata] [%(name)s] %(levelname)s: %(message)s")
     app_handler = logging.StreamHandler(sys.stderr)
     app_handler.setLevel(getattr(logging, log_level, logging.DEBUG))
     app_handler.setFormatter(fmt)
@@ -120,8 +120,8 @@ def setup_logging():
     if logger.level == logging.NOTSET:
         logger.setLevel(getattr(logging, log_level, logging.DEBUG))
 
-    logger.info("=== mcp-stata server starting ===")
-    logger.info("mcp-stata version: %s", SERVER_VERSION)
+    logger.info("server starting")
+    logger.info("version: %s", SERVER_VERSION)
     logger.info("STATA_PATH env at startup: %s", os.getenv("STATA_PATH", "<not set>"))
     logger.info("LOG_LEVEL: %s", log_level)
 
@@ -188,107 +188,157 @@ class StataClientProxy:
 client = StataClientProxy()
 ui_channel = None
 
-def _ensure_ui_channel():
-    global ui_channel
-    if ui_channel is None:
-        try:
-            from .ui_http import UIChannelManager
-            ui_channel = UIChannelManager(client)
-        except Exception:
-            logger.exception("Failed to initialize UI channel")
+def _log_tool_call(tool_name: str, ctx: Context | None = None) -> None:
+    request_id = None
+    if ctx is not None:
+        request_id = getattr(ctx, "request_id", None)
+    logger.info("MCP tool call: %s request_id=%s", tool_name, request_id)
+
+def _should_stream_smcl_chunk(text: str, request_id: object | None) -> bool:
+    if request_id is None:
+        return True
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict) and payload.get("event"):
+            return True
+    except Exception:
+        pass
+    log_path = _request_log_paths.get(str(request_id))
+    if log_path and log_path in _read_log_paths:
+        return False
+    return True
+
+
+def _attach_task_id(ctx: Context | None, task_id: str) -> None:
+    if ctx is None:
+        return
+    meta = ctx.request_context.meta
+    if meta is None:
+        meta = types.RequestParams.Meta()
+        ctx.request_context.meta = meta
+    try:
+        setattr(meta, "task_id", task_id)
+    except Exception:
+        logger.debug("Unable to attach task_id to request meta", exc_info=True)
+
+
+def _extract_ctx(args: tuple[object, ...], kwargs: dict[str, object]) -> Context | None:
+    ctx = kwargs.get("ctx")
+    if isinstance(ctx, Context):
+        return ctx
+    for arg in args:
+        if isinstance(arg, Context):
+            return arg
+    return None
+
+
+def log_call(func):
+    """Decorator to log tool and resource calls."""
+    if inspect.iscoroutinefunction(func):
+        @wraps(func)
+        async def async_inner(*args, **kwargs):
+            ctx = _extract_ctx(args, kwargs)
+            _log_tool_call(func.__name__, ctx)
+            return await func(*args, **kwargs)
+        return async_inner
+    else:
+        @wraps(func)
+        def sync_inner(*args, **kwargs):
+            ctx = _extract_ctx(args, kwargs)
+            _log_tool_call(func.__name__, ctx)
+            return func(*args, **kwargs)
+        return sync_inner
+
 
 @mcp.tool()
-async def create_session(session_id: str) -> str:
-    """Create a new Stata session.
+@log_call
+async def stata_manage_session(
+    action: str,
+    session_id: str = "default",
+    code: Optional[str] = None,
+) -> str:
+    """Manage Stata sessions (create, stop, list, profile, UI channel).
+    
+    This tool allows for orchestration of multiple Stata sessions, including their
+    lifecycle management and configuration.
     
     Args:
-        session_id: A unique identifier for the new session.
+        action: The management action to perform:
+            - "create": Initializes a new Stata session.
+            - "stop": Terminates an existing Stata session.
+            - "list": Returns a JSON list of all active sessions.
+            - "set_profile": Executes initialization code for a session.
+            - "get_ui_channel": Retrieves connection details for the UI proxy.
+        session_id: Unique identifier for the Stata session (defaults to "default").
+        code: Stata code to execute when using the "set_profile" action.
+        
+    Returns:
+        A JSON string containing the status of the action or the requested data.
     """
-    await session_manager.get_or_create_session(session_id)
-    return json.dumps({"status": "created", "session_id": session_id})
+    _log_tool_call("stata_manage_session")
+    if action == "create":
+        await session_manager.get_or_create_session(session_id)
+        return json.dumps({"status": "created", "session_id": session_id})
+    elif action == "stop":
+        await session_manager.stop_session(session_id)
+        return json.dumps({"status": "stopped", "session_id": session_id})
+    elif action == "list":
+        sessions = session_manager.list_sessions()
+        return SessionListResponse(sessions=sessions).model_dump_json()
+    elif action == "set_profile":
+        stata_session = await session_manager.get_or_create_session(session_id)
+        await stata_session.set_profile(code)
+        return json.dumps({"status": "profile_set", "session_id": session_id})
+    elif action == "get_ui_channel":
+        _ensure_ui_channel()
+        if ui_channel is None:
+            return json.dumps({"error": "UI channel not initialized"})
+        info = ui_channel.get_channel()
+        return json.dumps({
+            "baseUrl": info.base_url,
+            "token": info.token,
+            "expiresAt": info.expires_at,
+            "capabilities": ui_channel.capabilities(),
+            "sessionId": session_id,
+        })
+    else:
+        return json.dumps({"error": f"Invalid action: {action}"})
+
 
 @mcp.tool()
-async def stop_session(session_id: str) -> str:
-    """Stop and terminate a Stata session.
-    
-    Args:
-        session_id: The identifier of the session to stop.
-    """
-    await session_manager.stop_session(session_id)
-    return json.dumps({"status": "stopped", "session_id": session_id})
-    
-@mcp.tool()
-async def stata_set_profile(
-    code: str | None,
+@log_call
+async def stata_load_data(
+    source: str,
+    clear: bool = True,
+    as_json: bool = True,
+    raw: bool = False,
+    max_output_lines: int | None = None,
     session_id: str = "default",
 ) -> str:
-    """Register a setup script for a session that runs automatically before every command.
+    """Loads a dataset into a Stata session.
     
-    Use this to set globals, cd to project directories, or run configuration .do files
-    once per session to reduce token usage and redundant setup.
-    
-    Args:
-        code: Stata code to run (e.g. "global mypath /data", "do config.do"). Pass None to clear.
-        session_id: The ID of the Stata session.
-    """
-    _log_tool_call("stata_set_profile")
-    session = await session_manager.get_or_create_session(session_id)
-    await session.set_profile(code)
-    return f"Profile updated for session '{session_id}'."
-
-@mcp.tool()
-def list_sessions() -> str:
-    """List all active Stata sessions and their status."""
-    sessions = session_manager.list_sessions()
-    return SessionListResponse(sessions=sessions).model_dump_json()
-
-@mcp.tool()
-def stata_tail_log(
-    path: str,
-    lines: int = 50,
-) -> str:
-    """Read the last N lines of a log file.
-    
-    Use this to quickly check the progress or end of a long-running task
-    without reading the entire log file.
+    Supports loading local .dta files or using Stata's built-in 'sysuse' and 'webuse' 
+    commands. This tool ensures that the dataset is properly initialized for use 
+    in subsequent analysis.
     
     Args:
-        path: Absolute path to the log file.
-        lines: Number of lines to read from the end.
+        source: Path to the dataset file or a valid Stata sysuse/webuse name.
+        clear: If True (default), clears any existing data in memory before loading.
+        as_json: If True, returns a structured JSON response envelope.
+        raw: If True, returns only the raw Stata output or error message.
+        max_output_lines: Optional limit on the number of output lines to return.
+        session_id: The ID of the Stata session to load data into.
+        
+    Returns:
+        A JSON string (if as_json is True) or raw text containing the result of the load operation.
     """
-    _log_tool_call("stata_tail_log")
-    tail = _tail_file(path, lines)
-    if tail is None:
-        return f"Error: Could not read log at {path}"
-    return tail
-
-@mcp.tool()
-async def stata_list_variables(
-    session_id: str = "default",
-) -> str:
-    """Returns a clean JSON list of all variables in the active dataset.
-    
-    Provides variable names, types, and labels in a structured format
-    optimized for LLM processing.
-    """
-    _log_tool_call("stata_list_variables")
+    _log_tool_call("stata_load_data")
     session = await session_manager.get_or_create_session(session_id)
-    results = await session.call("list_variables_structured", {})
-    return json.dumps(results)
-
-@mcp.tool()
-async def stata_inspect_results(
-    session_id: str = "default",
-) -> str:
-    """Return all scalars and macros currently stored in r(), e(), and s().
-    
-    Use this to get precise values (e.g. coefficients, N, R-squared) as JSON
-    without parsing large regression tables or summary output.
-    """
-    _log_tool_call("stata_inspect_results")
-    session = await session_manager.get_or_create_session(session_id)
-    results = await session.call("get_stored_results", {})
-    return json.dumps(results)
+    result_dict = await session.call("load_data", {"source": source, "options": {"clear": clear, "max_output_lines": max_output_lines}})
+    result = CommandResponse.model_validate(result_dict)
+    if raw:
+        return result.stdout if result.success else (result.error.message if result.error else result.stdout)
+    return result.model_dump_json()
 
 
 async def _noop_log(_text: str) -> None:
@@ -476,222 +526,10 @@ async def _notify_tool_error(ctx: Context | None, tool_name: str, exc: Exception
         logger.exception("Failed to emit tool_error notification for %s", tool_name)
 
 
-def _log_tool_call(tool_name: str, ctx: Context | None = None) -> None:
-    request_id = None
-    if ctx is not None:
-        request_id = getattr(ctx, "request_id", None)
-    logger.info("MCP tool call: %s request_id=%s", tool_name, request_id)
-
-def _should_stream_smcl_chunk(text: str, request_id: object | None) -> bool:
-    if request_id is None:
-        return True
-    try:
-        payload = json.loads(text)
-        if isinstance(payload, dict) and payload.get("event"):
-            return True
-    except Exception:
-        pass
-    log_path = _request_log_paths.get(str(request_id))
-    if log_path and log_path in _read_log_paths:
-        return False
-    return True
 
 
-def _attach_task_id(ctx: Context | None, task_id: str) -> None:
-    if ctx is None:
-        return
-    meta = ctx.request_context.meta
-    if meta is None:
-        meta = types.RequestParams.Meta()
-        ctx.request_context.meta = meta
-    try:
-        setattr(meta, "task_id", task_id)
-    except Exception:
-        logger.debug("Unable to attach task_id to request meta", exc_info=True)
 
 
-def _extract_ctx(args: tuple[object, ...], kwargs: dict[str, object]) -> Context | None:
-    ctx = kwargs.get("ctx")
-    if isinstance(ctx, Context):
-        return ctx
-    for arg in args:
-        if isinstance(arg, Context):
-            return arg
-    return None
-
-
-def log_call(func):
-    """Decorator to log tool and resource calls."""
-    if inspect.iscoroutinefunction(func):
-        @wraps(func)
-        async def async_inner(*args, **kwargs):
-            ctx = _extract_ctx(args, kwargs)
-            _log_tool_call(func.__name__, ctx)
-            return await func(*args, **kwargs)
-        return async_inner
-    else:
-        @wraps(func)
-        def sync_inner(*args, **kwargs):
-            ctx = _extract_ctx(args, kwargs)
-            _log_tool_call(func.__name__, ctx)
-            return func(*args, **kwargs)
-        return sync_inner
-
-
-@mcp.tool()
-@log_call
-async def run_do_file_background(
-    path: str,
-    ctx: Context | None = None,
-    echo: bool = True,
-    as_json: bool = True,
-    trace: bool = False,
-    raw: bool = False,
-    max_output_lines: int = None,
-    cwd: str | None = None,
-    session_id: str = "default",
-    strip_smcl: bool = False,
-    filter_pattern: Optional[str] = None,
-    exclude_pattern: Optional[str] = None,
-) -> str:
-    """Run a Stata do-file in the background and return a task id.
-
-    Notifications:
-      - logMessage: {"event":"log_path","path":"..."}
-      - logMessage: {"event":"task_done","task_id":"...","status":"done","log_path":"...","error":null}
-    """
-    session = getattr(getattr(ctx, "request_context", None), "session", None) if ctx is not None else None
-    request_id = ctx.request_id if ctx is not None else None
-    task_id = uuid.uuid4().hex
-    _attach_task_id(ctx, task_id)
-    task_info = BackgroundTask(
-        task_id=task_id,
-        kind="do_file",
-        task=None,
-        created_at=datetime.now(timezone.utc),
-    )
-
-    async def notify_log(text: str) -> None:
-        if session is not None:
-            if not _should_stream_smcl_chunk(text, ctx.request_id):
-                return
-            
-            payload_to_send = text
-            try:
-                # If the worker sent a structured JSON event, ensure it has our task_id
-                # before we forward it as a logMessage.
-                parsed = json.loads(text)
-                if isinstance(parsed, dict) and "event" in parsed:
-                    if "task_id" not in parsed:
-                        parsed["task_id"] = task_id
-                    payload_to_send = json.dumps(parsed)
-                else:
-                    # Raw output - wrap it in JSON so it has a task_id
-                    payload_to_send = json.dumps({
-                        "event": "output",
-                        "text": text,
-                        "task_id": task_id
-                    }, ensure_ascii=False)
-            except Exception:
-                # Fallback: literal string was not JSON, wrap it
-                payload_to_send = json.dumps({
-                    "event": "output",
-                    "text": text,
-                    "task_id": task_id
-                }, ensure_ascii=False)
-
-            _debug_notification("logMessage", payload_to_send, ctx.request_id)
-            try:
-                await session.send_log_message(level="info", data=payload_to_send, related_request_id=ctx.request_id)
-            except Exception as e:
-                logger.warning("Failed to send logMessage notification: %s", e)
-                sys.stderr.write(f"[mcp_stata] ERROR: logMessage send failed: {e!r}\n")
-                sys.stderr.flush()
-        try:
-            payload = json.loads(text)
-            if isinstance(payload, dict) and payload.get("event") == "log_path":
-                task_info.log_path = payload.get("path")
-                if ctx.request_id is not None and task_info.log_path:
-                    _request_log_paths[str(ctx.request_id)] = task_info.log_path
-        except Exception:
-            return
-
-    progress_token = None
-    if ctx is not None and getattr(ctx, "request_context", None) is not None and getattr(ctx.request_context, "meta", None) is not None:
-        progress_token = getattr(ctx.request_context.meta, "progressToken", None)
-
-    async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
-        if session is None or progress_token is None:
-            return
-        _debug_notification(
-            "progress",
-            {"progress": progress, "total": total, "message": message},
-            ctx.request_id,
-        )
-        try:
-            await session.send_progress_notification(
-                progress_token=progress_token,
-                progress=progress,
-                total=total,
-                message=message,
-                related_request_id=ctx.request_id,
-            )
-        except Exception as exc:
-            logger.debug("Progress notification failed: %s", exc)
-
-    async def _run() -> None:
-        try:
-            stata_session = await session_manager.get_or_create_session(session_id)
-            result_dict = await stata_session.call(
-                "run_do_file",
-                {
-                    "path": path,
-                    "strip_smcl": strip_smcl,
-                    "filter_pattern": filter_pattern,
-                    "exclude_pattern": exclude_pattern,
-                    "options": {
-                        "echo": echo,
-                        "trace": trace,
-                        "max_output_lines": max_output_lines,
-                        "cwd": cwd,
-                        "emit_graph_ready": True,
-                        "graph_ready_task_id": task_id,
-                        "graph_ready_format": "svg",
-                    }
-                },
-                notify_log=notify_log,
-                notify_progress=notify_progress if progress_token is not None else None,
-            )
-            result = CommandResponse.model_validate(result_dict)
-            if not task_info.log_path and result.log_path:
-                task_info.log_path = result.log_path
-            if result.error:
-                task_info.error = result.error.message
-            task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
-            _ensure_ui_channel()
-            if ui_channel:
-                ui_channel.notify_potential_dataset_change(session_id)
-        except asyncio.CancelledError:
-            task_info.error = "Operation cancelled"
-            raise
-        except Exception as exc:  # pragma: no cover - defensive
-            task_info.error = str(exc)
-        finally:
-            task_info.done = True
-            await _notify_task_done(session, task_info, request_id)
-
-    if session is None:
-        await _run()
-        task_info.task = None
-    else:
-        task_info.task = asyncio.create_task(_run())
-    _register_task(task_info)
-    await _wait_for_log_path(task_info)
-    return json.dumps({
-        "task_id": task_id, 
-        "status": "started", 
-        "log_path": task_info.log_path
-    })
 
 
 def _tail_file(path: str, lines: int) -> str | None:
@@ -713,162 +551,103 @@ def _tail_file(path: str, lines: int) -> str | None:
 
 @mcp.tool()
 @log_call
-def get_task_status(task_id: str, allow_polling: bool = True, tail_lines: int = 0) -> str:
-    """Return task status for background executions.
-    
-    Note: Notifications are preferred over polling.
-    
-    Args:
-        task_id: The ID of the task.
-        allow_polling: If False, returns an error if polling is requested.
-        tail_lines: If > 0, include the last N lines of the log in the response.
-    """
-    notice = "Prefer task_done logMessage notifications over polling get_task_status."
-    if not allow_polling:
-        logger.warning(
-            "get_task_status called without allow_polling; clients must use task_done logMessage notifications"
-        )
-        return json.dumps({
-            "task_id": task_id,
-            "status": "polling_not_allowed",
-            "error": "Polling is disabled; use task_done logMessage notifications.",
-            "notice": notice,
-        })
-    logger.warning("get_task_status called; clients should use task_done logMessage notifications instead of polling")
-    task_info = _background_tasks.get(task_id)
-    if task_info is None:
-        return json.dumps({
-            "task_id": task_id, 
-            "status": "not_found", 
-            "notice": notice
-        })
-        
-    res = {
-        "task_id": task_id,
-        "status": "done" if task_info.done else "running",
-        "kind": task_info.kind,
-        "created_at": task_info.created_at.isoformat(),
-        "log_path": task_info.log_path,
-        "error": task_info.error,
-        "notice": notice,
-    }
-    
-    if tail_lines > 0:
-        res["tail"] = _tail_file(task_info.log_path, tail_lines)
-        
-    return json.dumps(res)
-
-
-@mcp.tool()
-async def stata_wait_for_task(
+async def stata_task_status(
     task_id: str,
+    wait: bool = False,
     timeout: float = 60.0,
     poll_interval: float = 1.0,
+    tail_lines: int = 0,
 ) -> str:
-    """Blocking wait for a background task to complete.
+    """Return task status for background executions.
     
-    Use this when you want to wait for a long-running command (like a regression)
-    to finish before proceeding to the next step, without manual polling.
+    Provides detailed information about the state of a background task initiated 
+    via `stata_run` with `background=True`. Supports optional blocking wait for 
+    task completion.
     
     Args:
-        task_id: The ID of the task to wait for.
-        timeout: Maximum time to wait in seconds.
-        poll_interval: Interval between polls in seconds.
+        task_id: The unique identifier of the background task to query.
+        wait: If True, the call will block until the task finishes or the timeout is reached.
+        timeout: Maximum duration (in seconds) to wait if `wait` is True (defaults to 60.0).
+        poll_interval: Delay between checks (in seconds) when waiting for completion.
+        tail_lines: If > 0, includes the last N lines of the task's execution log.
+        
+    Returns:
+        A JSON string containing task details: status (started, running, done, error, 
+        not_found), timestamps, log path, and the final result if completed.
     """
-    _log_tool_call("stata_wait_for_task")
+    _log_tool_call("stata_task_status")
     start_time = time.time()
-    while time.time() - start_time < timeout:
-        status_json = get_task_status(task_id, allow_polling=True)
-        status = json.loads(status_json)
-        if status.get("status") == "done":
-            return status_json
-        if status.get("status") == "not_found":
-            return status_json
+    while True:
+        task_info = _background_tasks.get(task_id)
+        if task_info is None:
+            return json.dumps({"task_id": task_id, "status": "not_found"})
+        
+        if task_info.done or not wait or (time.time() - start_time >= timeout):
+            res = {
+                "task_id": task_id,
+                "status": "done" if task_info.done else "running",
+                "kind": task_info.kind,
+                "created_at": task_info.created_at.isoformat(),
+                "log_path": task_info.log_path,
+                "error": task_info.error,
+                "result": task_info.result if task_info.done else None
+            }
+            if tail_lines > 0:
+                res["tail"] = _tail_file(task_info.log_path, tail_lines)
+            if not task_info.done and wait and (time.time() - start_time >= timeout):
+                res["status"] = "timeout"
+                res["error"] = f"Task did not complete within {timeout} seconds."
+            return json.dumps(res)
+        
         await asyncio.sleep(poll_interval)
-    
-    return json.dumps({
-        "task_id": task_id,
-        "status": "timeout",
-        "error": f"Task did not complete within {timeout} seconds."
-    })
 
 
 @mcp.tool()
 @log_call
-def get_task_result(task_id: str, allow_polling: bool = True) -> str:
-    """Return task result for background executions.
+async def stata_control(
+    action: str,
+    id: str,
+) -> str:
+    """Interrupt a session or cancel a background task.
     
-    Note: Notifications are preferred over polling.
+    Allows for immediate control over running operations, either by sending a 
+    break signal to an active Stata session or by cancelling a queued background task.
+    
+    Args:
+        action: The control action to perform:
+            - "break": Sends a BREAK signal to the specified Stata session.
+            - "cancel": Terminates the execution of a background task.
+        id: Either the `session_id` (for "break") or the `task_id` (for "cancel").
+        
+    Returns:
+        A JSON string indicating the result of the control operation.
     """
-    notice = "Prefer task_done logMessage notifications over polling get_task_result."
-    if not allow_polling:
-        logger.warning(
-            "get_task_result called without allow_polling; clients must use task_done logMessage notifications"
-        )
-        return json.dumps({
-            "task_id": task_id,
-            "status": "polling_not_allowed",
-            "error": "Polling is disabled; use task_done logMessage notifications.",
-            "notice": notice,
-        })
-    logger.warning("get_task_result called; clients should use task_done logMessage notifications instead of polling")
-    task_info = _background_tasks.get(task_id)
-    if task_info is None:
-        return json.dumps({
-            "task_id": task_id, 
-            "status": "not_found", 
-            "notice": notice
-        })
-    if not task_info.done:
-        return json.dumps({
-            "task_id": task_id,
-            "status": "running",
-            "log_path": task_info.log_path,
-            "notice": notice,
-        })
-    return json.dumps({
-        "task_id": task_id,
-        "status": "done",
-        "log_path": task_info.log_path,
-        "error": task_info.error,
-        "notice": notice,
-        "result": task_info.result,
-    })
+    _log_tool_call("stata_control")
+    if action == "break":
+        try:
+            session = session_manager.get_session(id)
+            await session.send_break()
+            return json.dumps({"status": "break_sent", "session_id": id})
+        except Exception as e:
+            return json.dumps({"error": str(e), "session_id": id})
+    elif action == "cancel":
+        task_info = _background_tasks.get(id)
+        if task_info is None:
+            return json.dumps({"task_id": id, "status": "not_found"})
+        if task_info.task and not task_info.task.done():
+            task_info.task.cancel()
+            return json.dumps({"task_id": id, "status": "cancelling"})
+        return json.dumps({"task_id": id, "status": "done", "log_path": task_info.log_path})
+    else:
+        return json.dumps({"error": f"Invalid action: {action}"})
 
 
 @mcp.tool()
 @log_call
-async def cancel_task(task_id: str) -> str:
-    """Request cancellation of a background task."""
-    task_info = _background_tasks.get(task_id)
-    if task_info is None:
-        return json.dumps({"task_id": task_id, "status": "not_found"})
-    if task_info.task and not task_info.task.done():
-        task_info.task.cancel()
-        return json.dumps({"task_id": task_id, "status": "cancelling"})
-    return json.dumps({"task_id": task_id, "status": "done", "log_path": task_info.log_path})
-
-
-@mcp.tool()
-@log_call
-async def break_session(session_id: str = "default") -> str:
-    """Interrupt/Break the currently running command in a Stata session.
-    
-    Use this if a command is taking too long and you want to stop it without 
-    closing the session and losing your data.
-    """
-    try:
-        session = session_manager.get_session(session_id)
-        await session.send_break()
-        return json.dumps({"status": "break_sent", "session_id": session_id})
-    except Exception as e:
-        return json.dumps({"error": str(e), "session_id": session_id})
-
-
-@mcp.tool()
-@log_call
-async def run_command_background(
+async def stata_run(
     code: str,
+    is_file: bool = False,
+    background: bool = False,
     ctx: Context | None = None,
     echo: bool = True,
     as_json: bool = True,
@@ -881,19 +660,44 @@ async def run_command_background(
     filter_pattern: Optional[str] = None,
     exclude_pattern: Optional[str] = None,
 ) -> str:
-    """Run a Stata command in the background and return a task id.
+    """Executes Stata code or a .do file.
 
-    Notifications:
-      - logMessage: {"event":"log_path","path":"..."}
-      - logMessage: {"event":"task_done","task_id":"...","status":"done","log_path":"...","error":null}
+    This is the primary tool for interacting with Stata. It supports both 
+    synchronous execution and background processing for long-running scripts.
+
+    Stata output is captured in real-time and written to a temporary log file.
+    The server emits `notifications/logMessage` events as output is generated.
+    If `background=True`, the tool returns a `task_id` immediately, and the 
+    actual execution continues in a separate process.
+
+    Args:
+        code: The Stata command string or the absolute path to a .do file.
+        is_file: If True, the `code` parameter is treated as a path to a script file.
+        background: If True, runs the operation in the background.
+        ctx: FastMCP-injected request context for session and notification routing.
+        echo: If True, includes the original command in the captured output.
+        as_json: If True, returns a structured JSON response envelope.
+        trace: If True, enables Stata trace mode for debugging.
+        raw: If True, returns only the raw text output or error message.
+        max_output_lines: Optional limit for the number of lines returned in synchronous mode.
+        cwd: Optional working directory for the Stata process during execution.
+        session_id: The ID of the Stata session to use (defaults to "default").
+        strip_smcl: If True, removes Stata SMCL tags from the output for readability.
+        filter_pattern: Optional regex to include only matching lines in the output.
+        exclude_pattern: Optional regex to omit matching lines from the output.
+        
+    Returns:
+        For sync calls: The execution output (JSON or raw text).
+        For background calls: A JSON string containing the `task_id` and initial status.
     """
     session = getattr(getattr(ctx, "request_context", None), "session", None) if ctx is not None else None
     request_id = ctx.request_id if ctx is not None else None
     task_id = uuid.uuid4().hex
     _attach_task_id(ctx, task_id)
+    
     task_info = BackgroundTask(
         task_id=task_id,
-        kind="command",
+        kind="do_file" if is_file else "command",
         task=None,
         created_at=datetime.now(timezone.utc),
     )
@@ -903,37 +707,32 @@ async def run_command_background(
             if not _should_stream_smcl_chunk(text, ctx.request_id):
                 return
             
-            payload_to_send = text
             try:
-                # If the worker sent a structured JSON event, ensure it has our task_id
-                # before we forward it as a logMessage.
+                # Try to see if it's already structured JSON
                 parsed = json.loads(text)
                 if isinstance(parsed, dict) and "event" in parsed:
-                    if "task_id" not in parsed:
+                    if background and "task_id" not in parsed:
                         parsed["task_id"] = task_id
                     payload_to_send = json.dumps(parsed)
                 else:
-                    # Raw output - wrap it in JSON so it has a task_id
+                    raise ValueError("Not an event")
+            except Exception:
+                # Wrap raw output in JSON event if in background or just forward
+                if background:
                     payload_to_send = json.dumps({
                         "event": "output",
                         "text": text,
                         "task_id": task_id
                     }, ensure_ascii=False)
-            except Exception:
-                # Fallback: literal string was not JSON, wrap it
-                payload_to_send = json.dumps({
-                    "event": "output",
-                    "text": text,
-                    "task_id": task_id
-                }, ensure_ascii=False)
+                else:
+                    payload_to_send = text
 
             _debug_notification("logMessage", payload_to_send, ctx.request_id)
             try:
                 await session.send_log_message(level="info", data=payload_to_send, related_request_id=ctx.request_id)
             except Exception as e:
                 logger.warning("Failed to send logMessage notification: %s", e)
-                sys.stderr.write(f"[mcp_stata] ERROR: logMessage send failed: {e!r}\n")
-                sys.stderr.flush()
+
         try:
             payload = json.loads(text)
             if isinstance(payload, dict) and payload.get("event") == "log_path":
@@ -941,7 +740,7 @@ async def run_command_background(
                 if ctx.request_id is not None and task_info.log_path:
                     _request_log_paths[str(ctx.request_id)] = task_info.log_path
         except Exception:
-            return
+            pass
 
     progress_token = None
     if ctx is not None and getattr(ctx, "request_context", None) is not None and getattr(ctx.request_context, "meta", None) is not None:
@@ -958,30 +757,36 @@ async def run_command_background(
             related_request_id=ctx.request_id,
         )
 
-    async def _run() -> None:
+    async def _run_logic() -> CommandResponse:
+        stata_session = await session_manager.get_or_create_session(session_id)
+        method = "run_do_file" if is_file else "run_command"
+        params = {
+            "path" if is_file else "code": code,
+            "strip_smcl": strip_smcl,
+            "filter_pattern": filter_pattern,
+            "exclude_pattern": exclude_pattern,
+            "options": {
+                "echo": echo,
+                "trace": trace,
+                "max_output_lines": max_output_lines,
+                "cwd": cwd,
+                "emit_graph_ready": True,
+                "graph_ready_task_id": task_id if background else request_id,
+                "graph_ready_format": "svg",
+            }
+        }
+        
+        result_dict = await stata_session.call(
+            method,
+            params,
+            notify_log=notify_log if session is not None else _noop_log,
+            notify_progress=notify_progress if progress_token is not None else None,
+        )
+        return CommandResponse.model_validate(result_dict)
+
+    async def _run_task() -> None:
         try:
-            stata_session = await session_manager.get_or_create_session(session_id)
-            result_dict = await stata_session.call(
-                "run_command",
-                {
-                    "code": code,
-                    "strip_smcl": strip_smcl,
-                    "filter_pattern": filter_pattern,
-                    "exclude_pattern": exclude_pattern,
-                    "options": {
-                        "echo": echo,
-                        "trace": trace,
-                        "max_output_lines": max_output_lines,
-                        "cwd": cwd,
-                        "emit_graph_ready": True,
-                        "graph_ready_task_id": task_id,
-                        "graph_ready_format": "svg",
-                    }
-                },
-                notify_log=notify_log,
-                notify_progress=notify_progress if progress_token is not None else None,
-            )
-            result = CommandResponse.model_validate(result_dict)
+            result = await _run_logic()
             if not task_info.log_path and result.log_path:
                 task_info.log_path = result.log_path
             if result.error:
@@ -993,139 +798,38 @@ async def run_command_background(
         except asyncio.CancelledError:
             task_info.error = "Operation cancelled"
             raise
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:
             task_info.error = str(exc)
         finally:
             task_info.done = True
-            await _notify_task_done(session, task_info, request_id)
+            if background:
+                await _notify_task_done(session, task_info, request_id)
 
-    if session is None:
-        await _run()
-        task_info.task = None
-    else:
-        task_info.task = asyncio.create_task(_run())
-    _register_task(task_info)
-    await _wait_for_log_path(task_info)
-    return json.dumps({
-        "task_id": task_id, 
-        "status": "started", 
-        "log_path": task_info.log_path
-    })
-
-@mcp.tool()
-@log_call
-async def run_command(
-    code: str,
-    ctx: Context | None = None,
-    echo: bool = True,
-    as_json: bool = True,
-    trace: bool = False,
-    raw: bool = False,
-    max_output_lines: int = None,
-    cwd: str | None = None,
-    session_id: str = "default",
-    strip_smcl: bool = False,
-    filter_pattern: Optional[str] = None,
-    exclude_pattern: Optional[str] = None,
-) -> str:
-    """
-    Executes Stata code.
-
-    This is the primary tool for interacting with Stata.
-
-    Stata output is written to a temporary log file on disk.
-    The server emits a single `notifications/logMessage` event containing the log file path
-    (JSON payload: {"event":"log_path","path":"..."}) so the client can tail it locally.
-    If the client supplies a progress callback/token, progress updates may also be emitted
-    via `notifications/progress`.
-
-    Args:
-        code: The Stata command(s) to execute (e.g., "sysuse auto", "regress price mpg", "summarize").
-        ctx: FastMCP-injected request context (used to send MCP notifications). Optional for direct Python calls.
-        echo: If True, the command itself is included in the output. Default is True.
-        as_json: If True, returns a JSON envelope with rc/stdout/stderr/error.
-        trace: If True, enables `set trace on` for deeper error diagnostics (automatically disabled after).
-        raw: If True, return raw output/error message rather than a JSON envelope.
-        max_output_lines: If set, truncates stdout to this many lines for token efficiency.
-                         Useful for verbose commands (regress, codebook, etc.).
-        Note: This tool always uses log-file streaming semantics; there is no non-streaming mode.
-    """
-    session = getattr(getattr(ctx, "request_context", None), "session", None) if ctx is not None else None
-
-    async def notify_log(text: str) -> None:
+    if background:
         if session is None:
-            return
-        if not _should_stream_smcl_chunk(text, ctx.request_id):
-            return
-        _debug_notification("logMessage", text, ctx.request_id)
-        await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
-        try:
-            payload = json.loads(text)
-            if isinstance(payload, dict) and payload.get("event") == "log_path":
-                if ctx.request_id is not None:
-                    _request_log_paths[str(ctx.request_id)] = payload.get("path")
-        except Exception:
-            return
-
-    progress_token = None
-    if ctx is not None and getattr(ctx, "request_context", None) is not None and getattr(ctx.request_context, "meta", None) is not None:
-        progress_token = getattr(ctx.request_context.meta, "progressToken", None)
-
-    async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
-        if session is None or progress_token is None:
-            return
-        await session.send_progress_notification(
-            progress_token=progress_token,
-            progress=progress,
-            total=total,
-            message=message,
-            related_request_id=ctx.request_id,
-        )
+            # Fallback if no session/context available for background task tracking
+            # but usually background tools are called via MCP
+            await _run_task()
+            task_info.task = None
+        else:
+            task_info.task = asyncio.create_task(_run_task())
+        _register_task(task_info)
+        await _wait_for_log_path(task_info)
+        return json.dumps({
+            "task_id": task_id, 
+            "status": "started", 
+            "log_path": task_info.log_path
+        })
+    else:
+        # Sync execution
+        result = await _run_logic()
+        _ensure_ui_channel()
+        if ui_channel:
+            ui_channel.notify_potential_dataset_change(session_id)
+        return _format_command_result(result, raw=raw, as_json=as_json)
 
 
-    stata_session = await session_manager.get_or_create_session(session_id)
-    result_dict = await stata_session.call(
-        "run_command",
-        {
-            "code": code,
-            "strip_smcl": strip_smcl,
-            "filter_pattern": filter_pattern,
-            "exclude_pattern": exclude_pattern,
-            "options": {
-                "echo": echo,
-                "trace": trace,
-                "max_output_lines": max_output_lines,
-                "cwd": cwd,
-                "emit_graph_ready": True,
-                "graph_ready_task_id": ctx.request_id if ctx else None,
-                "graph_ready_format": "svg",
-            }
-        },
-        notify_log=notify_log if session is not None else _noop_log,
-        notify_progress=notify_progress if progress_token is not None else None,
-    )
-    
-    result = CommandResponse.model_validate(result_dict)
-    _ensure_ui_channel()
-    if ui_channel:
-        ui_channel.notify_potential_dataset_change(session_id)
-    return _format_command_result(result, raw=raw, as_json=as_json)
-
-@mcp.tool()
-@log_call
-def read_log(path: str, offset: int = 0, max_bytes: int = 65536) -> str:
-    """Read a slice of a log file.
-
-    Intended for clients that want to display a terminal-like view without pushing MBs of
-    output through MCP log notifications.
-
-    Args:
-        path: Absolute path to the log file previously provided by the server.
-        offset: Byte offset to start reading from.
-        max_bytes: Maximum bytes to read.
-
-    Returns a compact JSON string: {"path":..., "offset":..., "next_offset":..., "data":...}
-    """
+def _read_log_logic(path: str, offset: int = 0, max_bytes: int = 65536) -> str:
     try:
         if path:
             _read_log_paths.add(path)
@@ -1149,9 +853,7 @@ def read_log(path: str, offset: int = 0, max_bytes: int = 65536) -> str:
         return json.dumps({"path": path, "offset": offset, "next_offset": offset, "data": f"ERROR: {e}"})
 
 
-@mcp.tool()
-@log_call
-def find_in_log(
+def _find_in_log_logic(
     path: str,
     query: str,
     start_offset: int = 0,
@@ -1162,118 +864,106 @@ def find_in_log(
     regex: bool = False,
     max_matches: int = 50,
 ) -> str:
-    """Find text within a log file and return context windows.
-
-    Args:
-        path: Absolute path to the log file previously provided by the server.
-        query: Text or regex pattern to search for.
-        start_offset: Byte offset to start searching from.
-        max_bytes: Maximum bytes to read from the log.
-        before: Number of context lines to include before each match.
-        after: Number of context lines to include after each match.
-        case_sensitive: If True, match case-sensitively.
-        regex: If True, treat query as a regular expression.
-        max_matches: Maximum number of matches to return.
-
-    Returns a JSON string with matches and offsets:
-        {"path":..., "query":..., "start_offset":..., "next_offset":..., "truncated":..., "matches":[...]}.
-    """
     try:
         if start_offset < 0:
             start_offset = 0
         if max_bytes <= 0:
             return json.dumps({
-                "path": path,
-                "query": query,
-                "start_offset": start_offset,
-                "next_offset": start_offset,
-                "truncated": False,
-                "matches": [],
+                "path": path, "query": query, "start_offset": start_offset,
+                "next_offset": start_offset, "truncated": False, "matches": []
             })
+        
         with open(path, "rb") as f:
             f.seek(start_offset)
             data = f.read(max_bytes)
             next_offset = f.tell()
-
-        text = data.decode("utf-8", errors="replace")
-        lines = text.splitlines()
-
-        if regex:
-            flags = 0 if case_sensitive else re.IGNORECASE
-            pattern = re.compile(query, flags=flags)
-            def is_match(line: str) -> bool:
-                return pattern.search(line) is not None
-        else:
-            needle = query if case_sensitive else query.lower()
-            def is_match(line: str) -> bool:
-                haystack = line if case_sensitive else line.lower()
-                return needle in haystack
-
+        
+        content = data.decode("utf-8", errors="replace")
+        lines = content.splitlines()
+        
         matches = []
-        for idx, line in enumerate(lines):
-            if not is_match(line):
-                continue
-            start_idx = max(0, idx - max(0, before))
-            end_idx = min(len(lines), idx + max(0, after) + 1)
-            context = lines[start_idx:end_idx]
-            matches.append({
-                "line_index": idx,
-                "context_start": start_idx,
-                "context_end": end_idx,
-                "context": context,
-            })
-            if len(matches) >= max_matches:
-                break
-
-        truncated = len(matches) >= max_matches
+        flags = 0 if case_sensitive else re.IGNORECASE
+        
+        for i, line in enumerate(lines):
+            if regex:
+                matched = re.search(query, line, flags)
+            else:
+                if case_sensitive:
+                    matched = query in line
+                else:
+                    matched = query.lower() in line.lower()
+            
+            if matched:
+                start_idx = max(0, i - before)
+                end_idx = min(len(lines), i + after + 1)
+                context = lines[start_idx:end_idx]
+                matches.append({
+                    "line": i + 1,
+                    "content": line,
+                    "context": context,
+                })
+                if len(matches) >= max_matches:
+                    break
+                    
         return json.dumps({
             "path": path,
             "query": query,
             "start_offset": start_offset,
             "next_offset": next_offset,
-            "truncated": truncated,
+            "truncated": next_offset < os.path.getsize(path) if os.path.exists(path) else False,
             "matches": matches,
-        })
-    except FileNotFoundError:
-        return json.dumps({
-            "path": path,
-            "query": query,
-            "start_offset": start_offset,
-            "next_offset": start_offset,
-            "truncated": False,
-            "matches": [],
         })
     except Exception as e:
         return json.dumps({
-            "path": path,
-            "query": query,
-            "start_offset": start_offset,
-            "next_offset": start_offset,
-            "truncated": False,
-            "matches": [],
-            "error": f"ERROR: {e}",
+            "path": path, "query": query, "start_offset": start_offset,
+            "next_offset": start_offset, "truncated": False, "matches": [],
+            "error": f"ERROR: {e}"
         })
 
 
 @mcp.tool()
 @log_call
-async def get_data(start: int = 0, count: int = 50, session_id: str = "default") -> str:
-    """
-    Returns a slice of the active dataset as a JSON-formatted list of dictionaries.
-
-    Use this to inspect the actual data values in memory. Useful for checking data quality or content.
+def stata_read_log(
+    path: str,
+    offset: int = 0,
+    max_bytes: int = 262144,
+    tail_lines: int = 0,
+    query: Optional[str] = None,
+    before: int = 2,
+    after: int = 2,
+    case_sensitive: bool = False,
+    regex: bool = False,
+    max_matches: int = 50,
+) -> str:
+    """Read or search Stata log files.
     
-    All Stata missing value variants (., .a, .b, ..., .z) are normalized to null.
+    Provides low-level access to execution logs. Supports reading specific byte 
+    ranges, tailing the end of logs, and searching for patterns with context lines.
     
     Args:
-        start: The zero-based index of the first observation to retrieve.
-        count: The number of observations to retrieve. Defaults to 50.
-        session_id: The ID of the Stata session.
+        path: Absolute path to the log file on disk.
+        offset: Starting byte position for the read operation.
+        max_bytes: Maximum number of bytes to read from the log (defaults to 256kb).
+        tail_lines: If > 0, returns the last N lines of the log, overriding offset.
+        query: Search string or regular expression to find within the log file.
+        before: Number of lines before a match to include as context.
+        after: Number of lines after a match to include as context.
+        case_sensitive: If True, performs a case-sensitive search.
+        regex: If True, treats the `query` as a regular expression.
+        max_matches: Limit on the number of search results returned.
+        
+    Returns:
+        A JSON string containing the read data, current offset, and any search matches.
     """
-    session = await session_manager.get_or_create_session(session_id)
-    data = await session.call("get_data", {"start": start, "count": count})
-    resp = DataResponse(start=start, count=count, data=data)
-    return resp.model_dump_json()
+    _log_tool_call("stata_read_log")
+    if query:
+        return _find_in_log_logic(path, query, offset, max_bytes, before, after, case_sensitive, regex, max_matches)
+    elif tail_lines > 0:
+        tail = _tail_file(path, tail_lines)
+        return json.dumps({"path": path, "data": tail or ""})
+    else:
+        return _read_log_logic(path, offset, max_bytes)
+
 
 def _ensure_ui_channel():
     global ui_channel
@@ -1286,94 +976,123 @@ def _ensure_ui_channel():
         except Exception:
             logger.exception("Failed to initialize UI channel")
 
+
 @mcp.tool()
 @log_call
-def get_ui_channel(session_id: str = "default") -> str:
-    """Return localhost HTTP endpoint + bearer token for the extension UI data plane.
+async def stata_inspect_data(
+    action: str,
+    query: Optional[str] = None,
+    variables: Optional[list[str]] = None,
+    start: int = 0,
+    count: int = 50,
+    session_id: str = "default",
+) -> str:
+    """Inspect the active dataset (describe, codebook, summarize, search, get data).
+    
+    Comprehensive tool for exploring the structure and content of the current 
+    Stata dataset. Supports metadata inspection, summary statistics, and 
+    variable searching.
     
     Args:
-        session_id: Stata session ID to connect the UI to (default is "default").
+        action: The inspection action to perform:
+            - "describe": Returns dataset structure and variable types.
+            - "codebook": Detailed description of a specific variable's contents.
+            - "summary": Descriptive statistics (mean, sd, etc.) for variables.
+            - "search": Finds variables matching a name or label pattern.
+            - "list": Returns a structured list of all variables in the dataset.
+            - "get": Retrieves raw data observations from the dataset.
+        query: Search term for the "search" action or variable name for "codebook".
+        variables: Optional list of variables to include in the "summary" action.
+        start: 0-indexed starting observation for the "get" action.
+        count: Number of observations to retrieve for the "get" action.
+        session_id: The ID of the Stata session to inspect.
+        
+    Returns:
+        A JSON string or formatted text containing the requested inspection data.
     """
-    _ensure_ui_channel()
-    if ui_channel is None:
-        return json.dumps({"error": "UI channel not initialized"})
-    info = ui_channel.get_channel()
-    payload = {
-        "baseUrl": info.base_url,
-        "token": info.token,
-        "expiresAt": info.expires_at,
-        "capabilities": ui_channel.capabilities(),
-        "sessionId": session_id,
-    }
-    return json.dumps(payload)
-
-@mcp.tool()
-@log_call
-async def describe(session_id: str = "default") -> str:
-    """Returns the descriptive metadata of the dataset."""
+    _log_tool_call("stata_inspect_data")
     session = await session_manager.get_or_create_session(session_id)
-    result_dict = await session.call("run_command_structured", {"code": "describe", "options": {"echo": True}})
-    
-    result = CommandResponse.model_validate(result_dict)
-    if result.success:
-        return result.stdout
-    if result.error:
-        return result.error.message
-    return ""
+    if action == "describe":
+        result_dict = await session.call("run_command_structured", {"code": "describe", "options": {"echo": True}})
+        result = CommandResponse.model_validate(result_dict)
+        return result.stdout if result.success else (result.error.message if result.error else "")
+    elif action == "codebook":
+        result_dict = await session.call("codebook", {"variable": query, "options": {}})
+        result = CommandResponse.model_validate(result_dict)
+        return result.model_dump_json()
+    elif action == "summary":
+        summary_data = await session.call("get_data_summary", {"variables": variables})
+        return json.dumps(summary_data)
+    elif action == "search":
+        variables_dict = await session.call("find_variables", {"query": query})
+        variables_resp = VariablesResponse.model_validate(variables_dict)
+        return variables_resp.model_dump_json()
+    elif action == "list":
+        variables_dict = await session.call("list_variables_structured", {})
+        variables_resp = VariablesResponse.model_validate(variables_dict)
+        return variables_resp.model_dump_json()
+    elif action == "get":
+        data = await session.call("get_data", {"start": start, "count": count})
+        resp = DataResponse(start=start, count=count, data=data)
+        return resp.model_dump_json()
+    else:
+        return json.dumps({"error": f"Invalid action: {action}"})
 
 @mcp.tool()
 @log_call
-async def find_variables(query: str, session_id: str = "default") -> str:
-    """Search for variables by name or label.
+async def stata_manage_graphs(
+    action: str,
+    graph_name: Optional[str] = None,
+    format: str = "svg",
+    session_id: str = "default",
+) -> str:
+    """Manage Stata graphs (list, export).
+    
+    Enables interaction with Stata's graph memory, allowing for listing open 
+    figures and exporting them to various file formats on disk.
     
     Args:
-        query: The search term to look for in variable names or labels.
-        session_id: The ID of the Stata session.
+        action: The graph management action:
+            - "list": Returns a JSON list of all graphs currently in memory.
+            - "export": Saves a specific graph to a file.
+            - "export_all": Exports all graphs in memory to files.
+        graph_name: The name of the specific graph to export (used with "export").
+        format: The file format for export (svg, pdf, png). Defaults to "svg".
+        session_id: The ID of the Stata session to manage graphs from.
+        
+    Returns:
+        A JSON string containing the list of graphs or export confirmation details.
     """
+    _log_tool_call("stata_manage_graphs")
     session = await session_manager.get_or_create_session(session_id)
-    variables_dict = await session.call("find_variables", {"query": query})
-    
-    variables = VariablesResponse.model_validate(variables_dict)
-    return variables.model_dump_json()
+    if action == "list":
+        graphs_dict = await session.call("list_graphs", {})
+        graphs = GraphListResponse.model_validate(graphs_dict)
+        return graphs.model_dump_json()
+    elif action == "export":
+        try:
+            return await session.call("export_graph", {"graph_name": graph_name, "format": format})
+        except Exception as e:
+            raise RuntimeError(f"[mcp-stata] Failed to export graph: {e}")
+    elif action == "export_all":
+        exports_dict = await session.call("export_graphs_all", {})
+        exports = GraphExportResponse.model_validate(exports_dict)
+        return exports.model_dump_json(exclude_none=False)
+    else:
+        return json.dumps({"error": f"Invalid action: {action}"})
 
 @mcp.tool()
 @log_call
-async def get_data_summary(variables: Optional[list[str]] = None, session_id: str = "default") -> str:
-    """Returns a quick summary (mean, min, max, N) for specified variables.
-    
-    Numerical summary statistics are normalized to ensure Stata missing values (., .a, .b, ...) do not leak.
-    
-    Args:
-        variables: Optional list of variable names. If omitted, summarizes all variables.
-        session_id: The ID of the Stata session.
-    """
+async def stata_inspect_results(session_id: str = "default") -> str:
+    """Returns all scalars and macros currently stored in r(), e(), and s()."""
+    _log_tool_call("stata_inspect_results")
     session = await session_manager.get_or_create_session(session_id)
-    summary_data = await session.call("get_data_summary", {"variables": variables})
-    return json.dumps(summary_data)
+    results = await session.call("get_stored_results", {})
+    return json.dumps(results)
 
 @mcp.tool()
 @log_call
-async def list_graphs(session_id: str = "default") -> str:
-    """Lists graphs in memory."""
-    session = await session_manager.get_or_create_session(session_id)
-    graphs_dict = await session.call("list_graphs", {})
-    
-    graphs = GraphListResponse.model_validate(graphs_dict)
-    return graphs.model_dump_json()
-
-@mcp.tool()
-@log_call
-async def export_graph(graph_name: str = None, format: str = "pdf", session_id: str = "default") -> str:
-    """Exports a graph to a file."""
-    session = await session_manager.get_or_create_session(session_id)
-    try:
-        return await session.call("export_graph", {"graph_name": graph_name, "format": format})
-    except Exception as e:
-        raise RuntimeError(f"Failed to export graph: {e}")
-
-@mcp.tool()
-@log_call
-async def get_help(topic: str, plain_text: bool = False, merge_paragraphs: bool = True, session_id: str = "default") -> str:
+async def stata_get_help(topic: str, plain_text: bool = False, merge_paragraphs: bool = True, session_id: str = "default") -> str:
     """Returns help for a Stata command.
     
     Args:
@@ -1382,133 +1101,9 @@ async def get_help(topic: str, plain_text: bool = False, merge_paragraphs: bool 
         merge_paragraphs: If True, merges fixed-width split paragraphs.
         session_id: The ID of the Stata session.
     """
+    _log_tool_call("stata_get_help")
     session = await session_manager.get_or_create_session(session_id)
     return await session.call("get_help", {"topic": topic, "plain_text": plain_text, "merge_paragraphs": merge_paragraphs})
-
-@mcp.tool()
-async def get_stored_results(session_id: str = "default") -> str:
-    """Returns stored r() and e() results."""
-    import json
-    session = await session_manager.get_or_create_session(session_id)
-    results = await session.call("get_stored_results", {})
-    return json.dumps(results)
-
-@mcp.tool()
-async def load_data(source: str, clear: bool = True, as_json: bool = True, raw: bool = False, max_output_lines: int | None = None, session_id: str = "default") -> str:
-    """Loads a dataset."""
-    session = await session_manager.get_or_create_session(session_id)
-    result_dict = await session.call("load_data", {"source": source, "options": {"clear": clear, "max_output_lines": max_output_lines}})
-    
-    result = CommandResponse.model_validate(result_dict)
-    # ui_channel.notify_potential_dataset_change()
-    if raw:
-        return result.stdout if result.success else (result.error.message if result.error else result.stdout)
-    return result.model_dump_json()
-
-@mcp.tool()
-async def codebook(variable: str, as_json: bool = True, trace: bool = False, raw: bool = False, max_output_lines: int | None = None, session_id: str = "default") -> str:
-    """Returns codebook for a variable."""
-    session = await session_manager.get_or_create_session(session_id)
-    result_dict = await session.call("codebook", {"variable": variable, "options": {"trace": trace, "max_output_lines": max_output_lines}})
-    
-    result = CommandResponse.model_validate(result_dict)
-    if raw:
-        return result.stdout if result.success else (result.error.message if result.error else result.stdout)
-    return result.model_dump_json()
-
-@mcp.tool()
-@log_call
-async def run_do_file(
-    path: str,
-    ctx: Context | None = None,
-    echo: bool = True,
-    as_json: bool = True,
-    trace: bool = False,
-    raw: bool = False,
-    max_output_lines: int = None,
-    cwd: str | None = None,
-    session_id: str = "default",
-    strip_smcl: bool = False,
-    filter_pattern: Optional[str] = None,
-    exclude_pattern: Optional[str] = None,
-) -> str:
-    """
-    Executes a .do file.
-
-    Stata output is written to a temporary log file on disk.
-    The server emits a single `notifications/logMessage` event containing the log file path
-    (JSON payload: {"event":"log_path","path":"..."}) so the client can tail it locally.
-    If the client supplies a progress callback/token, progress updates are emitted via
-    `notifications/progress`.
-
-    Args:
-        path: Path to the .do file to execute.
-        ctx: FastMCP-injected request context (used to send MCP notifications). Optional for direct Python calls.
-        echo: If True, includes command in output.
-        as_json: If True, returns JSON envelope.
-        trace: If True, enables trace mode.
-        raw: If True, returns raw output only.
-        max_output_lines: If set, truncates stdout to this many lines for token efficiency.
-        Note: This tool always uses log-file streaming semantics; there is no non-streaming mode.
-    """
-    session = getattr(getattr(ctx, "request_context", None), "session", None) if ctx is not None else None
-
-    async def notify_log(text: str) -> None:
-        if session is None:
-            return
-        if not _should_stream_smcl_chunk(text, ctx.request_id):
-            return
-        await session.send_log_message(level="info", data=text, related_request_id=ctx.request_id)
-        try:
-            payload = json.loads(text)
-            if isinstance(payload, dict) and payload.get("event") == "log_path":
-                if ctx.request_id is not None:
-                    _request_log_paths[str(ctx.request_id)] = payload.get("path")
-        except Exception:
-            return
-
-    progress_token = None
-    if ctx is not None and getattr(ctx, "request_context", None) is not None and getattr(ctx.request_context, "meta", None) is not None:
-        progress_token = getattr(ctx.request_context.meta, "progressToken", None)
-
-    async def notify_progress(progress: float, total: float | None, message: str | None) -> None:
-        if session is None or progress_token is None:
-            return
-        await session.send_progress_notification(
-            progress_token=progress_token,
-            progress=progress,
-            total=total,
-            message=message,
-            related_request_id=ctx.request_id,
-        )
-
-    stata_session = await session_manager.get_or_create_session(session_id)
-    result_dict = await stata_session.call(
-        "run_do_file",
-        {
-            "path": path,
-            "strip_smcl": strip_smcl,
-            "filter_pattern": filter_pattern,
-            "exclude_pattern": exclude_pattern,
-            "options": {
-                "echo": echo,
-                "trace": trace,
-                "max_output_lines": max_output_lines,
-                "cwd": cwd,
-                "emit_graph_ready": True,
-                "graph_ready_task_id": ctx.request_id if ctx else None,
-                "graph_ready_format": "svg",
-            }
-        },
-        notify_log=notify_log if session is not None else _noop_log,
-        notify_progress=notify_progress if progress_token is not None else None,
-    )
-    
-    result = CommandResponse.model_validate(result_dict)
-
-    # ui_channel.notify_potential_dataset_change()
-
-    return _format_command_result(result, raw=raw, as_json=as_json)
 
 @mcp.resource("stata://data/summary")
 async def get_summary() -> str:
@@ -1517,11 +1112,7 @@ async def get_summary() -> str:
     result_dict = await session.call("run_command_structured", {"code": "summarize", "options": {"echo": True}})
     
     result = CommandResponse.model_validate(result_dict)
-    if result.success:
-        return result.stdout
-    if result.error:
-        return result.error.message
-    return ""
+    return result.stdout if result.success else (result.error.message if result.error else "")
 
 @mcp.resource("stata://data/metadata")
 async def get_metadata() -> str:
@@ -1530,52 +1121,22 @@ async def get_metadata() -> str:
     result_dict = await session.call("run_command_structured", {"code": "describe", "options": {"echo": True}})
     
     result = CommandResponse.model_validate(result_dict)
-    if result.success:
-        return result.stdout
-    if result.error:
-        return result.error.message
-    return ""
+    return result.stdout if result.success else (result.error.message if result.error else "")
 
 @mcp.resource("stata://graphs/list")
-@log_call
 async def list_graphs_resource() -> str:
-    """Resource wrapper for the graph list (uses tool list_graphs)."""
-    return await list_graphs("default")
-
-@mcp.tool()
-async def get_variable_list(session_id: str = "default") -> str:
-    """Returns JSON list of all variables."""
-    session = await session_manager.get_or_create_session(session_id)
-    variables_dict = await session.call("list_variables_structured", {})
-    
-    variables = VariablesResponse.model_validate(variables_dict)
-    return variables.model_dump_json()
+    """Resource wrapper for the graph list."""
+    return await stata_manage_graphs(action="list", session_id="default")
 
 @mcp.resource("stata://variables/list")
 async def get_variable_list_resource() -> str:
     """Resource wrapper for the variable list."""
-    return await get_variable_list("default")
+    return await stata_inspect_data(action="list", session_id="default")
 
 @mcp.resource("stata://results/stored")
 async def get_stored_results_resource() -> str:
     """Returns stored r() and e() results."""
-    session = await session_manager.get_or_create_session("default")
-    results = await session.call("get_stored_results", {})
-    return json.dumps(results)
-
-@mcp.tool()
-async def export_graphs_all(session_id: str = "default") -> str:
-    """
-    Exports all graphs in memory to file paths.
-
-    Returns a JSON envelope listing graph names and file paths.
-    The agent can open SVG files directly to verify visuals (titles/labels/colors/legends).
-    """
-    session = await session_manager.get_or_create_session(session_id)
-    exports_dict = await session.call("export_graphs_all", {})
-    
-    exports = GraphExportResponse.model_validate(exports_dict)
-    return exports.model_dump_json(exclude_none=False)
+    return await stata_inspect_results(session_id="default")
 
 def main():
     if "--version" in sys.argv:
@@ -1604,12 +1165,6 @@ def main():
     
     async def init_sessions():
         await session_manager.start()
-        # We need a client-like object for UIChannelManager.
-        # This is a bit tricky since it's now multi-session.
-        # For now, we'll try to find a way to make UIChannelManager work or disable it.
-        # Let's use the default session's worker proxy if it was a real client.
-        # But for now, we'll skip UIChannelManager integration or keep it limited.
-        pass
 
     asyncio.run(init_sessions())
 
