@@ -656,7 +656,7 @@ async def stata_run(
     max_output_lines: int = None,
     cwd: str | None = None,
     session_id: str = "default",
-    strip_smcl: bool = False,
+    strip_smcl: bool = True,
     filter_pattern: Optional[str] = None,
     exclude_pattern: Optional[str] = None,
 ) -> str:
