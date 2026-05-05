@@ -64,7 +64,7 @@ async def test_e2e_respects_mcp_stata_temp(tmp_path):
             await session.initialize()
             
             # Run a simple command to trigger log creation
-            await session.call_tool("run_command", {"code": "display 123"})
+            await session.call_tool("stata_run", {"code": "display 123"})
             
             # Wait a bit for the log path notification
             for _ in range(20):

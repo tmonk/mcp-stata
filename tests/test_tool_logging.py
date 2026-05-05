@@ -5,17 +5,17 @@ from mcp.server.fastmcp.utilities import logging as fastmcp_logging
 
 import pytest
 from mcp_stata.models import GraphListResponse
-from mcp_stata.server import get_task_status, list_graphs_resource, logger, setup_logging, payload_logger
+from mcp_stata.server import stata_task_status, list_graphs_resource, logger, setup_logging, payload_logger
 import mcp_stata.server as server
 
 
 def test_tool_logging_includes_tool_name(caplog):
     caplog.set_level(logging.INFO, logger="mcp_stata")
 
-    get_task_status("missing", allow_polling=True)
+    stata_task_status("missing", allow_polling=True)
 
     messages = [record.getMessage() for record in caplog.records]
-    assert any("MCP tool call: get_task_status request_id=None" in msg for msg in messages)
+    assert any("MCP tool call: stata_task_status request_id=None" in msg for msg in messages)
 
 
 @pytest.mark.asyncio

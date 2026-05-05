@@ -36,7 +36,7 @@ _STRUCTURAL_TAG_RE = re.compile(
 # Inline SMCL tag → Markdown
 # ---------------------------------------------------------------------------
 
-def _inline_to_markdown(text: str) -> str:
+def _inline_to_markdown(text: str, preserve_spacing: bool = False) -> str:
     """Convert SMCL inline tags to Markdown equivalents."""
 
     # Browse links: {browse "URL":TEXT} → [TEXT](URL), {browse "URL"} → URL
@@ -126,9 +126,22 @@ def _inline_to_markdown(text: str) -> str:
     text = _apply_once(text)
     if "{" in text:
         text = _apply_once(text)
-    # Collapse multiple spaces
-    text = re.sub(r"  +", " ", text)
+    
+    if not preserve_spacing:
+        # Collapse multiple spaces
+        text = re.sub(r"  +", " ", text)
     return text.strip()
+
+
+def strip_smcl(text: str) -> str:
+    """Lightweight SMCL to plain text/minimal Markdown conversion for command output.
+    
+    Preserves spacing to maintain table alignment.
+    """
+    if not text:
+        return ""
+    return _inline_to_markdown(text, preserve_spacing=True)
+
 
 
 # ---------------------------------------------------------------------------

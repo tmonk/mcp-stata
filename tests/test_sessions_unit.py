@@ -114,3 +114,23 @@ async def test_session_error_handling():
             await call_task
             
         await manager.stop_all()
+
+@pytest.mark.asyncio
+async def test_session_profile_init():
+    """Test that session profile stores code and calls worker."""
+    with patch('mcp_stata.sessions.Process'), \
+         patch('mcp_stata.sessions.Pipe') as mock_pipe, \
+         patch('asyncio.create_task'):
+        
+        mock_pipe.return_value = (MagicMock(), MagicMock())
+        session = StataSession("test_id")
+        # Mock call to avoid real worker communication
+        mock_call = MagicMock()
+        future = asyncio.Future()
+        future.set_result(None)
+        mock_call.return_value = future
+        session.call = mock_call
+        
+        await session.set_profile("display 1")
+        assert session.profile_code == "display 1"
+        session.call.assert_called_with("set_profile", {"code": "display 1"})

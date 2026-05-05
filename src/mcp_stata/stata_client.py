@@ -35,7 +35,7 @@ from .models import (
     VariableInfo,
     VariablesResponse,
 )
-from .smcl.smcl2html import smcl_to_markdown
+from .smcl.smcl2html import smcl_to_markdown, strip_smcl
 from .streaming_io import FileTeeIO, TailBuffer
 from .graph_detector import StreamingGraphCache
 from .native_ops import fast_scan_log, compute_filter_indices
@@ -631,6 +631,36 @@ class StataClient:
             except Exception as e:
                 logger.warning("graph_ready emission failed to start: %s", e)
 
+    def _apply_output_cleaning(
+        self,
+        text: str,
+        strip_smcl_output: bool = False,
+        filter_pattern: Optional[str] = None,
+        exclude_pattern: Optional[str] = None,
+    ) -> str:
+        """Centralized logic to apply SMCL stripping and line-based filtering."""
+        if not text:
+            return ""
+
+        cleaned = text
+        if strip_smcl_output:
+            cleaned = strip_smcl(cleaned)
+        
+        if filter_pattern or exclude_pattern:
+            lines = cleaned.splitlines(keepends=True)
+            f_re = re.compile(filter_pattern) if filter_pattern else None
+            e_re = re.compile(exclude_pattern) if exclude_pattern else None
+            filtered = []
+            for line in lines:
+                if f_re and not f_re.search(line):
+                    continue
+                if e_re and e_re.search(line):
+                    continue
+                filtered.append(line)
+            cleaned = "".join(filtered)
+        
+        return cleaned
+
     async def _stream_smcl_log(
         self,
         *,
@@ -640,6 +670,9 @@ class StataClient:
         on_chunk: Optional[Callable[[str], Awaitable[None]]] = None,
         start_offset: int = 0,
         tee: Optional[FileTeeIO] = None,
+        strip_smcl_output: bool = False,
+        filter_pattern: Optional[str] = None,
+        exclude_pattern: Optional[str] = None,
     ) -> None:
         last_pos = start_offset
         emitted_debug_chunks = 0
@@ -684,10 +717,19 @@ class StataClient:
                         strip_leading_boilerplate=not has_written,
                     )
                     if cleaned_chunk:
-                        try:
-                            await notify_log(cleaned_chunk)
-                        except Exception as exc:
-                            logger.debug("notify_log failed: %s", exc)
+                        # Apply SMCL stripping if requested
+                        cleaned_chunk = self._apply_output_cleaning(
+                            cleaned_chunk,
+                            strip_smcl_output=strip_smcl_output,
+                            filter_pattern=filter_pattern,
+                            exclude_pattern=exclude_pattern,
+                        )
+
+                        if cleaned_chunk:
+                            try:
+                                await notify_log(cleaned_chunk)
+                            except Exception as exc:
+                                logger.debug("notify_log failed: %s", exc)
                         
                         if tee:
                             try:
@@ -706,19 +748,28 @@ class StataClient:
                 await anyio.sleep(0.05)
 
             # Final check for any remaining content
-                chunk, chunk_bytes = await anyio.to_thread.run_sync(_read_content)
-                if chunk:
-                    last_pos += chunk_bytes
+            chunk, chunk_bytes = await anyio.to_thread.run_sync(_read_content)
+            if chunk:
+                last_pos += chunk_bytes
                 cleaned_chunk = self._clean_internal_smcl(
                     chunk,
                     strip_output=False,
                     strip_leading_boilerplate=not has_written,
                 )
                 if cleaned_chunk:
-                    try:
-                        await notify_log(cleaned_chunk)
-                    except Exception as exc:
-                        logger.debug("final notify_log failed: %s", exc)
+                    # Apply SMCL stripping if requested
+                    cleaned_chunk = self._apply_output_cleaning(
+                        cleaned_chunk,
+                        strip_smcl_output=strip_smcl_output,
+                        filter_pattern=filter_pattern,
+                        exclude_pattern=exclude_pattern,
+                    )
+
+                    if cleaned_chunk:
+                        try:
+                            await notify_log(cleaned_chunk)
+                        except Exception as exc:
+                            logger.debug("final notify_log failed: %s", exc)
                     
                     if tee:
                         try:
@@ -2977,7 +3028,16 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         return f"Stata error r({rc})", context_str
 
-    def _exec_with_capture(self, code: str, echo: bool = True, trace: bool = False, cwd: Optional[str] = None) -> CommandResponse:
+    def _exec_with_capture(
+        self,
+        code: str,
+        echo: bool = True,
+        trace: bool = False,
+        cwd: Optional[str] = None,
+        strip_smcl: bool = False,
+        filter_pattern: Optional[str] = None,
+        exclude_pattern: Optional[str] = None,
+    ) -> CommandResponse:
         """Executes a command and returns results in a structured envelope."""
         if not self._initialized: self.init()
         self._increment_command_idx()
@@ -3076,6 +3136,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # Use SMCL as authoritative source for stdout (preserve SMCL tags)
         if smcl_content:
             stdout = self._clean_internal_smcl(smcl_content)
+            stdout = self._apply_output_cleaning(
+                stdout,
+                strip_smcl_output=strip_smcl,
+                filter_pattern=filter_pattern,
+                exclude_pattern=exclude_pattern,
+            )
         else:
             stdout = output_buffer.getvalue()
             
@@ -3373,6 +3439,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         emit_graph_ready: bool = False,
         graph_ready_task_id: Optional[str] = None,
         graph_ready_format: str = "svg",
+        strip_smcl: bool = False,
+        filter_pattern: Optional[str] = None,
+        exclude_pattern: Optional[str] = None,
     ) -> CommandResponse:
         if not self._initialized:
             self.init()
@@ -3518,6 +3587,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                             on_chunk=on_chunk_for_graphs if graph_cache else None,
                             start_offset=start_offset,
                             tee=tee,
+                            strip_smcl_output=strip_smcl,
+                            filter_pattern=filter_pattern,
+                            exclude_pattern=exclude_pattern,
                         )
                     except Exception as exc:
                         logger.debug("SMCL streaming failed: %s", exc)
@@ -3663,6 +3735,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         stdout_final = smcl_content if smcl_content else combined
         # Clean the final output of internal maintenance artifacts
         stdout_final = self._clean_internal_smcl(stdout_final)
+        stdout_final = self._apply_output_cleaning(
+            stdout_final,
+            strip_smcl_output=strip_smcl,
+            filter_pattern=filter_pattern,
+            exclude_pattern=exclude_pattern,
+        )
         
         # NOTE: We keep stdout_final populated even if log_path is set, 
         # so the user gets the exact SMCL result in the tool output.
@@ -3735,6 +3813,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         emit_graph_ready: bool = False,
         graph_ready_task_id: Optional[str] = None,
         graph_ready_format: str = "svg",
+        strip_smcl: bool = False,
+        filter_pattern: Optional[str] = None,
+        exclude_pattern: Optional[str] = None,
     ) -> CommandResponse:
         if not self._initialized:
             self.init()
@@ -3866,6 +3947,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                             on_chunk=actual_on_chunk,
                             start_offset=start_offset,
                             tee=tee,
+                            strip_smcl_output=strip_smcl,
+                            filter_pattern=filter_pattern,
+                            exclude_pattern=exclude_pattern,
                         )
                     except Exception as exc:
                         logger.debug("SMCL streaming failed: %s", exc)
@@ -4014,6 +4098,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         stdout_final = smcl_content if smcl_content else combined
         # Clean the final output of internal maintenance artifacts
         stdout_final = self._clean_internal_smcl(stdout_final)
+        stdout_final = self._apply_output_cleaning(
+            stdout_final,
+            strip_smcl_output=strip_smcl,
+            filter_pattern=filter_pattern,
+            exclude_pattern=exclude_pattern,
+        )
         
         # NOTE: We keep stdout_final populated even if log_path is set, 
         # so the user gets the exact SMCL result in the tool output.
@@ -4081,7 +4171,17 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             # Fallback to the standard Stata double missing value if sfi is not fully available
             return 8.98846567431158e+307
 
-    def run_command_structured(self, code: str, echo: bool = True, trace: bool = False, max_output_lines: Optional[int] = None, cwd: Optional[str] = None) -> CommandResponse:
+    def run_command_structured(
+        self,
+        code: str,
+        echo: bool = True,
+        trace: bool = False,
+        max_output_lines: Optional[int] = None,
+        cwd: Optional[str] = None,
+        strip_smcl: bool = False,
+        filter_pattern: Optional[str] = None,
+        exclude_pattern: Optional[str] = None,
+    ) -> CommandResponse:
         """Runs a Stata command and returns a structured envelope.
 
         Args:
@@ -4090,7 +4190,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             trace: If True, enables trace mode for debugging.
             max_output_lines: If set, truncates stdout to this many lines (token efficiency).
         """
-        result = self._exec_with_capture(code, echo=echo, trace=trace, cwd=cwd)
+        result = self._exec_with_capture(
+            code,
+            echo=echo,
+            trace=trace,
+            cwd=cwd,
+            strip_smcl=strip_smcl,
+            filter_pattern=filter_pattern,
+            exclude_pattern=exclude_pattern,
+        )
 
         return self._truncate_command_output(result, max_output_lines)
 
@@ -5741,7 +5849,15 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             smcl_output=smcl_content,
         )
 
-    def load_data(self, source: str, clear: bool = True, max_output_lines: Optional[int] = None) -> CommandResponse:
+    def load_data(
+        self,
+        source: str,
+        clear: bool = True,
+        max_output_lines: Optional[int] = None,
+        strip_smcl: bool = False,
+        filter_pattern: Optional[str] = None,
+        exclude_pattern: Optional[str] = None,
+    ) -> CommandResponse:
         src = source.strip()
         clear_suffix = ", clear" if clear else ""
 
@@ -5756,9 +5872,30 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         else:
             cmd = f"sysuse {src}{clear_suffix}"
 
-        result = self._exec_with_capture(cmd, echo=True, trace=False)
+        result = self._exec_with_capture(
+            cmd,
+            echo=True,
+            trace=False,
+            strip_smcl=strip_smcl,
+            filter_pattern=filter_pattern,
+            exclude_pattern=exclude_pattern,
+        )
         return self._truncate_command_output(result, max_output_lines)
 
-    def codebook(self, varname: str, trace: bool = False, max_output_lines: Optional[int] = None) -> CommandResponse:
-        result = self._exec_with_capture(f"codebook {varname}", trace=trace)
+    def codebook(
+        self,
+        varname: str,
+        trace: bool = False,
+        max_output_lines: Optional[int] = None,
+        strip_smcl: bool = False,
+        filter_pattern: Optional[str] = None,
+        exclude_pattern: Optional[str] = None,
+    ) -> CommandResponse:
+        result = self._exec_with_capture(
+            f"codebook {varname}",
+            trace=trace,
+            strip_smcl=strip_smcl,
+            filter_pattern=filter_pattern,
+            exclude_pattern=exclude_pattern,
+        )
         return self._truncate_command_output(result, max_output_lines)
