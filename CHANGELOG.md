@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v2.0.0 (2026-05-05)
+
+### Bug Fixes
+
+- Set STATA_BIN env in e2e startup tests
+  ([`d21df91`](https://github.com/tmonk/mcp-stata/commit/d21df9180d4f492f7c579fd296f175b407fd06e0))
+
+- Updated stata svg
+  ([`2bad0db`](https://github.com/tmonk/mcp-stata/commit/2bad0db7ca8e5e186d5ba71fd361a07d0d44c3e4))
+
+### Features
+
+- Add output cleaning, session profiles, and tasks
+  ([`a709d93`](https://github.com/tmonk/mcp-stata/commit/a709d9330bb6143807605a65abdf5bafaca3295d))
+
+- Refactor server tools and logging - redesign of all tools
+  ([`9b90983`](https://github.com/tmonk/mcp-stata/commit/9b90983f9fcc11f11b3e4a5ad253343e3b2aabc7))
+
+
 ## v1.30.2 (2026-05-03)
 
 ### Bug Fixes
