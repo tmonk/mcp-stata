@@ -56,12 +56,12 @@ To build and install the native extension into your current environment for deve
 
 ```bash
 # Using maturin directly
-maturin develop -m native_sorter/Cargo.toml
+maturin develop
 ```
 
 If you don't have `maturin` globally installed, use the version in your venv:
 ```bash
-python -m maturin develop -m native_sorter/Cargo.toml
+python -m maturin develop
 ```
 
 ### Building Wheels
@@ -82,7 +82,6 @@ The test suite is divided into Python integration/unit tests and native Rust uni
 These tests run independently of Python and verify the high-performance sorting algorithms:
 
 ```bash
-cd native_sorter
 cargo test
 ```
 
@@ -182,7 +181,7 @@ When adding dependencies:
    ```
 
 2. **Develop and Test**: 
-   - Add Rust tests in `native_sorter/src/lib.rs` if modifying sorting logic.
+   - Add Rust tests in `src_rust/lib.rs` if modifying sorting logic.
    - Add Python tests in `tests/`.
    - Ensure `cargo test` and `pytest -v -m "not requires_stata"` pass.
 
@@ -212,7 +211,7 @@ The CI workflow is defined in `.github/workflows/build-test.yml` and `.github/wo
 ## Project Structure
 
 - `src/mcp_stata/`: Python source code.
-- `native_sorter/`: Rust source code for the high-performance extension.
+- `src_rust/`: Rust source code for the high-performance extension.
 - `tests/`: Project integration and unit tests.
 - `scripts/`: Utilities for benchmarks, build testing, and version syncing.
 

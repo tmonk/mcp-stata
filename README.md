@@ -247,28 +247,59 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 
 ## Tools Available (from server.py)
 
-* `run_command(code, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, session_id="default")`: Execute Stata syntax in the specified session.
-  - Always writes output to a temporary log file and emits a single `notifications/logMessage` containing `{"event":"log_path","path":"..."}` so the client can tail it locally.
+* `stata_run(code, is_file=False, background=False, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, cwd=None, session_id="default", strip_smcl=False, filter_pattern=None, exclude_pattern=None)`: Execute Stata commands or a `.do` file.
+  - Set `is_file=True` to treat `code` as an absolute path to a `.do` file.
+  - Set `background=True` to start long jobs asynchronously (returns `task_id`).
+  - Always writes output to a temporary log file and emits `notifications/logMessage` containing `{"event":"log_path","path":"..."}`.
   - May emit `notifications/progress` when the client provides a progress token/callback.
-* `read_log(path, offset=0, max_bytes=65536)`: Read a slice of a previously-provided log file (JSON: `path`, `offset`, `next_offset`, `data`).
-* `find_in_log(path, query, start_offset=0, max_bytes=5_000_000, before=2, after=2, case_sensitive=False, regex=False, max_matches=50)`: Search a log file for text and return context windows.
-  - Returns JSON with `matches` (context lines, line indices), `next_offset`, and `truncated` if `max_matches` is hit.
-  - Supports literal or regex search with bounded read window for large logs.
-* `load_data(source, clear=True, as_json=True, raw=False, max_output_lines=None, session_id="default")`: Heuristic loader (sysuse/webuse/use/path/URL) for the specified session.
-* `get_ui_channel(session_id="default")`: Return a short-lived localhost HTTP endpoint + bearer token for the UI-only data browser, targeting the specified session.
-* `describe(session_id="default")`: View dataset structure via Stata `describe`.
-* `list_graphs(session_id="default")`: See available graphs in memory (JSON list with an `active` flag).
-* `export_graph(graph_name=None, format="pdf", session_id="default")`: Export a graph to a file path.
-* `export_graphs_all(session_id="default")`: Export all in-memory graphs. Returns file paths.
-* `get_help(topic, plain_text=False, session_id="default")`: Markdown-rendered Stata help.
-* `codebook(variable, as_json=True, trace=False, raw=False, max_output_lines=None, session_id="default")`: Variable-level metadata.
-* `run_do_file(path, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, session_id="default")`: Execute a .do file in the specified session.
-* `get_stored_results(session_id="default")`: Get `r()` and `e()` scalars/macros as JSON.
-* `get_variable_list(session_id="default")`: JSON list of variables and labels.
-* `create_session(session_id)`: Manually create a new Stata session.
-* `list_sessions()`: List all active sessions and their status.
-* `stop_session(session_id)`: Terminate a specific session.
-* `break_session(session_id="default")`: Interrupt/Break the currently running command in a specific session. Use this if a command is taking too long and you want to stop it without closing the session and losing your data.
+* `stata_task_status(task_id, wait=False, timeout=60.0, poll_interval=1.0, tail_lines=0)`: Query or wait on background task status.
+* `stata_control(action, id)`: Control active work.
+  - `action="break"` with `id=<session_id>` to interrupt a running session.
+  - `action="cancel"` with `id=<task_id>` to cancel a background task.
+* `stata_read_log(path, offset=0, max_bytes=262144, tail_lines=0, query=None, before=2, after=2, case_sensitive=False, regex=False, max_matches=50)`: Read, tail, or search a log file.
+* `stata_load_data(source, clear=True, as_json=True, raw=False, max_output_lines=None, session_id="default")`: Heuristic loader (sysuse/webuse/use/path/URL) for the specified session.
+* `stata_inspect_data(action, query=None, variables=None, start=0, count=50, session_id="default")`: Unified data inspector.
+  - `action`: `describe`, `codebook`, `summary`, `search`, `list`, or `get`.
+* `stata_manage_graphs(action, graph_name=None, format="svg", session_id="default")`: Graph management (`list`, `export`, `export_all`).
+* `stata_inspect_results(session_id="default")`: Get current `r()`, `e()`, and `s()` results as JSON.
+* `stata_get_help(topic, plain_text=False, merge_paragraphs=True, session_id="default")`: Markdown or plain-text Stata help.
+* `stata_manage_session(action, session_id="default", code=None)`: Session lifecycle and UI channel orchestration.
+  - `action`: `create`, `stop`, `list`, `set_profile`, or `get_ui_channel`.
+
+### Common action examples
+
+```python
+# Session lifecycle
+stata_manage_session(action="create", session_id="analysis")
+stata_manage_session(action="list")
+stata_manage_session(action="stop", session_id="analysis")
+
+# Run a do-file (replacement for run_do_file)
+stata_run("/path/to/analysis.do", is_file=True, session_id="analysis")
+
+# Data inspection (describe, codebook, variable list)
+stata_inspect_data(action="describe", session_id="analysis")
+stata_inspect_data(action="codebook", query="price", session_id="analysis")
+stata_inspect_data(action="list", session_id="analysis")
+
+# Graph operations
+stata_manage_graphs(action="list", session_id="analysis")
+stata_manage_graphs(action="export", graph_name="Graph", format="png", session_id="analysis")
+stata_manage_graphs(action="export_all", session_id="analysis")
+
+# Help and stored results
+stata_get_help(topic="regress", session_id="analysis")
+stata_inspect_results(session_id="analysis")
+
+# UI data browser channel
+stata_manage_session(action="get_ui_channel", session_id="analysis")
+
+# Interrupt / cancel / background status
+stata_control(action="break", id="analysis")
+stata_run("quietly do /path/to/long_job.do", background=True, session_id="analysis")
+stata_task_status(task_id="...", wait=True, timeout=30)
+stata_control(action="cancel", id="...")
+```
 
 ### Cancellation
 
@@ -282,9 +313,9 @@ Resources exposed for MCP clients:
 
 * `stata://data/summary` → `summarize`
 * `stata://data/metadata` → `describe`
-* `stata://graphs/list` → graph list (resource handler delegates to `list_graphs` tool)
+* `stata://graphs/list` → graph list (resource handler delegates to `stata_manage_graphs(action="list")`)
 * `stata://variables/list` → variable list (resource wrapper)
-* `stata://results/stored` → stored r()/e() results
+* `stata://results/stored` → stored `r()`/`e()`/`s()` results
 
 ## UI-only Data Browser (Local HTTP API)
 
@@ -294,16 +325,16 @@ Important properties:
 
 - **Loopback only**: binds to `127.0.0.1`.
 - **Bearer auth**: every request requires an `Authorization: Bearer <token>` header.
-- **Short-lived tokens**: clients should call `get_ui_channel()` to obtain a fresh token as needed.
+- **Short-lived tokens**: clients should call `stata_manage_session(action="get_ui_channel")` to obtain a fresh token as needed.
 - **Session Isolate**: caches (views, sorting) are isolated per `sessionId`.
 - **No Stata dataset mutation** for browsing/filtering:
   - No generated variables.
   - Paging uses `sfi.Data.get`.
   - Filtering is evaluated in Python over chunked reads.
 
-### Discovery via MCP (`get_ui_channel`)
+### Discovery via MCP (`stata_manage_session`)
 
-Call the MCP tool `get_ui_channel()` and parse the JSON:
+Call the MCP tool `stata_manage_session(action="get_ui_channel")` and parse the JSON:
 
 ```json
 {
