@@ -17,6 +17,15 @@ This server enables LLMs to:
 - **Streaming graph caching**: automatically cache graphs during command execution for instant exports.
 - **Verify results**: programmatically check stored results (`r()`, `e()`) for accurate validation.
 
+## What's New Since 2.0.0
+
+- `stata_run` now defaults to `strip_smcl=True` for cleaner plain-text output.
+- Results tooling is consolidated into `stata_get_results` (replacing older split results APIs), with optional Mata state and explicit `as_json` output control.
+- Session state history tracking is available through `stata_manage_session` actions:
+  - `history_stats`
+  - `history_diff` (optionally with `since_command`)
+- Session history capture is optimized and bounded internally (single state snapshot RPC with retained-window history behavior).
+
 ## Prerequisites
 
 - **Stata 17+** (Stata MP, SE, or BE). Must be licensed and installed locally.
