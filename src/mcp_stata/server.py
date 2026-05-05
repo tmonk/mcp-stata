@@ -362,6 +362,47 @@ _read_log_paths: set[str] = set()
 _read_log_offsets: Dict[str, int] = {}
 _STDOUT_FILTER_INSTALLED = False
 
+def _compact_stored_results(results: dict, include_formatting: bool = False) -> dict:
+    """Drop noisy table-formatting macros from stored results by default."""
+    if include_formatting:
+        return results
+    compact: dict[str, dict] = {}
+    for cls in ("r", "e", "s"):
+        source = results.get(cls, {})
+        if not isinstance(source, dict):
+            compact[cls] = {}
+            continue
+        filtered = {
+            k: v for k, v in source.items()
+            if not (k.startswith("PT_") or k.startswith("put_"))
+        }
+        compact[cls] = filtered
+    return compact
+
+
+def _extract_help_format(help_text: str, format: str) -> str:
+    """Return concise slices of help text for syntax/options/examples modes."""
+    if format == "full":
+        return help_text
+    lines = help_text.splitlines()
+    if format == "syntax":
+        out = [ln for ln in lines if ln.strip().lower().startswith("syntax")]
+        if out:
+            return "\n".join(out[:6]).strip()
+        return "\n".join(lines[:24]).strip()
+    if format in {"options", "examples"}:
+        marker = "options" if format == "options" else "examples"
+        start = None
+        for i, ln in enumerate(lines):
+            if marker in ln.strip().lower():
+                start = i
+                break
+        if start is None:
+            return "\n".join(lines[:40]).strip()
+        end = min(len(lines), start + 120)
+        return "\n".join(lines[start:end]).strip()
+    return help_text
+
 
 def _install_stdout_filter() -> None:
     """
@@ -985,6 +1026,8 @@ async def stata_inspect_data(
     variables: Optional[list[str]] = None,
     start: int = 0,
     count: int = 50,
+    include_missing: bool = True,
+    compress_numeric: bool = False,
     session_id: str = "default",
 ) -> str:
     """Inspect the active dataset (describe, codebook, summarize, search, get data).
@@ -1032,7 +1075,16 @@ async def stata_inspect_data(
         variables_resp = VariablesResponse.model_validate(variables_dict)
         return variables_resp.model_dump_json()
     elif action == "get":
-        data = await session.call("get_data", {"start": start, "count": count})
+        data = await session.call(
+            "get_data",
+            {
+                "start": start,
+                "count": count,
+                "variables": variables,
+                "include_missing": include_missing,
+                "compress_numeric": compress_numeric,
+            },
+        )
         resp = DataResponse(start=start, count=count, data=data)
         return resp.model_dump_json()
     else:
@@ -1087,12 +1139,55 @@ async def stata_inspect_results(session_id: str = "default") -> str:
     """Returns all scalars and macros currently stored in r(), e(), and s()."""
     _log_tool_call("stata_inspect_results")
     session = await session_manager.get_or_create_session(session_id)
-    results = await session.call("get_stored_results", {})
-    return json.dumps(results)
+    results = await session.call("get_stored_results", {"include_matrices": True})
+    return json.dumps(_compact_stored_results(results))
+
 
 @mcp.tool()
 @log_call
-async def stata_get_help(topic: str, plain_text: bool = False, merge_paragraphs: bool = True, session_id: str = "default") -> str:
+async def stata_get_results(
+    session_id: str = "default",
+    include_formatting: bool = False,
+    include_matrices: bool = True,
+    matrix_max_rows: int = 200,
+    matrix_max_cols: int = 200,
+    include_mata: bool = False,
+) -> str:
+    """Returns coherent structured result state across r()/e()/s(), with optional MATA snapshot."""
+    _log_tool_call("stata_get_results")
+    session = await session_manager.get_or_create_session(session_id)
+    results = await session.call(
+        "get_stored_results",
+        {
+            "include_matrices": include_matrices,
+            "matrix_max_rows": matrix_max_rows,
+            "matrix_max_cols": matrix_max_cols,
+            "force_fresh": True,
+        },
+    )
+    payload = _compact_stored_results(results, include_formatting=include_formatting)
+    if include_mata:
+        payload["mata"] = await session.call(
+            "get_mata_state",
+            {
+                "include_values": True,
+                "max_objects": 200,
+                "matrix_max_rows": matrix_max_rows,
+                "matrix_max_cols": matrix_max_cols,
+                "max_functions": 200,
+            },
+        )
+    return json.dumps(payload)
+
+@mcp.tool()
+@log_call
+async def stata_get_help(
+    topic: str,
+    plain_text: bool = False,
+    merge_paragraphs: bool = True,
+    format: str = "full",
+    session_id: str = "default",
+) -> str:
     """Returns help for a Stata command.
     
     Args:
@@ -1103,7 +1198,11 @@ async def stata_get_help(topic: str, plain_text: bool = False, merge_paragraphs:
     """
     _log_tool_call("stata_get_help")
     session = await session_manager.get_or_create_session(session_id)
-    return await session.call("get_help", {"topic": topic, "plain_text": plain_text, "merge_paragraphs": merge_paragraphs})
+    help_text = await session.call(
+        "get_help",
+        {"topic": topic, "plain_text": plain_text, "merge_paragraphs": merge_paragraphs},
+    )
+    return _extract_help_format(help_text, format=format)
 
 @mcp.resource("stata://data/summary")
 async def get_summary() -> str:
