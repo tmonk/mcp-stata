@@ -2,6 +2,26 @@
 
 <!-- version list -->
 
+## v2.3.1 (2026-05-05)
+
+### Bug Fixes
+
+- Ensure consistent path normalization and encoding handling across Stata client and test utilities
+  across OSs
+  ([`2ae5e86`](https://github.com/tmonk/mcp-stata/commit/2ae5e86ef971b121987586533bbfaaea2903bb83))
+
+### Continuous Integration
+
+- Disable automated build and test triggers in GitHub Actions workflow
+  ([`2420edd`](https://github.com/tmonk/mcp-stata/commit/2420edd16fb86f51e479e01ea1fc595d2645f1de))
+
+- Update workflows, linker and cache glob
+  ([`40deb97`](https://github.com/tmonk/mcp-stata/commit/40deb97ef2e4d428f2f101135839f9da4715546b))
+
+- Use uv toolchain and add Python 3.14 to CI
+  ([`e7d0f60`](https://github.com/tmonk/mcp-stata/commit/e7d0f601b375623d85f44382f2358d84858fd4c5))
+
+
 ## v2.3.0 (2026-05-05)
 
 ### Bug Fixes
