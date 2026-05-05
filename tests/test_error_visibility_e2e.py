@@ -3,6 +3,8 @@ import json
 import asyncio
 from mcp_stata.server import stata_run, stata_task_status
 
+pytestmark = [pytest.mark.requires_stata]
+
 @pytest.mark.asyncio
 async def test_stdout_truncation_e2e():
     """Test that massive outputs are truncated to stay within tool limits."""

@@ -122,10 +122,14 @@ async def test_session_error_handling():
 @pytest.mark.asyncio
 async def test_session_profile_init():
     """Test that session profile stores code and calls worker."""
+    def mock_create_task(coro):
+        coro.close()
+        return MagicMock()
+        
     with patch('mcp_stata.sessions.Process'), \
          patch('mcp_stata.sessions.Pipe') as mock_pipe, \
-         patch('asyncio.create_task'):
-        
+         patch('asyncio.create_task', side_effect=mock_create_task):
+    
         mock_pipe.return_value = (MagicMock(), MagicMock())
         session = StataSession("test_id")
         # Mock call to avoid real worker communication
@@ -142,7 +146,11 @@ async def test_session_profile_init():
 
 @pytest.mark.asyncio
 async def test_get_session_diff_since_last_checkpoint():
-    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe') as mock_pipe, patch('asyncio.create_task'):
+    def mock_create_task(coro):
+        coro.close()
+        return MagicMock()
+
+    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe') as mock_pipe, patch('asyncio.create_task', side_effect=mock_create_task):
         mock_pipe.return_value = (MagicMock(), MagicMock())
         session = StataSession("test_id")
 
@@ -180,7 +188,11 @@ async def test_get_session_diff_since_last_checkpoint():
 
 @pytest.mark.asyncio
 async def test_get_session_diff_since_command_with_pruned_history_raises():
-    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe') as mock_pipe, patch('asyncio.create_task'):
+    def mock_create_task(coro):
+        coro.close()
+        return MagicMock()
+
+    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe') as mock_pipe, patch('asyncio.create_task', side_effect=mock_create_task):
         mock_pipe.return_value = (MagicMock(), MagicMock())
         session = StataSession("test_id")
 
@@ -197,7 +209,11 @@ async def test_get_session_diff_since_command_with_pruned_history_raises():
 
 @pytest.mark.asyncio
 async def test_collect_snapshot_uses_single_worker_state_call():
-    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe') as mock_pipe, patch('asyncio.create_task'):
+    def mock_create_task(coro):
+        coro.close()
+        return MagicMock()
+
+    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe') as mock_pipe, patch('asyncio.create_task', side_effect=mock_create_task):
         mock_pipe.return_value = (MagicMock(), MagicMock())
         session = StataSession("test_id")
         session._call_raw = AsyncMock(return_value={
@@ -221,7 +237,11 @@ async def test_collect_snapshot_uses_single_worker_state_call():
 
 @pytest.mark.asyncio
 async def test_history_stats_reflects_retained_window():
-    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe') as mock_pipe, patch('asyncio.create_task'):
+    def mock_create_task(coro):
+        coro.close()
+        return MagicMock()
+
+    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe') as mock_pipe, patch('asyncio.create_task', side_effect=mock_create_task):
         mock_pipe.return_value = (MagicMock(), MagicMock())
         session = StataSession("test_id")
         session.command_count = 10
@@ -240,7 +260,11 @@ async def test_history_stats_reflects_retained_window():
 
 @pytest.mark.asyncio
 async def test_prune_history_keeps_baseline_and_recent_entries():
-    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe') as mock_pipe, patch('asyncio.create_task'):
+    def mock_create_task(coro):
+        coro.close()
+        return MagicMock()
+
+    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe') as mock_pipe, patch('asyncio.create_task', side_effect=mock_create_task):
         mock_pipe.return_value = (MagicMock(), MagicMock())
         session = StataSession("test_id")
         session._max_history_entries = 3

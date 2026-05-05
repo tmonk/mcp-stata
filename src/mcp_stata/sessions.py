@@ -151,6 +151,9 @@ class StataSession:
         timeout_seconds: Optional[float] = None,
     ) -> Any:
         await self._ensure_listener()
+        if self.status == "error":
+            raise RuntimeError(f"Session {self.id} is in an error state and cannot accept commands. This usually happens if Stata failed to initialize.")
+
         msg_id = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         self._pending_requests[msg_id] = future
@@ -452,12 +455,18 @@ class SessionManager:
                     break
                 await asyncio.sleep(0.1)
                 
-        return self._sessions[session_id]
+        session = self._sessions[session_id]
+        if session.status == "error":
+            raise RuntimeError(f"Stata session {session_id} failed to initialize. Stata binary may be missing or inaccessible.")
+        return session
 
     def get_session(self, session_id: str) -> StataSession:
         if session_id not in self._sessions:
             raise ValueError(f"Session {session_id} not found.")
-        return self._sessions[session_id]
+        session = self._sessions[session_id]
+        if session.status == "error":
+            raise RuntimeError(f"Stata session {session_id} failed to initialize. Stata binary may be missing or inaccessible.")
+        return session
 
     def list_sessions(self) -> List[SessionInfo]:
         return [s.get_info() for s in self._sessions.values()]
