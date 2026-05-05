@@ -228,6 +228,8 @@ async def test_clear_programs_restores_startup_programs_e2e():
         )
         startup_file_path = tf.name
 
+    stata_path, _ = find_stata_path()
+    os.environ["STATA_BIN"] = stata_path
     os.environ["MCP_STATA_STARTUP_DO_FILE"] = startup_file_path
 
     manager = SessionManager()
@@ -262,6 +264,8 @@ async def test_clear_programs_restores_startup_programs_e2e():
         await manager.stop_all()
         if os.path.exists(startup_file_path):
             os.unlink(startup_file_path)
+        if "STATA_BIN" in os.environ:
+            del os.environ["STATA_BIN"]
         if "MCP_STATA_STARTUP_DO_FILE" in os.environ:
             del os.environ["MCP_STATA_STARTUP_DO_FILE"]
 
@@ -279,6 +283,8 @@ async def test_clear_all_does_not_restore_when_no_reload_e2e():
         )
         startup_file_path = tf.name
 
+    stata_path, _ = find_stata_path()
+    os.environ["STATA_BIN"] = stata_path
     os.environ["MCP_STATA_STARTUP_DO_FILE"] = startup_file_path
     os.environ["MCP_STATA_NO_RELOAD_ON_CLEAR"] = "1"
 
@@ -315,13 +321,14 @@ async def test_clear_all_does_not_restore_when_no_reload_e2e():
         await manager.stop_all()
         if os.path.exists(startup_file_path):
             os.unlink(startup_file_path)
+        if "STATA_BIN" in os.environ:
+            del os.environ["STATA_BIN"]
         if "MCP_STATA_STARTUP_DO_FILE" in os.environ:
             del os.environ["MCP_STATA_STARTUP_DO_FILE"]
         if "MCP_STATA_NO_RELOAD_ON_CLEAR" in os.environ:
             del os.environ["MCP_STATA_NO_RELOAD_ON_CLEAR"]
 
 
-@pytest.mark.skipif(os.getenv("STATA_BIN") is None and shutil.which("stata") is None, reason="Stata not found")
 @pytest.mark.requires_stata
 @pytest.mark.asyncio
 async def test_startup_do_file_profile_deduped_against_env_e2e():
@@ -334,6 +341,8 @@ async def test_startup_do_file_profile_deduped_against_env_e2e():
             f.write('if _rc != 0 global STARTUP_PROFILE_COUNT 0\n')
             f.write('global STARTUP_PROFILE_COUNT = $STARTUP_PROFILE_COUNT + 1\n')
 
+        stata_path, _ = find_stata_path()
+        os.environ["STATA_BIN"] = stata_path
         os.environ["MCP_STATA_STARTUP_DO_FILE"] = profile_path
 
         manager = SessionManager()
@@ -345,5 +354,7 @@ async def test_startup_do_file_profile_deduped_against_env_e2e():
             assert "1" in res_macro.get("smcl_output", "")
         finally:
             await manager.stop_all()
+            if "STATA_BIN" in os.environ:
+                del os.environ["STATA_BIN"]
             if "MCP_STATA_STARTUP_DO_FILE" in os.environ:
                 del os.environ["MCP_STATA_STARTUP_DO_FILE"]
