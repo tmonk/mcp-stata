@@ -2,6 +2,23 @@
 
 <!-- version list -->
 
+## v2.3.0 (2026-05-05)
+
+### Bug Fixes
+
+- Prevent command execution on failed sessions and update unit test mocks to handle unawaited
+  coroutines
+  ([`8344512`](https://github.com/tmonk/mcp-stata/commit/834451270093445ad09d35e07a675e50172a5aeb))
+
+- Standardize task status, improve session startup
+  ([`2a413a8`](https://github.com/tmonk/mcp-stata/commit/2a413a82421f153993d0da2689ef92fcc4af44eb))
+
+### Features
+
+- Add error details, truncate outputs, update status
+  ([`de072b3`](https://github.com/tmonk/mcp-stata/commit/de072b318754cb0a53bb841708472e0be989d16b))
+
+
 ## v2.2.0 (2026-05-05)
 
 ### Features
