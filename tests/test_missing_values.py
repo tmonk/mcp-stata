@@ -5,7 +5,7 @@ import pandas as pd
 import pyarrow as pa
 import sys
 import json
-from mcp_stata.server import stata_inspect_data, stata_inspect_results, stata_run
+from mcp_stata.server import stata_inspect_data, stata_get_results, stata_run
 
 # Unit tests for StataClient missing value detection
 def test_is_stata_missing_unit():
@@ -144,7 +144,7 @@ async def test_get_stored_results_normalization_integration(client):
     await stata_run("sysuse auto, clear")
     await stata_run("summarize price if 0")
     
-    res_str = await stata_inspect_results()
+    res_str = await stata_get_results()
     res = json.loads(res_str)
     
     # r(mean) should be null for N=0
@@ -155,7 +155,7 @@ async def test_get_stored_results_normalization_integration(client):
     # 2. Test extended missing values in r() via explicit return
     # Use 'return scalar' which works in modern Stata to set r()
     await stata_run("return scalar test_miss = .b")
-    res2_str = await stata_inspect_results()
+    res2_str = await stata_get_results()
     res2 = json.loads(res2_str)
     
     # Some Stata versions might not support 'return scalar' at cmd line, 

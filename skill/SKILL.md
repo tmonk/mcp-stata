@@ -15,8 +15,7 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
   - Use `stata_inspect_data` with `action` (`describe`, `codebook`, `summary`, `search`, `list`, `get`) for data inspection.
   - Use `stata_manage_graphs` with `action` (`list`, `export`, `export_all`) for visualization workflows.
   - Use `stata_get_help` for Stata documentation.
-  - Use `stata_inspect_results` to return `r()`/`e()`/`s()` results after commands for validation.
-  - Use `stata_get_results(include_mata=True)` when you need a coherent structured result snapshot (including optional Mata object/function state).
+  - Use `stata_get_results` as the single results tool for `r()`/`e()`/`s()` validation, and pass `include_mata=True` for structured Mata object/function state.
   - Use `stata_read_log` to tail, read, or search output from long-running commands.
   - Use `stata_manage_session(action="get_ui_channel")` to obtain a localhost HTTP endpoint for high-volume data browsing.
   - Use `stata_manage_session(action="history_diff")` / `stata_manage_session(action="history_stats")` for session state tracking without introducing extra tools.
@@ -70,8 +69,7 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
 - `stata_get_help(topic, plain_text=False, merge_paragraphs=True, session_id="default")`: Return Stata help text.
   - `topic`: Command or help topic (e.g., "regress", "graph").
   - `plain_text`: Return plain text instead of Markdown (default: False).
-- `stata_inspect_results(session_id="default")`: Return current `r()`, `e()`, and `s()` results as JSON after a command.
-- `stata_get_results(session_id="default", include_formatting=False, include_matrices=True, matrix_max_rows=200, matrix_max_cols=200, include_mata=False)`: Return coherent structured `r()`/`e()`/`s()` plus optional structured Mata state.
+- `stata_get_results(session_id="default", include_formatting=False, include_matrices=True, matrix_max_rows=200, matrix_max_cols=200, include_mata=False, as_json=True)`: Return coherent structured `r()`/`e()`/`s()` plus optional structured Mata state.
 
 ### Session Management
 
@@ -151,7 +149,7 @@ The server exposes these resources for MCP clients:
 # Load sample data and run regression
 stata_load_data("auto")
 stata_run("regress price mpg")
-stata_inspect_results()  # Retrieve coefficients and statistics
+stata_get_results()  # Retrieve coefficients and statistics
 ```
 
 ### Export a histogram

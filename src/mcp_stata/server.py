@@ -1150,16 +1150,6 @@ async def stata_manage_graphs(
 
 @mcp.tool()
 @log_call
-async def stata_inspect_results(session_id: str = "default") -> str:
-    """Returns all scalars and macros currently stored in r(), e(), and s()."""
-    _log_tool_call("stata_inspect_results")
-    session = await session_manager.get_or_create_session(session_id)
-    results = await session.call("get_stored_results", {"include_matrices": True})
-    return json.dumps(_compact_stored_results(results))
-
-
-@mcp.tool()
-@log_call
 async def stata_get_results(
     session_id: str = "default",
     include_formatting: bool = False,
@@ -1167,6 +1157,7 @@ async def stata_get_results(
     matrix_max_rows: int = 200,
     matrix_max_cols: int = 200,
     include_mata: bool = False,
+    as_json: bool = True,
 ) -> str:
     """Returns coherent structured result state across r()/e()/s(), with optional MATA snapshot."""
     _log_tool_call("stata_get_results")
@@ -1192,7 +1183,9 @@ async def stata_get_results(
                 "max_functions": 200,
             },
         )
-    return json.dumps(payload)
+    if as_json:
+        return json.dumps(payload)
+    return str(payload)
 
 @mcp.tool()
 @log_call
@@ -1251,7 +1244,7 @@ async def get_variable_list_resource() -> str:
 @mcp.resource("stata://results/stored")
 async def get_stored_results_resource() -> str:
     """Returns stored r() and e() results."""
-    return await stata_inspect_results(session_id="default")
+    return await stata_get_results(session_id="default")
 
 def main():
     if "--version" in sys.argv:

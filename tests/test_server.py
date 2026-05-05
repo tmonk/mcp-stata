@@ -9,7 +9,7 @@ from mcp_stata.server import (
     stata_inspect_data,
     stata_manage_graphs,
     stata_get_help,
-    stata_inspect_results,
+    stata_get_results,
     stata_load_data,
     stata_task_status,
     stata_control,
@@ -75,9 +75,9 @@ async def test_server_tools_consolidated(client):
     assert h.lower().startswith("# help for")
     assert "sysuse" in h.lower()
     
-    # Test stata_inspect_results
+    # Test stata_get_results
     await stata_run("summarize price")
-    res_json = await stata_inspect_results()
+    res_json = await stata_get_results()
     results = json.loads(res_json)
     assert "mean" in results.get("r", {})
 
