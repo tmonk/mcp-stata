@@ -86,16 +86,9 @@ Optional `env` example (add inside your MCP server entry):
 "env": {
   "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp",
   "MCP_STATA_STARTUP_DO_FILE": "/path/to/my/startup.do",
-  "MCP_STATA_NO_RELOAD_ON_CLEAR": "1",
-  "MCP_STATA_MAX_SESSION_HISTORY": "200",
-  "MCP_STATA_HISTORY_SNAPSHOT_TIMEOUT": "1.5"
+  "MCP_STATA_NO_RELOAD_ON_CLEAR": "1"
 }
 ```
-
-Session history tuning variables:
-
-- `MCP_STATA_MAX_SESSION_HISTORY`: max retained per-session snapshots (default `200`).
-- `MCP_STATA_HISTORY_SNAPSHOT_TIMEOUT`: timeout in seconds for post-command history capture (default `1.5`). Snapshot capture is best-effort; command execution still completes if snapshot collection times out.
 
 ## IDE Setup (MCP)
 
@@ -254,7 +247,7 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 
 ## Tools Available (from server.py)
 
-* `stata_run(code, is_file=False, background=False, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, cwd=None, session_id="default", strip_smcl=False, filter_pattern=None, exclude_pattern=None)`: Execute Stata commands or a `.do` file.
+* `stata_run(code, is_file=False, background=False, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, cwd=None, session_id="default", strip_smcl=True, filter_pattern=None, exclude_pattern=None)`: Execute Stata commands or a `.do` file.
   - Set `is_file=True` to treat `code` as an absolute path to a `.do` file.
   - Set `background=True` to start long jobs asynchronously (returns `task_id`).
   - Always writes output to a temporary log file and emits `notifications/logMessage` containing `{"event":"log_path","path":"..."}`.
@@ -269,6 +262,7 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
   - `action`: `describe`, `codebook`, `summary`, `search`, `list`, or `get`.
 * `stata_manage_graphs(action, graph_name=None, format="svg", session_id="default")`: Graph management (`list`, `export`, `export_all`).
 * `stata_inspect_results(session_id="default")`: Get current `r()`, `e()`, and `s()` results as JSON.
+* `stata_get_results(session_id="default", include_formatting=False, include_matrices=True, matrix_max_rows=200, matrix_max_cols=200, include_mata=False)`: Coherent structured `r()`/`e()`/`s()` payload with optional structured Mata snapshot.
 * `stata_get_help(topic, plain_text=False, merge_paragraphs=True, session_id="default")`: Markdown or plain-text Stata help.
 * `stata_manage_session(action, session_id="default", code=None, since_command=None)`: Session lifecycle, state history, and UI channel orchestration.
   - `action`: `create`, `stop`, `list`, `set_profile`, `history_diff`, `history_stats`, or `get_ui_channel`.
@@ -304,6 +298,7 @@ stata_manage_graphs(action="export_all", session_id="analysis")
 # Help and stored results
 stata_get_help(topic="regress", session_id="analysis")
 stata_inspect_results(session_id="analysis")
+stata_get_results(session_id="analysis", include_mata=True)
 
 # UI data browser channel
 stata_manage_session(action="get_ui_channel", session_id="analysis")
@@ -322,6 +317,11 @@ stata_control(action="cancel", id="...")
   1. Pass a `_meta.progressToken` when invoking the tool if you want progress updates (optional).
   2. If you need to cancel, send `notifications/cancelled` with the same requestId. You may also stop tailing the log file path once you receive cancellation confirmation (the tool call will return an error indicating cancellation).
   3. Be prepared for partial output in the log file; cancellation is best-effort and depends on Stata surfacing `BreakError`.
+
+### Output and results behavior
+
+- `stata_run` defaults to `strip_smcl=True`, so responses are plain-text oriented unless you explicitly disable stripping.
+- `stata_get_results` returns structured stored results and can include Mata state (`include_mata=True`) with typed object/function payloads suitable for downstream programmatic checks.
 
 Resources exposed for MCP clients:
 
