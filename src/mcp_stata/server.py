@@ -685,7 +685,7 @@ async def stata_task_status(
         if task_info.done or not wait or (time.time() - start_time >= timeout):
             status = "running"
             if task_info.done:
-                status = "failed" if task_info.error else "completed"
+                status = "failed" if task_info.error else "done"
             
             res = {
                 "task_id": task_id,

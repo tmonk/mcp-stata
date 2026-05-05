@@ -169,9 +169,9 @@ def pytest_collection_modifyitems(config, items):
     
     stata_available = False
     try:
-        import stata_setup
+        detect_stata_version()
         stata_available = True
-    except (ImportError, ModuleNotFoundError):
+    except Exception:
         pass
 
     if force_mock or not stata_available:

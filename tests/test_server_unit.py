@@ -33,7 +33,7 @@ async def test_stata_wait_for_task_unit():
     try:
         result_json = await stata_task_status(task_id, wait=True, timeout=2, poll_interval=0.01)
         result = json.loads(result_json)
-        assert result["status"] == "completed"
+        assert result["status"] == "done"
     finally:
         marker_task.cancel()
         if task_id in _background_tasks:

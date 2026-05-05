@@ -5,11 +5,9 @@ from mcp_stata.sessions import SessionManager, StataSession, _SessionSnapshot
 
 @pytest.mark.asyncio
 async def test_session_manager_init():
-    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe') as mock_pipe:
-        parent_conn = MagicMock()
-        child_conn = MagicMock()
-        mock_pipe.return_value = (parent_conn, child_conn)
-        
+    parent_conn = MagicMock()
+    child_conn = MagicMock()
+    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe', return_value=(parent_conn, child_conn)):
         # Mock immediate ready response from worker
         parent_conn.poll.side_effect = [True] + [False] * 100
         parent_conn.recv.return_value = {"event": "ready", "pid": 1234}
@@ -25,17 +23,18 @@ async def test_session_manager_init():
 
 @pytest.mark.asyncio
 async def test_create_multiple_sessions():
+    p1_parent, p1_child = MagicMock(), MagicMock()
+    p2_parent, p2_child = MagicMock(), MagicMock()
+    
     with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe') as mock_pipe:
-        parent_conn = MagicMock()
-        child_conn = MagicMock()
-        mock_pipe.return_value = (parent_conn, child_conn)
+        mock_pipe.side_effect = [(p1_parent, p1_child), (p2_parent, p2_child)]
         
-        # Mock ready responses
-        parent_conn.poll.side_effect = [True, False, True] + [False] * 100
-        parent_conn.recv.side_effect = [
-            {"event": "ready", "pid": 1001},
-            {"event": "ready", "pid": 1002}
-        ]
+        # Mock ready responses for each pipe
+        p1_parent.poll.side_effect = [True] + [False] * 100
+        p1_parent.recv.return_value = {"event": "ready", "pid": 1001}
+        
+        p2_parent.poll.side_effect = [True] + [False] * 100
+        p2_parent.recv.return_value = {"event": "ready", "pid": 1002}
         
         manager = SessionManager()
         await manager.start() # creates default
@@ -51,13 +50,12 @@ async def test_create_multiple_sessions():
 
 @pytest.mark.asyncio
 async def test_session_call_and_result():
-    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe') as mock_pipe:
-        parent_conn = MagicMock()
-        child_conn = MagicMock()
-        mock_pipe.return_value = (parent_conn, child_conn)
-        
+    parent_conn = MagicMock()
+    child_conn = MagicMock()
+    with patch('mcp_stata.sessions.Process'), patch('mcp_stata.sessions.Pipe', return_value=(parent_conn, child_conn)):
         # Mock ready then result
         parent_conn.poll.side_effect = [True] + [False] * 100
+        parent_conn.recv.return_value = {"event": "ready", "pid": 3333}
         
         manager = SessionManager()
         await manager.start()
@@ -70,9 +68,6 @@ async def test_session_call_and_result():
             if msg.get("type") == "run_command":
                 msg_id_container.append(msg.get("id"))
         parent_conn.send.side_effect = mock_send
-        
-        # We need to trigger the receiver manually since it's a loop
-        # Instead, let's just test that call sends the right message and waits for future
         
         call_task = asyncio.create_task(session.call("run_command", {"code": "display 1"}))
         

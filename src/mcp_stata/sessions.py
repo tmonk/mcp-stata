@@ -124,10 +124,17 @@ class StataSession:
                     self._pending_requests[msg_id].set_exception(RuntimeError(msg.get("message")))
                 self._cleanup_listeners(msg_id)
             else:
-                logger.error(f"Global worker error in session {self.id}: {msg.get('message')}")
+                error_msg = msg.get("message", "Unknown worker error")
+                logger.error(f"Global worker error in session {self.id}: {error_msg}")
                 # Don't update status if already stopped or error
                 if self.status not in ("stopped", "error"):
                     self.status = "error"
+                
+                # Fail all pending requests as the worker is dead or unusable
+                for pid, fut in list(self._pending_requests.items()):
+                    if not fut.done():
+                        fut.set_exception(RuntimeError(f"Worker process failed: {error_msg}"))
+                    self._cleanup_listeners(pid)
 
     def _cleanup_listeners(self, msg_id: str):
         self._log_listeners.pop(msg_id, None)
@@ -444,20 +451,28 @@ class SessionManager:
             logger.info(f"Creating new Stata session: {session_id}")
             session = StataSession(session_id)
             self._sessions[session_id] = session
-            # Give it more time to start up on CI (especially Stata's first init)
-            # but don't wait if the process dies or status changes.
-            timeout = 30.0
-            start_time = asyncio.get_running_loop().time()
-            while session.status == "starting" and asyncio.get_running_loop().time() - start_time < timeout:
-                if not session._process.is_alive():
-                    # Process died before reaching ready
-                    session.status = "error"
-                    break
-                await asyncio.sleep(0.1)
-                
+            
         session = self._sessions[session_id]
+        
+        # Wait for the session to be ready or fail, even if it was already created by another call.
+        # Give it more time to start up on CI (especially Stata's first init).
+        timeout = 45.0 # Increased from 30.0 for CI stability
+        start_time = asyncio.get_running_loop().time()
+        while session.status == "starting" and asyncio.get_running_loop().time() - start_time < timeout:
+            if not session._process.is_alive():
+                # Process died before reaching ready
+                session.status = "error"
+                break
+            await asyncio.sleep(0.1)
+            
         if session.status == "error":
             raise RuntimeError(f"Stata session {session_id} failed to initialize. Stata binary may be missing or inaccessible.")
+            
+        if session.status == "starting":
+             # Still starting after timeout
+             session.status = "error"
+             raise RuntimeError(f"Stata session {session_id} timed out during initialization.")
+             
         return session
 
     def get_session(self, session_id: str) -> StataSession:
