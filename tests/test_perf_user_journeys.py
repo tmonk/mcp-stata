@@ -66,3 +66,31 @@ def test_perf_user_journey_exec_lightweight(client):
         assert resp.rc == 0
 
     _run_perf("exec_lightweight", main)
+
+
+def test_perf_session_history_diff_tool_path():
+    """Benchmark the managed-session history path with real commands."""
+    from mcp_stata.server import stata_manage_session, stata_run, session_manager
+
+    async def main() -> None:
+        sid = "perf_hist"
+        await session_manager.start()
+        try:
+            await stata_manage_session(action="create", session_id=sid)
+            await stata_run("clear", session_id=sid)
+            for idx in range(1, 11):
+                await stata_run(f"gen v{idx} = {idx}", session_id=sid)
+
+            stats = await stata_manage_session(action="history_stats", session_id=sid)
+            assert "\"history_size\"" in stats
+            baseline_payload = await stata_manage_session(action="history_stats", session_id=sid)
+            import json
+            baseline = json.loads(baseline_payload)["latest_command"]
+
+            await stata_run("gen v11 = 11", session_id=sid)
+            diff = await stata_manage_session(action="history_diff", session_id=sid, since_command=baseline)
+            assert "\"new_variables\"" in diff
+        finally:
+            await session_manager.stop_all()
+
+    _run_perf("session_history_diff_tool_path", lambda: anyio.run(main))

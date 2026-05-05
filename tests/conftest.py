@@ -3,6 +3,10 @@ import sys
 from unittest.mock import MagicMock
 import pytest
 
+# Snapshot capture is best-effort in tests; keep timeout low so mocked sessions
+# that do not reply to history RPCs do not slow the suite.
+os.environ.setdefault("MCP_STATA_HISTORY_SNAPSHOT_TIMEOUT", "0.2")
+
 # Mock Stata dependencies ONLY if they're not already available
 # This allows tests that need real Stata to use it, while providing mocks for unit tests
 def _setup_stata_mocks_if_needed():

@@ -67,6 +67,9 @@ _GRAPH_REWRITE_RE = re.compile(
 )
 _FILTER_IDENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
 _FILTER_MISSING_DOT_RE = re.compile(r"(?<![0-9])\.(?![0-9A-Za-z_])")
+_MATA_DESCR_LINE_RE = re.compile(
+    r"^\s*(?P<bytes>\d+)\s+(?P<type>[A-Za-z ]+?)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*(?:\(\)|\[[^\]]+\])?)\s*$"
+)
 
 # Pre-compiled patterns for _clean_internal_smcl
 _SMCL_TAGS_PATTERN = r"(?:\{[^}]+\})*"
@@ -272,6 +275,8 @@ class StataClient:
         from .graph_detector import GraphCreationDetector
         self._graph_detector = GraphCreationDetector(self)
         self._missing_threshold = None
+        self._mata_state_cache: Optional[Dict[str, Any]] = None
+        self._mata_state_cache_cmd_idx: int = -1
 
     def get_stata_missing_threshold(self) -> float:
         """Returns the Stata missing value threshold (smallest double missing value).
@@ -4202,7 +4207,14 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         return self._truncate_command_output(result, max_output_lines)
 
-    def get_data(self, start: int = 0, count: int = 50) -> List[Dict[str, Any]]:
+    def get_data(
+        self,
+        start: int = 0,
+        count: int = 50,
+        variables: Optional[List[str]] = None,
+        include_missing: bool = True,
+        compress_numeric: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Returns valid JSON-serializable data. Efficiently fetches only the requested slice.
         
         All Stata missing value variants (., .a, .b, ..., .z) are normalized to null/None.
@@ -4229,7 +4241,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     stata_end = total_obs
 
                 # Much more memory efficient than loading the entire dataset
-                df = self.stata.pdataframe_from_data(obs=range(stata_start, stata_end))
+                if variables:
+                    df = self.stata.pdataframe_from_data(var=variables, obs=range(stata_start, stata_end))
+                else:
+                    df = self.stata.pdataframe_from_data(obs=range(stata_start, stata_end))
 
                 # Normalize Stata missing values to None for JSON serialization
                 try:
@@ -4247,11 +4262,24 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                                     df[col] = df[col].astype(np.float64)
                                 df[col] = df[col].where(~mask, np.nan)
                     
-                    # Convert to dict and ensure NaNs are None for JSON null
-                    return df.replace({np.nan: None}).to_dict(orient="records")
+                    data = df.replace({np.nan: None}).to_dict(orient="records")
+                    if not include_missing:
+                        data = [{k: v for k, v in row.items() if v is not None} for row in data]
+                    if compress_numeric:
+                        compacted = []
+                        for row in data:
+                            compacted.append({
+                                k: (round(v, 6) if isinstance(v, float) else v)
+                                for k, v in row.items()
+                            })
+                        data = compacted
+                    return data
                 except Exception as e:
                     logger.debug(f"Normalization failed, falling back to raw: {e}")
-                    return df.to_dict(orient="records")
+                    data = df.to_dict(orient="records")
+                    if not include_missing:
+                        data = [{k: v for k, v in row.items() if v is not None} for row in data]
+                    return data
             except Exception as e:
                 logger.error("Failed to retrieve data: %s", e)
                 return [{"error": f"Failed to retrieve data: {e}"}]
@@ -5201,9 +5229,19 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         # If no help file found, return a fallback message
         return f"Help file for '{topic}' not found."
 
-    def get_stored_results(self, force_fresh: bool = False) -> Dict[str, Any]:
-        """Returns e() and r() results using SFI for maximum reliability."""
-        if not force_fresh and self._last_results is not None:
+    def get_stored_results(
+        self,
+        force_fresh: bool = False,
+        include_matrices: bool = True,
+        matrix_max_rows: int = 200,
+        matrix_max_cols: int = 200,
+    ) -> Dict[str, Any]:
+        """Returns r()/e()/s() results, with optional matrix payloads."""
+        if (
+            not force_fresh
+            and include_matrices
+            and self._last_results is not None
+        ):
             return self._last_results
 
         if not self._initialized:
@@ -5224,16 +5262,20 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 fetch_names_block = (
                     "macro define mcp_r_sc \"`: r(scalars)'\"\n"
                     "macro define mcp_r_ma \"`: r(macros)'\"\n"
+                    "macro define mcp_r_mt \"`: r(matrices)'\"\n"
                     "macro define mcp_e_sc \"`: e(scalars)'\"\n"
                     "macro define mcp_e_ma \"`: e(macros)'\"\n"
+                    "macro define mcp_e_mt \"`: e(matrices)'\"\n"
                     "macro define mcp_s_sc \"`: s(scalars)'\"\n"
                     "macro define mcp_s_ma \"`: s(macros)'\"\n"
+                    "macro define mcp_s_mt \"`: s(matrices)'\"\n"
                 )
                 self.stata.run(fetch_names_block, echo=False)
                 
                 for rclass in ["r", "e", "s"]:
                     sc_names = (Macro.getGlobal(f"mcp_{rclass}_sc") or "").split()
                     ma_names = (Macro.getGlobal(f"mcp_{rclass}_ma") or "").split()
+                    mt_names = (Macro.getGlobal(f"mcp_{rclass}_mt") or "").split()
                     
                     # Fetch Scalars via SFI (fast, non-mutating)
                     for name in sc_names:
@@ -5255,6 +5297,40 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                             self.stata.run(copy_block, echo=False)
                             for name in ma_names:
                                 results[rclass][name] = Macro.getGlobal(f"mcp_m_{rclass}_{name}")
+
+                    if include_matrices and mt_names:
+                        try:
+                            from sfi import Matrix
+                        except Exception:
+                            Matrix = None
+                        if Matrix is not None:
+                            matrices_payload: Dict[str, Any] = {}
+                            for name in mt_names:
+                                key = f"{rclass}({name})"
+                                try:
+                                    raw = Matrix.get(key)
+                                    if raw is None:
+                                        continue
+                                    rows = len(raw)
+                                    cols = len(raw[0]) if rows > 0 else 0
+                                    trunc_rows = min(rows, max(1, int(matrix_max_rows)))
+                                    trunc_cols = min(cols, max(1, int(matrix_max_cols)))
+                                    values = []
+                                    for i in range(trunc_rows):
+                                        row = raw[i] if isinstance(raw[i], (list, tuple)) else [raw[i]]
+                                        values.append(
+                                            [self._normalize_stata_value(v) for v in row[:trunc_cols]]
+                                        )
+                                    matrices_payload[name] = {
+                                        "rows": rows,
+                                        "cols": cols,
+                                        "truncated": rows > trunc_rows or cols > trunc_cols,
+                                        "values": values,
+                                    }
+                                except Exception:
+                                    continue
+                            if matrices_payload:
+                                results[rclass]["_matrices"] = matrices_payload
                 
                 # Cleanup and Restore state
                 self.stata.run("macro drop mcp_*", echo=False)
@@ -5264,11 +5340,188 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 else:
                     self.stata.run("capture", echo=False)
 
-                self._last_results = results
+                if include_matrices:
+                    self._last_results = results
                 return results
             except Exception as e:
                 logger.error(f"SFI-based get_stored_results failed: {e}")
                 return {"r": {}, "e": {}}
+
+    @staticmethod
+    def _parse_mata_describe(stdout: str, max_objects: int) -> List[Dict[str, Any]]:
+        objects: List[Dict[str, Any]] = []
+        for raw_line in (stdout or "").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("# bytes") or line.startswith("-"):
+                continue
+            m = _MATA_DESCR_LINE_RE.match(raw_line)
+            if not m:
+                continue
+            obj_type = (m.group("type") or "").strip()
+            full_name = (m.group("name") or "").strip()
+            base_name = full_name
+            shape = None
+            is_function = full_name.endswith("()")
+            if is_function:
+                base_name = full_name[:-2]
+            elif "[" in full_name and full_name.endswith("]"):
+                base_name, dims = full_name.split("[", 1)
+                shape = dims[:-1]
+            objects.append(
+                {
+                    "name": base_name,
+                    "display_name": full_name,
+                    "type": obj_type,
+                    "bytes": int(m.group("bytes")),
+                    "shape": shape,
+                    "is_function": is_function,
+                }
+            )
+            if len(objects) >= max(1, int(max_objects)):
+                break
+        return objects
+
+    @staticmethod
+    def _mata_type_family(type_name: str) -> str:
+        t = (type_name or "").lower()
+        if "function" in t or t.endswith("()"):
+            return "function"
+        if "string" in t:
+            return "string"
+        if "complex" in t:
+            return "complex"
+        if "real" in t:
+            return "real"
+        if "pointer" in t:
+            return "pointer"
+        if "class" in t:
+            return "class"
+        if "struct" in t:
+            return "struct"
+        if "transmorphic" in t:
+            return "transmorphic"
+        return "unknown"
+
+    @staticmethod
+    def _json_safe_mata_value(value: Any) -> Any:
+        if isinstance(value, complex):
+            return {"re": value.real, "im": value.imag}
+        return value
+
+    def get_mata_state(
+        self,
+        include_values: bool = True,
+        max_objects: int = 200,
+        matrix_max_rows: int = 200,
+        matrix_max_cols: int = 200,
+        max_functions: int = 200,
+    ) -> Dict[str, Any]:
+        """Return structured MATA objects currently in memory, optimized for speed."""
+        if not self._initialized:
+            self.init()
+        max_objects = max(1, int(max_objects))
+        matrix_max_rows = max(1, int(matrix_max_rows))
+        matrix_max_cols = max(1, int(matrix_max_cols))
+        max_functions = max(1, int(max_functions))
+
+        if (
+            self._mata_state_cache is not None
+            and self._mata_state_cache_cmd_idx == self._command_idx
+            and include_values
+        ):
+            return self._mata_state_cache
+
+        describe = self.run_command_structured("mata: mata describe", echo=False, strip_smcl=True)
+        payload: Dict[str, Any] = {
+            "rc": describe.rc,
+            "success": describe.success,
+            "raw": describe.stdout or "",
+            "objects": [],
+            "functions": [],
+            "counts": {"objects": 0, "functions": 0},
+        }
+        if not describe.success:
+            return payload
+
+        parsed = self._parse_mata_describe(describe.stdout, max_objects=max_objects)
+        functions = [o for o in parsed if o.get("is_function")]
+        variables = [o for o in parsed if not o.get("is_function")]
+        if len(functions) > max_functions:
+            functions = functions[:max_functions]
+        payload["functions"] = functions
+        payload["objects"] = variables
+        payload["counts"] = {"objects": len(variables), "functions": len(functions)}
+        for obj in payload["functions"]:
+            obj["type_family"] = "function"
+        for obj in payload["objects"]:
+            obj["type_family"] = self._mata_type_family(obj.get("type", ""))
+
+        if not include_values or not variables:
+            if include_values:
+                self._mata_state_cache = payload
+                self._mata_state_cache_cmd_idx = self._command_idx
+            return payload
+
+        try:
+            from sfi import Mata
+        except Exception:
+            Mata = None
+
+        if Mata is None:
+            for obj in variables:
+                obj["value_unavailable_reason"] = "sfi_mata_api_unavailable"
+            self._mata_state_cache = payload
+            self._mata_state_cache_cmd_idx = self._command_idx
+            return payload
+
+        for obj in variables:
+            name = obj.get("name")
+            if not name:
+                obj["value_unavailable_reason"] = "missing_name"
+                continue
+            try:
+                eltype = str(Mata.getEltype(name))
+                rows = int(Mata.getRowTotal(name))
+                cols = int(Mata.getColTotal(name))
+                family = self._mata_type_family(eltype)
+                obj["eltype"] = eltype
+                obj["type_family"] = family
+                obj["shape"] = f"{rows},{cols}" if rows > 1 or cols > 1 else None
+                raw = Mata.get(name)
+                rr = min(rows, matrix_max_rows)
+                cc = min(cols, matrix_max_cols)
+                clipped = raw[:rr] if isinstance(raw, list) else []
+                values = []
+                for row in clipped:
+                    cells = row[:cc] if isinstance(row, list) else [row]
+                    values.append(
+                        [
+                            self._json_safe_mata_value(self._normalize_stata_value(v))
+                            for v in cells
+                        ]
+                    )
+                matrix_payload = {
+                    "rows": rows,
+                    "cols": cols,
+                    "truncated": rows > rr or cols > cc,
+                    "values": values,
+                }
+                if rows == 1 and cols == 1 and values and values[0]:
+                    obj["value_scalar"] = values[0][0]
+                    obj["value"] = values[0][0]
+                    obj["value_matrix"] = matrix_payload
+                else:
+                    obj["value"] = matrix_payload
+            except Exception:
+                # Functions/pointers/struct/class may not be materializable by Mata.get.
+                if obj.get("type_family") == "function":
+                    obj["value_unavailable_reason"] = "function_object"
+                else:
+                    obj["value_unavailable_reason"] = "sfi_mata_get_failed"
+
+        self._mata_state_cache = payload
+        self._mata_state_cache_cmd_idx = self._command_idx
+        return payload
 
     def invalidate_graph_cache(self, graph_name: str = None) -> None:
         """Invalidate cache for specific graph or all graphs.

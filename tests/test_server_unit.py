@@ -1,10 +1,11 @@
 import pytest
 import json
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, AsyncMock, patch
 from mcp_stata.server import (
     stata_task_status,
-    stata_inspect_data
+    stata_inspect_data,
+    stata_manage_session,
 )
 
 @pytest.mark.asyncio
@@ -79,3 +80,35 @@ async def test_get_task_status_unit():
     finally:
         if task_id in _background_tasks:
             del _background_tasks[task_id]
+
+
+@pytest.mark.asyncio
+async def test_manage_session_history_actions_unit():
+    mock_session = MagicMock()
+    mock_session.get_history_stats.return_value = {
+        "command_count": 4,
+        "history_size": 3,
+        "max_history_entries": 200,
+        "earliest_command": 1,
+        "latest_command": 4,
+    }
+    mock_session.get_session_diff = AsyncMock(return_value={
+        "command_count": 4,
+        "since_command": 3,
+        "new_variables": ["z"],
+        "removed_variables": [],
+        "modified_macros": {},
+        "removed_macros": [],
+        "n_obs": 10,
+        "n_vars": 3,
+        "captured_at": "t1",
+    })
+
+    with patch("mcp_stata.server.session_manager.get_or_create_session", new=AsyncMock(return_value=mock_session)):
+        stats = json.loads(await stata_manage_session(action="history_stats", session_id="s1"))
+        assert stats["session_id"] == "s1"
+        assert stats["history_size"] == 3
+
+        diff = json.loads(await stata_manage_session(action="history_diff", session_id="s1", since_command=3))
+        assert diff["session_id"] == "s1"
+        assert diff["new_variables"] == ["z"]

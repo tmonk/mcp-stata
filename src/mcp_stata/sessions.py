@@ -5,6 +5,7 @@ import logging
 import asyncio
 import atexit
 import multiprocessing
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Callable, Awaitable
 from multiprocessing.connection import Connection
 from datetime import datetime, timezone
@@ -19,13 +20,36 @@ _ctx = multiprocessing.get_context("spawn")
 Process = _ctx.Process
 Pipe = _ctx.Pipe
 
+
+@dataclass
+class _SessionSnapshot:
+    command_count: int
+    variables: set[str]
+    macros: dict[str, Any]
+    n_obs: int
+    n_vars: int
+    captured_at: str
+
 class StataSession:
+    _STATEFUL_METHODS = {
+        "run_command",
+        "run_do_file",
+        "run_command_structured",
+        "load_data",
+    }
+
     def __init__(self, session_id: str):
         self.id = session_id
         self.status = "starting"
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.pid: Optional[int] = None
         self.profile_code: Optional[str] = None
+        self.command_count = 0
+        self._max_history_entries = int(os.getenv("MCP_STATA_MAX_SESSION_HISTORY", "200"))
+        self._snapshot_timeout_seconds = float(os.getenv("MCP_STATA_HISTORY_SNAPSHOT_TIMEOUT", "1.5"))
+        self._history: List[_SessionSnapshot] = []
+        self._last_diff_snapshot: Optional[_SessionSnapshot] = None
+        self._history_lock = asyncio.Lock()
         
         self._parent_conn, self._child_conn = Pipe()
         self._process = Process(target=self._run_worker, args=(self._child_conn,))
@@ -118,51 +142,199 @@ class StataSession:
             self._listener_running = True
             self._listener_task = current_loop.create_task(self._listen_to_worker())
 
-    async def call(self, method: str, args: Dict[str, Any], 
-                   notify_log: Optional[Callable[[str], Awaitable[None]]] = None,
-                   notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None) -> Any:
-        
+    async def _call_raw(
+        self,
+        method: str,
+        args: Dict[str, Any],
+        notify_log: Optional[Callable[[str], Awaitable[None]]] = None,
+        notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None,
+        timeout_seconds: Optional[float] = None,
+    ) -> Any:
         await self._ensure_listener()
         msg_id = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         self._pending_requests[msg_id] = future
-        
+
         if notify_log:
             self._log_listeners.setdefault(msg_id, []).append(notify_log)
         if notify_progress:
             self._progress_listeners.setdefault(msg_id, []).append(notify_progress)
-            
+
         try:
             self._parent_conn.send({
                 "type": method,
                 "id": msg_id,
                 "args": args
             })
-            return await future
+            if timeout_seconds is None:
+                return await future
+            try:
+                return await asyncio.wait_for(asyncio.shield(future), timeout=timeout_seconds)
+            except asyncio.TimeoutError as e:
+                self._cleanup_listeners(msg_id)
+                raise TimeoutError(
+                    f"Timed out waiting for worker response to {method} after {timeout_seconds}s"
+                ) from e
         except asyncio.CancelledError:
-            # If the session call is cancelled (e.g., from the server or UI),
-            # send an out-of-band 'break' message to the worker to interrupt Stata.
             logger.info(f"Cancellation requested for command {method}:{msg_id} in session {self.id}")
             try:
                 self._parent_conn.send({"type": "break"})
             except Exception as e:
                 logger.warning(f"Failed to send break command to worker for session {self.id}: {e}")
-            
-            # Wait briefly for the worker to return the result of the interrupted command.
-            # We use shield so that we stay in this call until we see the worker acknowledge or we timeout.
-            # This prevents the next command from being sent while the worker is still cleaning up.
+
             try:
-                # Give Stata a few seconds to acknowledge the break.
                 await asyncio.wait_for(asyncio.shield(future), timeout=3.0)
                 logger.info(f"Session {self.id} acknowledged break for {msg_id}")
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning(f"Session {self.id} did not acknowledge break within timeout: {e}")
-            
-            # Re-raise cancellation
             raise
         except (AttributeError, BrokenPipeError, ConnectionResetError) as e:
-             self._cleanup_listeners(msg_id)
-             raise RuntimeError(f"Failed to send command to worker: {e}")
+            self._cleanup_listeners(msg_id)
+            raise RuntimeError(f"Failed to send command to worker: {e}")
+
+    async def _collect_snapshot(self, command_count: int) -> _SessionSnapshot:
+        state_payload = await self._call_raw(
+            "get_session_state",
+            {},
+            timeout_seconds=self._snapshot_timeout_seconds,
+        )
+        variables_payload = state_payload.get("variables", {}) if isinstance(state_payload, dict) else {}
+        variable_entries = variables_payload.get("variables", []) if isinstance(variables_payload, dict) else []
+        variables = {str(v.get("name")) for v in variable_entries if isinstance(v, dict) and v.get("name")}
+
+        stored = state_payload.get("stored_results", {}) if isinstance(state_payload, dict) else {}
+        macros: dict[str, Any] = {}
+        if isinstance(stored, dict):
+            for cls in ("r", "e", "s"):
+                class_values = stored.get(cls)
+                if isinstance(class_values, dict):
+                    for key, value in class_values.items():
+                        macros[f"{cls}.{key}"] = value
+
+        dataset_state = state_payload.get("dataset_state", {}) if isinstance(state_payload, dict) else {}
+        n_obs = int(dataset_state.get("n", 0)) if isinstance(dataset_state, dict) else 0
+        n_vars = int(dataset_state.get("k", len(variables))) if isinstance(dataset_state, dict) else len(variables)
+
+        return _SessionSnapshot(
+            command_count=command_count,
+            variables=variables,
+            macros=macros,
+            n_obs=n_obs,
+            n_vars=n_vars,
+            captured_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def _prune_history(self) -> None:
+        if len(self._history) <= self._max_history_entries:
+            return
+        # Keep the initial baseline (command 0) and the newest entries.
+        baseline = self._history[0]
+        keep_tail = max(0, self._max_history_entries - 1)
+        self._history = [baseline] + self._history[-keep_tail:]
+
+    async def _record_post_command_snapshot(self) -> None:
+        async with self._history_lock:
+            snapshot = await self._collect_snapshot(self.command_count)
+            self._history.append(snapshot)
+            self._prune_history()
+            if self._last_diff_snapshot is None:
+                self._last_diff_snapshot = snapshot
+
+    async def get_session_diff(self, since_command: Optional[int] = None) -> Dict[str, Any]:
+        async with self._history_lock:
+            current = await self._collect_snapshot(self.command_count)
+
+            if since_command is None:
+                baseline = self._last_diff_snapshot
+                if baseline is None:
+                    if self._history:
+                        baseline = self._history[-1]
+                    else:
+                        baseline = _SessionSnapshot(
+                            command_count=0,
+                            variables=set(),
+                            macros={},
+                            n_obs=0,
+                            n_vars=0,
+                            captured_at=self.created_at,
+                        )
+            else:
+                baseline = None
+                for snapshot in reversed(self._history):
+                    if snapshot.command_count <= since_command:
+                        baseline = snapshot
+                        break
+                if baseline is None:
+                    earliest = self._history[0].command_count if self._history else self.command_count
+                    raise ValueError(
+                        f"No session history available for command {since_command}. "
+                        f"Earliest retained command is {earliest}."
+                    )
+
+            new_vars = current.variables - baseline.variables
+            removed_vars = baseline.variables - current.variables
+            modified_macros = {
+                k: v for k, v in current.macros.items()
+                if baseline.macros.get(k) != v
+            }
+            removed_macros = sorted(set(baseline.macros) - set(current.macros))
+
+            self._last_diff_snapshot = current
+            self._history.append(current)
+            self._prune_history()
+
+            return {
+                "command_count": self.command_count,
+                "since_command": baseline.command_count,
+                "new_variables": sorted(new_vars),
+                "removed_variables": sorted(removed_vars),
+                "modified_macros": modified_macros,
+                "removed_macros": removed_macros,
+                "n_obs": current.n_obs,
+                "n_vars": current.n_vars,
+                "captured_at": current.captured_at,
+            }
+
+    def get_history_stats(self) -> Dict[str, Any]:
+        if not self._history:
+            return {
+                "command_count": self.command_count,
+                "history_size": 0,
+                "max_history_entries": self._max_history_entries,
+                "earliest_command": None,
+                "latest_command": None,
+            }
+        return {
+            "command_count": self.command_count,
+            "history_size": len(self._history),
+            "max_history_entries": self._max_history_entries,
+            "earliest_command": self._history[0].command_count,
+            "latest_command": self._history[-1].command_count,
+        }
+
+    async def call(self, method: str, args: Dict[str, Any], 
+                   notify_log: Optional[Callable[[str], Awaitable[None]]] = None,
+                   notify_progress: Optional[Callable[[float, Optional[float], Optional[str]], Awaitable[None]]] = None) -> Any:
+        result = await self._call_raw(
+            method,
+            args,
+            notify_log=notify_log,
+            notify_progress=notify_progress,
+        )
+
+        if method in self._STATEFUL_METHODS:
+            self.command_count += 1
+            try:
+                await self._record_post_command_snapshot()
+            except Exception:
+                logger.warning(
+                    "Failed to record session snapshot for %s command #%s in session %s",
+                    method,
+                    self.command_count,
+                    self.id,
+                    exc_info=True,
+                )
+        return result
 
     async def set_profile(self, code: Optional[str]):
         """Set code that runs before every command in this session."""
@@ -196,7 +368,7 @@ class StataSession:
                     await loop.run_in_executor(None, self._process.join, timeout)
                 except Exception:
                     pass
-                
+
                 if self._process.is_alive():
                     logger.warning(f"Session {self.id} worker (PID {self._process.pid}) did not exit after {timeout}s; killing.")
                     try:
@@ -204,7 +376,9 @@ class StataSession:
                         await loop.run_in_executor(None, self._process.join)
                     except Exception as e:
                         logger.error(f"Failed to kill session {self.id} worker: {e}")
-            
+
+            self._history.clear()
+            self._last_diff_snapshot = None
             self.status = "stopped"
             if self._listener_task:
                 self._listener_task.cancel()

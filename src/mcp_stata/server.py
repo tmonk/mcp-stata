@@ -256,6 +256,7 @@ async def stata_manage_session(
     action: str,
     session_id: str = "default",
     code: Optional[str] = None,
+    since_command: Optional[int] = None,
 ) -> str:
     """Manage Stata sessions (create, stop, list, profile, UI channel).
     
@@ -268,9 +269,13 @@ async def stata_manage_session(
             - "stop": Terminates an existing Stata session.
             - "list": Returns a JSON list of all active sessions.
             - "set_profile": Executes initialization code for a session.
+            - "history_diff": Returns tracked session state changes.
+            - "history_stats": Returns retained history window metadata.
             - "get_ui_channel": Retrieves connection details for the UI proxy.
         session_id: Unique identifier for the Stata session (defaults to "default").
         code: Stata code to execute when using the "set_profile" action.
+        since_command: Optional command index for "history_diff". If omitted, compares
+            to the last diff checkpoint for this session.
         
     Returns:
         A JSON string containing the status of the action or the requested data.
@@ -289,6 +294,16 @@ async def stata_manage_session(
         stata_session = await session_manager.get_or_create_session(session_id)
         await stata_session.set_profile(code)
         return json.dumps({"status": "profile_set", "session_id": session_id})
+    elif action == "history_diff":
+        stata_session = await session_manager.get_or_create_session(session_id)
+        payload = await stata_session.get_session_diff(since_command=since_command)
+        payload["session_id"] = session_id
+        return json.dumps(payload)
+    elif action == "history_stats":
+        stata_session = await session_manager.get_or_create_session(session_id)
+        payload = stata_session.get_history_stats()
+        payload["session_id"] = session_id
+        return json.dumps(payload)
     elif action == "get_ui_channel":
         _ensure_ui_channel()
         if ui_channel is None:
@@ -361,6 +376,47 @@ _request_log_paths: Dict[str, str] = {}
 _read_log_paths: set[str] = set()
 _read_log_offsets: Dict[str, int] = {}
 _STDOUT_FILTER_INSTALLED = False
+
+def _compact_stored_results(results: dict, include_formatting: bool = False) -> dict:
+    """Drop noisy table-formatting macros from stored results by default."""
+    if include_formatting:
+        return results
+    compact: dict[str, dict] = {}
+    for cls in ("r", "e", "s"):
+        source = results.get(cls, {})
+        if not isinstance(source, dict):
+            compact[cls] = {}
+            continue
+        filtered = {
+            k: v for k, v in source.items()
+            if not (k.startswith("PT_") or k.startswith("put_"))
+        }
+        compact[cls] = filtered
+    return compact
+
+
+def _extract_help_format(help_text: str, format: str) -> str:
+    """Return concise slices of help text for syntax/options/examples modes."""
+    if format == "full":
+        return help_text
+    lines = help_text.splitlines()
+    if format == "syntax":
+        out = [ln for ln in lines if ln.strip().lower().startswith("syntax")]
+        if out:
+            return "\n".join(out[:6]).strip()
+        return "\n".join(lines[:24]).strip()
+    if format in {"options", "examples"}:
+        marker = "options" if format == "options" else "examples"
+        start = None
+        for i, ln in enumerate(lines):
+            if marker in ln.strip().lower():
+                start = i
+                break
+        if start is None:
+            return "\n".join(lines[:40]).strip()
+        end = min(len(lines), start + 120)
+        return "\n".join(lines[start:end]).strip()
+    return help_text
 
 
 def _install_stdout_filter() -> None:
@@ -656,7 +712,7 @@ async def stata_run(
     max_output_lines: int = None,
     cwd: str | None = None,
     session_id: str = "default",
-    strip_smcl: bool = False,
+    strip_smcl: bool = True,
     filter_pattern: Optional[str] = None,
     exclude_pattern: Optional[str] = None,
 ) -> str:
@@ -985,6 +1041,8 @@ async def stata_inspect_data(
     variables: Optional[list[str]] = None,
     start: int = 0,
     count: int = 50,
+    include_missing: bool = True,
+    compress_numeric: bool = False,
     session_id: str = "default",
 ) -> str:
     """Inspect the active dataset (describe, codebook, summarize, search, get data).
@@ -1032,7 +1090,16 @@ async def stata_inspect_data(
         variables_resp = VariablesResponse.model_validate(variables_dict)
         return variables_resp.model_dump_json()
     elif action == "get":
-        data = await session.call("get_data", {"start": start, "count": count})
+        data = await session.call(
+            "get_data",
+            {
+                "start": start,
+                "count": count,
+                "variables": variables,
+                "include_missing": include_missing,
+                "compress_numeric": compress_numeric,
+            },
+        )
         resp = DataResponse(start=start, count=count, data=data)
         return resp.model_dump_json()
     else:
@@ -1083,16 +1150,52 @@ async def stata_manage_graphs(
 
 @mcp.tool()
 @log_call
-async def stata_inspect_results(session_id: str = "default") -> str:
-    """Returns all scalars and macros currently stored in r(), e(), and s()."""
-    _log_tool_call("stata_inspect_results")
+async def stata_get_results(
+    session_id: str = "default",
+    include_formatting: bool = False,
+    include_matrices: bool = True,
+    matrix_max_rows: int = 200,
+    matrix_max_cols: int = 200,
+    include_mata: bool = False,
+    as_json: bool = True,
+) -> str:
+    """Returns coherent structured result state across r()/e()/s(), with optional MATA snapshot."""
+    _log_tool_call("stata_get_results")
     session = await session_manager.get_or_create_session(session_id)
-    results = await session.call("get_stored_results", {})
-    return json.dumps(results)
+    results = await session.call(
+        "get_stored_results",
+        {
+            "include_matrices": include_matrices,
+            "matrix_max_rows": matrix_max_rows,
+            "matrix_max_cols": matrix_max_cols,
+            "force_fresh": True,
+        },
+    )
+    payload = _compact_stored_results(results, include_formatting=include_formatting)
+    if include_mata:
+        payload["mata"] = await session.call(
+            "get_mata_state",
+            {
+                "include_values": True,
+                "max_objects": 200,
+                "matrix_max_rows": matrix_max_rows,
+                "matrix_max_cols": matrix_max_cols,
+                "max_functions": 200,
+            },
+        )
+    if as_json:
+        return json.dumps(payload)
+    return str(payload)
 
 @mcp.tool()
 @log_call
-async def stata_get_help(topic: str, plain_text: bool = False, merge_paragraphs: bool = True, session_id: str = "default") -> str:
+async def stata_get_help(
+    topic: str,
+    plain_text: bool = False,
+    merge_paragraphs: bool = True,
+    format: str = "full",
+    session_id: str = "default",
+) -> str:
     """Returns help for a Stata command.
     
     Args:
@@ -1103,7 +1206,11 @@ async def stata_get_help(topic: str, plain_text: bool = False, merge_paragraphs:
     """
     _log_tool_call("stata_get_help")
     session = await session_manager.get_or_create_session(session_id)
-    return await session.call("get_help", {"topic": topic, "plain_text": plain_text, "merge_paragraphs": merge_paragraphs})
+    help_text = await session.call(
+        "get_help",
+        {"topic": topic, "plain_text": plain_text, "merge_paragraphs": merge_paragraphs},
+    )
+    return _extract_help_format(help_text, format=format)
 
 @mcp.resource("stata://data/summary")
 async def get_summary() -> str:
@@ -1137,7 +1244,7 @@ async def get_variable_list_resource() -> str:
 @mcp.resource("stata://results/stored")
 async def get_stored_results_resource() -> str:
     """Returns stored r() and e() results."""
-    return await stata_inspect_results(session_id="default")
+    return await stata_get_results(session_id="default")
 
 def main():
     if "--version" in sys.argv:

@@ -247,7 +247,7 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 
 ## Tools Available (from server.py)
 
-* `stata_run(code, is_file=False, background=False, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, cwd=None, session_id="default", strip_smcl=False, filter_pattern=None, exclude_pattern=None)`: Execute Stata commands or a `.do` file.
+* `stata_run(code, is_file=False, background=False, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, cwd=None, session_id="default", strip_smcl=True, filter_pattern=None, exclude_pattern=None)`: Execute Stata commands or a `.do` file.
   - Set `is_file=True` to treat `code` as an absolute path to a `.do` file.
   - Set `background=True` to start long jobs asynchronously (returns `task_id`).
   - Always writes output to a temporary log file and emits `notifications/logMessage` containing `{"event":"log_path","path":"..."}`.
@@ -261,10 +261,12 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 * `stata_inspect_data(action, query=None, variables=None, start=0, count=50, session_id="default")`: Unified data inspector.
   - `action`: `describe`, `codebook`, `summary`, `search`, `list`, or `get`.
 * `stata_manage_graphs(action, graph_name=None, format="svg", session_id="default")`: Graph management (`list`, `export`, `export_all`).
-* `stata_inspect_results(session_id="default")`: Get current `r()`, `e()`, and `s()` results as JSON.
+* `stata_get_results(session_id="default", include_formatting=False, include_matrices=True, matrix_max_rows=200, matrix_max_cols=200, include_mata=False, as_json=True)`: Unified stored-results tool for coherent structured `r()`/`e()`/`s()` payloads with optional structured Mata snapshot.
 * `stata_get_help(topic, plain_text=False, merge_paragraphs=True, session_id="default")`: Markdown or plain-text Stata help.
-* `stata_manage_session(action, session_id="default", code=None)`: Session lifecycle and UI channel orchestration.
-  - `action`: `create`, `stop`, `list`, `set_profile`, or `get_ui_channel`.
+* `stata_manage_session(action, session_id="default", code=None, since_command=None)`: Session lifecycle, state history, and UI channel orchestration.
+  - `action`: `create`, `stop`, `list`, `set_profile`, `history_diff`, `history_stats`, or `get_ui_channel`.
+  - `history_diff` returns tracked changes in variables/macros and dataset dimensions. Pass `since_command` to diff from a specific command index; omit it to diff from the previous history checkpoint.
+  - `history_stats` returns retained window metadata (`history_size`, `earliest_command`, `latest_command`, `max_history_entries`).
 
 ### Common action examples
 
@@ -273,6 +275,11 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 stata_manage_session(action="create", session_id="analysis")
 stata_manage_session(action="list")
 stata_manage_session(action="stop", session_id="analysis")
+
+# Session history tracking
+stata_manage_session(action="history_stats", session_id="analysis")
+stata_manage_session(action="history_diff", session_id="analysis")
+stata_manage_session(action="history_diff", session_id="analysis", since_command=42)
 
 # Run a do-file (replacement for run_do_file)
 stata_run("/path/to/analysis.do", is_file=True, session_id="analysis")
@@ -289,7 +296,7 @@ stata_manage_graphs(action="export_all", session_id="analysis")
 
 # Help and stored results
 stata_get_help(topic="regress", session_id="analysis")
-stata_inspect_results(session_id="analysis")
+stata_get_results(session_id="analysis", include_mata=True)
 
 # UI data browser channel
 stata_manage_session(action="get_ui_channel", session_id="analysis")
@@ -308,6 +315,11 @@ stata_control(action="cancel", id="...")
   1. Pass a `_meta.progressToken` when invoking the tool if you want progress updates (optional).
   2. If you need to cancel, send `notifications/cancelled` with the same requestId. You may also stop tailing the log file path once you receive cancellation confirmation (the tool call will return an error indicating cancellation).
   3. Be prepared for partial output in the log file; cancellation is best-effort and depends on Stata surfacing `BreakError`.
+
+### Output and results behavior
+
+- `stata_run` defaults to `strip_smcl=True`, so responses are plain-text oriented unless you explicitly disable stripping.
+- `stata_get_results` returns structured stored results and can include Mata state (`include_mata=True`) with typed object/function payloads suitable for downstream programmatic checks.
 
 Resources exposed for MCP clients:
 

@@ -160,7 +160,13 @@ class StataWorker:
                 self.conn.send({"event": "result", "id": msg_id, "result": None})
 
             elif msg_type == "get_data":
-                data = self.client.get_data(args.get("start", 0), args.get("count", 50))
+                data = self.client.get_data(
+                    start=args.get("start", 0),
+                    count=args.get("count", 50),
+                    variables=args.get("variables"),
+                    include_missing=args.get("include_missing", True),
+                    compress_numeric=args.get("compress_numeric", False),
+                )
                 self.conn.send({"event": "result", "id": msg_id, "result": data})
 
             elif msg_type == "list_graphs":
@@ -213,6 +219,27 @@ class StataWorker:
                 state = self.client.get_dataset_state()
                 self.conn.send({"event": "result", "id": msg_id, "result": state})
 
+            elif msg_type == "get_session_state":
+                variables = self.client.list_variables_structured()
+                stored_results = self.client.get_stored_results(
+                    force_fresh=False,
+                    include_matrices=False,
+                    matrix_max_rows=0,
+                    matrix_max_cols=0,
+                )
+                dataset_state = self.client.get_dataset_state()
+                self.conn.send(
+                    {
+                        "event": "result",
+                        "id": msg_id,
+                        "result": {
+                            "variables": variables.model_dump(),
+                            "stored_results": stored_results,
+                            "dataset_state": dataset_state,
+                        },
+                    }
+                )
+
             elif msg_type == "get_arrow_stream":
                 # StataClient.get_arrow_stream supports offset, limit, vars, etc.
                 arrow_bytes = self.client.get_arrow_stream(**args)
@@ -243,12 +270,27 @@ class StataWorker:
                 self.conn.send({"event": "result", "id": msg_id, "result": exports.model_dump()})
 
             elif msg_type == "get_stored_results":
-                results = self.client.get_stored_results()
+                results = self.client.get_stored_results(
+                    force_fresh=args.get("force_fresh", False),
+                    include_matrices=args.get("include_matrices", True),
+                    matrix_max_rows=args.get("matrix_max_rows", 200),
+                    matrix_max_cols=args.get("matrix_max_cols", 200),
+                )
                 self.conn.send({"event": "result", "id": msg_id, "result": results})
 
             elif msg_type == "get_stata_missing_threshold":
                 threshold = self.client.get_stata_missing_threshold()
                 self.conn.send({"event": "result", "id": msg_id, "result": threshold})
+
+            elif msg_type == "get_mata_state":
+                state = self.client.get_mata_state(
+                    include_values=args.get("include_values", True),
+                    max_objects=args.get("max_objects", 200),
+                    matrix_max_rows=args.get("matrix_max_rows", 200),
+                    matrix_max_cols=args.get("matrix_max_cols", 200),
+                    max_functions=args.get("max_functions", 200),
+                )
+                self.conn.send({"event": "result", "id": msg_id, "result": state})
 
             elif msg_type == "find_variables":
                 res = self.client.find_variables(args.get("query", ""))

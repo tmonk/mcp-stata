@@ -10,14 +10,15 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
 
 1. Ensure the `mcp-stata` MCP server is registered (see project README for config) and request it if not already active.
 2. When the user asks for Stata work, use the consolidated tools:
-  - Use `stata_run` for ad-hoc commands and `.do` files (`is_file=True` for scripts; `trace=True` for call stacks; `raw=True` for plain output).
+  - Use `stata_run` for ad-hoc commands and `.do` files (`is_file=True` for scripts; `trace=True` for call stacks; `raw=True` for plain output). It defaults to `strip_smcl=True` for plain-text responses.
   - Use `stata_load_data` before analyses that require datasets.
   - Use `stata_inspect_data` with `action` (`describe`, `codebook`, `summary`, `search`, `list`, `get`) for data inspection.
   - Use `stata_manage_graphs` with `action` (`list`, `export`, `export_all`) for visualization workflows.
   - Use `stata_get_help` for Stata documentation.
-  - Use `stata_inspect_results` to return `r()`/`e()`/`s()` results after commands for validation.
+  - Use `stata_get_results` as the single results tool for `r()`/`e()`/`s()` validation, and pass `include_mata=True` for structured Mata object/function state.
   - Use `stata_read_log` to tail, read, or search output from long-running commands.
   - Use `stata_manage_session(action="get_ui_channel")` to obtain a localhost HTTP endpoint for high-volume data browsing.
+  - Use `stata_manage_session(action="history_diff")` / `stata_manage_session(action="history_stats")` for session state tracking without introducing extra tools.
   - Use `stata_task_status` and `stata_control(action="cancel", id=...)` for background task orchestration.
   - Use `stata_control(action="break", id=<session_id>)` to interrupt a running Stata command.
 3. Surface `rc`/`stderr` info back to the user, referencing `r()`/`e()` codes.
@@ -27,7 +28,7 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
 
 ### Command Execution
 
-- `stata_run(code, is_file=False, background=False, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, cwd=None, session_id="default", strip_smcl=False, filter_pattern=None, exclude_pattern=None)`: Run Stata syntax or `.do` files.
+- `stata_run(code, is_file=False, background=False, echo=True, as_json=True, trace=False, raw=False, max_output_lines=None, cwd=None, session_id="default", strip_smcl=True, filter_pattern=None, exclude_pattern=None)`: Run Stata syntax or `.do` files.
   - Set `is_file=True` and pass an absolute path in `code` to run a `.do` file.
   - Set `background=True` for long-running jobs; returns a `task_id`.
   - Always writes output to a temporary log file and emits `notifications/logMessage` including `{"event":"log_path","path":"..."}` so the client can tail it locally.
@@ -68,15 +69,17 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
 - `stata_get_help(topic, plain_text=False, merge_paragraphs=True, session_id="default")`: Return Stata help text.
   - `topic`: Command or help topic (e.g., "regress", "graph").
   - `plain_text`: Return plain text instead of Markdown (default: False).
-- `stata_inspect_results(session_id="default")`: Return current `r()`, `e()`, and `s()` results as JSON after a command.
+- `stata_get_results(session_id="default", include_formatting=False, include_matrices=True, matrix_max_rows=200, matrix_max_cols=200, include_mata=False, as_json=True)`: Return coherent structured `r()`/`e()`/`s()` plus optional structured Mata state.
 
 ### Session Management
 
-- `stata_manage_session(action, session_id="default", code=None)`:
+- `stata_manage_session(action, session_id="default", code=None, since_command=None)`:
   - `action="create"`: create a session.
   - `action="list"`: list active sessions and status.
   - `action="stop"`: terminate a session.
   - `action="set_profile"`: run profile/setup Stata code for a session (`code` required).
+  - `action="history_stats"`: inspect retained history metadata (`history_size`, command bounds).
+  - `action="history_diff"`: return changes in variables/macros since prior checkpoint or `since_command`.
   - `action="get_ui_channel"`: return UI channel connection details.
 
 ### UI Data Browser
@@ -146,7 +149,7 @@ The server exposes these resources for MCP clients:
 # Load sample data and run regression
 stata_load_data("auto")
 stata_run("regress price mpg")
-stata_inspect_results()  # Retrieve coefficients and statistics
+stata_get_results()  # Retrieve coefficients and statistics
 ```
 
 ### Export a histogram
@@ -189,6 +192,11 @@ stata_read_log("/tmp/stata_log_abc123.log", offset=4096)
 # Create/list sessions
 stata_manage_session(action="create", session_id="analysis")
 stata_manage_session(action="list")
+
+# Inspect session history
+stata_manage_session(action="history_stats", session_id="analysis")
+stata_manage_session(action="history_diff", session_id="analysis")
+stata_manage_session(action="history_diff", session_id="analysis", since_command=42)
 
 # Run in background and monitor
 stata_run("quietly do /path/to/long_job.do", background=True, session_id="analysis")
