@@ -2,6 +2,39 @@
 
 <!-- version list -->
 
+## v2.1.0 (2026-05-05)
+
+### Documentation
+
+- Add post-2.0.0 feature summary to README
+  ([`c4ffed2`](https://github.com/tmonk/mcp-stata/commit/c4ffed23c8f4602edfaab89ed0c74865090b9ccc))
+
+- Align README and skill with full PR scope
+  ([`b23198c`](https://github.com/tmonk/mcp-stata/commit/b23198cf016548463b21db615d1c4594b955e077))
+
+- Fold post-release notes into README sections
+  ([`45f2a19`](https://github.com/tmonk/mcp-stata/commit/45f2a1959330433338a84802bf900ff866f56e7b))
+
+- Sync README with current MCP tool surface
+  ([`8d6b6eb`](https://github.com/tmonk/mcp-stata/commit/8d6b6eb75ab26543192697b7d06accaf4e65c74e))
+
+### Features
+
+- Add session history tracking via manage_session
+  ([`170418f`](https://github.com/tmonk/mcp-stata/commit/170418f185694506cb2d05f7aa096b15d718731b))
+
+- Add structured Mata and results introspection
+  ([`5e8dc86`](https://github.com/tmonk/mcp-stata/commit/5e8dc8686e6a44aab0dcd4f8102a95a49fc613e9))
+
+- Default to plain output over SMCL
+  ([`2a6b719`](https://github.com/tmonk/mcp-stata/commit/2a6b719bdb28be7aff5fd7a8de1666b1a3d52146))
+
+### Refactoring
+
+- Consolidate results tooling into stata_get_results
+  ([`a932046`](https://github.com/tmonk/mcp-stata/commit/a932046402455ece462e08d2633e89df07fdc359))
+
+
 ## v2.0.0 (2026-05-05)
 
 ### Bug Fixes
