@@ -813,6 +813,8 @@ class StataClient:
         with self._exec_lock:
             self._is_executing = True
             self._last_results = None # Invalidate results cache
+            with self._list_graphs_cache_lock:
+                self._list_graphs_cache = None
             try:
                 from sfi import Scalar, SFIToolkit  # Import SFI tools
                 with self._temp_cwd(cwd):
@@ -3039,7 +3041,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         echo: bool = True,
         trace: bool = False,
         cwd: Optional[str] = None,
-        strip_smcl: bool = False,
+        strip_smcl: bool = True,
         filter_pattern: Optional[str] = None,
         exclude_pattern: Optional[str] = None,
     ) -> CommandResponse:
@@ -3444,7 +3446,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         emit_graph_ready: bool = False,
         graph_ready_task_id: Optional[str] = None,
         graph_ready_format: str = "svg",
-        strip_smcl: bool = False,
+        strip_smcl: bool = True,
         filter_pattern: Optional[str] = None,
         exclude_pattern: Optional[str] = None,
     ) -> CommandResponse:
@@ -3818,7 +3820,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         emit_graph_ready: bool = False,
         graph_ready_task_id: Optional[str] = None,
         graph_ready_format: str = "svg",
-        strip_smcl: bool = False,
+        strip_smcl: bool = True,
         filter_pattern: Optional[str] = None,
         exclude_pattern: Optional[str] = None,
     ) -> CommandResponse:
@@ -4183,7 +4185,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         trace: bool = False,
         max_output_lines: Optional[int] = None,
         cwd: Optional[str] = None,
-        strip_smcl: bool = False,
+        strip_smcl: bool = True,
         filter_pattern: Optional[str] = None,
         exclude_pattern: Optional[str] = None,
     ) -> CommandResponse:
@@ -4957,7 +4959,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                         "macro define mcp_graph_list \"`r(list)'\"\n"
                         "if \"`r(list)'\" != \"\" {\n"
                         "  foreach g in `r(list)' {\n"
-                        "    quietly graph describe `g'\n"
+                        "    capture quietly graph describe `g'\n"
                         "    global mcp_graph_details \"$mcp_graph_details `g'|`r(command_date)' `r(command_time)';\"\n"
                         "  }\n"
                         "}"
@@ -6107,7 +6109,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         source: str,
         clear: bool = True,
         max_output_lines: Optional[int] = None,
-        strip_smcl: bool = False,
+        strip_smcl: bool = True,
         filter_pattern: Optional[str] = None,
         exclude_pattern: Optional[str] = None,
     ) -> CommandResponse:
@@ -6140,7 +6142,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         varname: str,
         trace: bool = False,
         max_output_lines: Optional[int] = None,
-        strip_smcl: bool = False,
+        strip_smcl: bool = True,
         filter_pattern: Optional[str] = None,
         exclude_pattern: Optional[str] = None,
     ) -> CommandResponse:

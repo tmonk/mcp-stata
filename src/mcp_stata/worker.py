@@ -135,7 +135,7 @@ class StataWorker:
                     args["code"],
                     notify_log=notify_log,
                     notify_progress=notify_progress,
-                    strip_smcl=args.get("strip_smcl", False),
+                    strip_smcl=args.get("strip_smcl", True),
                     filter_pattern=args.get("filter_pattern"),
                     exclude_pattern=args.get("exclude_pattern"),
                     **args.get("options", {})
@@ -148,7 +148,7 @@ class StataWorker:
                     args["path"],
                     notify_log=notify_log,
                     notify_progress=notify_progress,
-                    strip_smcl=args.get("strip_smcl", False),
+                    strip_smcl=args.get("strip_smcl", True),
                     filter_pattern=args.get("filter_pattern"),
                     exclude_pattern=args.get("exclude_pattern"),
                     **args.get("options", {})
@@ -188,7 +188,7 @@ class StataWorker:
             elif msg_type == "run_command_structured":
                 result = self.client.run_command_structured(
                     args["code"],
-                    strip_smcl=args.get("strip_smcl", False),
+                    strip_smcl=args.get("strip_smcl", True),
                     filter_pattern=args.get("filter_pattern"),
                     exclude_pattern=args.get("exclude_pattern"),
                     **args.get("options", {})
@@ -198,7 +198,7 @@ class StataWorker:
             elif msg_type == "load_data":
                 result = self.client.load_data(
                     args["source"],
-                    strip_smcl=args.get("strip_smcl", False),
+                    strip_smcl=args.get("strip_smcl", True),
                     filter_pattern=args.get("filter_pattern"),
                     exclude_pattern=args.get("exclude_pattern"),
                     **args.get("options", {})
@@ -208,7 +208,7 @@ class StataWorker:
             elif msg_type == "codebook":
                 result = self.client.codebook(
                     args["variable"],
-                    strip_smcl=args.get("strip_smcl", False),
+                    strip_smcl=args.get("strip_smcl", True),
                     filter_pattern=args.get("filter_pattern"),
                     exclude_pattern=args.get("exclude_pattern"),
                     **args.get("options", {})

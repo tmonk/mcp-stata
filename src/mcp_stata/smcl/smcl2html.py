@@ -50,13 +50,18 @@ def _inline_to_markdown(text: str, preserve_spacing: bool = False) -> str:
     def _tag_colon(m: re.Match) -> str:
         """Handle {tag:content} form."""
         tag = m.group(1).lower()
-        content = (m.group(2) or "").strip()
+        raw_content = m.group(2) or ""
+        content = raw_content if preserve_spacing else raw_content.strip()
+        if preserve_spacing and not content:
+            return " "
         if tag in ("bf", "strong"):
             return f"**{content}**" if content else ""
         if tag in ("it", "em"):
             return f"*{content}*" if content else ""
         if tag in ("cmd", "code", "inp", "input", "res", "err", "txt"):
             return f"`{content}`" if content else ""
+        if preserve_spacing and tag in ("right", "ralign"):
+            return f" {content}"
         if tag in ("cmdab", "opt", "opth"):
             # {opt l:evel(#)} → `level(#)` — join abbreviation parts
             if ":" in content:
@@ -84,23 +89,33 @@ def _inline_to_markdown(text: str, preserve_spacing: bool = False) -> str:
     def _tag_space(m: re.Match) -> str:
         """Handle {tag content} space-separated form."""
         tag = m.group(1).lower()
-        content = (m.group(2) or "").strip()
+        raw_content = m.group(2) or ""
+        content = raw_content if preserve_spacing else raw_content.strip()
+        if preserve_spacing and not content:
+            return " "
+        if preserve_spacing and tag == "space":
+            try:
+                return " " * max(1, int(content))
+            except Exception:
+                return " "
+        if preserve_spacing and tag == "col":
+            return " "
         if tag in ("help",):
             return content
         if tag in ("helpb",):
-            return f"`{content}`"
+            return f"`{content}`" if content else ""
         if tag in ("opt", "opth"):
             # Join abbreviation colon: l:evel(#) → level(#)
             if ":" in content:
                 pre, post = content.split(":", 1)
                 content = pre + post
-            return f"`{content}`"
+            return f"`{content}`" if content else ""
         if tag in ("bf", "strong"):
-            return f"**{content}**"
+            return f"**{content}**" if content else ""
         if tag in ("it", "em"):
-            return f"*{content}*"
+            return f"*{content}*" if content else ""
         if tag in ("cmd", "cmdab"):
-            return f"`{content}`"
+            return f"`{content}`" if content else ""
         if tag == "manhelp":
             # {manhelp cmd SECTION:label} → label; {manhelp cmd SECTION} → cmd
             if ":" in content:
@@ -111,7 +126,8 @@ def _inline_to_markdown(text: str, preserve_spacing: bool = False) -> str:
             # {manlink SECTION CMD} → CMD
             parts = content.split()
             return parts[-1] if len(parts) > 1 else content
-        # Structural space-form tags: discard content
+        # Structural space-form tags: keep the content when preserving spacing,
+        # otherwise drop the tag wrapper entirely.
         return ""
 
     def _apply_once(t: str) -> str:
@@ -130,17 +146,243 @@ def _inline_to_markdown(text: str, preserve_spacing: bool = False) -> str:
     if not preserve_spacing:
         # Collapse multiple spaces
         text = re.sub(r"  +", " ", text)
-    return text.strip()
+        return text.strip()
+    return text
 
 
-def strip_smcl(text: str) -> str:
-    """Lightweight SMCL to plain text/minimal Markdown conversion for command output.
-    
-    Preserves spacing to maintain table alignment.
+_SMCL_LAYOUT_TOKEN_RE = re.compile(r"(\{(?:[^{}]|\{[^{}]*\})*\})|(\n)|([^{}\n]+)|(.)", re.DOTALL)
+
+
+def _render_smcl_layout(text: str) -> str:
+    """Render SMCL command output as layout-preserving plain text.
+
+    This keeps line breaks and column spacing, and mirrors the column math used
+    by stata-workbench's SMCL renderer for layout-sensitive tags.
     """
     if not text:
         return ""
-    return _inline_to_markdown(text, preserve_spacing=True)
+
+    text = text.replace("\r\n", "\n")
+
+    def _append(buf: list[str], chunk: str, line_len: list[int]) -> None:
+        if not chunk:
+            return
+        buf.append(chunk)
+        if "\n" in chunk:
+            line_len[0] = len(chunk.rsplit("\n", 1)[-1])
+        else:
+            line_len[0] += len(chunk)
+
+    def _render_fragment(fragment: str, line_len: list[int] | None = None) -> str:
+        local_line_len = [0] if line_len is None else line_len
+        out: list[str] = []
+        table_settings = {
+            "p2col": [0, 0, 0, 0],
+            "synopt": 20,
+        }
+
+        def emit(chunk: str) -> None:
+            _append(out, chunk, local_line_len)
+
+        for match in _SMCL_LAYOUT_TOKEN_RE.finditer(fragment):
+            tag = match.group(1)
+            newline = match.group(2)
+            text_content = match.group(3) or match.group(4)
+
+            if newline:
+                emit("\n")
+                continue
+
+            if text_content:
+                emit(text_content)
+                continue
+
+            if not tag:
+                continue
+
+            inner = tag[1:-1]
+            tag_name = inner
+            tag_content = None
+            first_colon = inner.find(":")
+
+            if first_colon != -1:
+                cmd_candidate = inner[:first_colon].split()[0].lower()
+                if cmd_candidate not in {"col", "column", "space", "hline", ".-"}:
+                    tag_name = inner[:first_colon]
+                    tag_content = inner[first_colon + 1:]
+
+            parts = tag_name.split()
+            command = parts[0].lower()
+
+            if command in {"smcl", "/smcl"}:
+                continue
+
+            if command in {"col", "column"}:
+                try:
+                    dest = int(parts[1])
+                except Exception:
+                    continue
+                spaces_needed = max(0, (dest - 1) - local_line_len[0])
+                emit(" " * spaces_needed)
+                continue
+
+            if command == "space":
+                try:
+                    amt = int(parts[1]) if len(parts) > 1 else 1
+                except Exception:
+                    amt = 1
+                emit(" " * max(0, amt))
+                continue
+
+            if command == "hline":
+                try:
+                    amt = int(parts[1]) if len(parts) > 1 else 60
+                except Exception:
+                    amt = 60
+                emit("-" * max(0, amt))
+                continue
+
+            if command == ".-":
+                emit("-")
+                continue
+
+            if command in {"p2colset", "synoptset"}:
+                nums = []
+                for part in parts[1:]:
+                    try:
+                        nums.append(int(part))
+                    except Exception:
+                        continue
+                if len(nums) >= 4:
+                    table_settings["p2col"] = nums[:4]
+                continue
+
+            if command == "p2colreset":
+                table_settings["p2col"] = [0, 0, 0, 0]
+                continue
+
+            if command in {"p2col", "synopt", "p2coldent"}:
+                settings = table_settings["p2col"]
+                nums = []
+                for part in parts[1:]:
+                    try:
+                        nums.append(int(part))
+                    except Exception:
+                        continue
+                if len(nums) >= 4:
+                    settings = nums[:4]
+
+                i1 = settings[0] or 0
+                c2 = settings[1] or 15
+                i2 = settings[2] or c2 + 2
+
+                left_text = _render_fragment(tag_content or "") if tag_content else ""
+                if local_line_len[0] == 0 and i1 > 0:
+                    emit(" " * i1)
+                emit(left_text)
+                left_width = max(0, c2 - i1)
+                spaces_needed = max(0, left_width - len(left_text))
+                emit(" " * spaces_needed)
+                emit(" " * max(0, i2 - c2))
+                continue
+
+            if command == "p_end":
+                if not out or not out[-1].endswith("\n"):
+                    emit("\n")
+                continue
+
+            if command in {"p", "pstd", "phang", "phang2", "pin", "pin2", "pin3", "pmore", "pmore2", "pmore3"}:
+                # Paragraph containers control indentation in HTML. For plain text,
+                # keep the text and newline structure without trimming away the layout.
+                continue
+
+            if command == "bind":
+                emit(_render_fragment(tag_content or "") if tag_content else "")
+                continue
+
+            if command == "c" or command == "char":
+                arg = parts[1] if len(parts) > 1 else ""
+                char = None
+                try:
+                    if arg.startswith("0x"):
+                        char = chr(int(arg[2:], 16))
+                    elif arg.isdigit():
+                        char = chr(int(arg, 10))
+                    else:
+                        char_map = {
+                            "-": "-",
+                            "|": "|",
+                            "+": "+",
+                            "B+": "+",
+                            "+T": "+",
+                            "T+": "+",
+                            "TT": "+",
+                            "BT": "+",
+                            "TR": "+",
+                            "TL": "+",
+                            "BR": "+",
+                            "BL": "+",
+                            "-(": "{",
+                            ")-": "}",
+                        }
+                        char = char_map.get(arg)
+                except Exception:
+                    char = None
+                if char:
+                    emit(char)
+                continue
+
+            if command in {"right", "ralign", "lalign", "center"}:
+                inner_text = _render_fragment(tag_content or "") if tag_content else ""
+                try:
+                    width = int(parts[1])
+                except Exception:
+                    width = None
+                if width is None:
+                    if command == "right" and inner_text:
+                        emit(" " + inner_text)
+                    else:
+                        emit(inner_text)
+                    continue
+                padding = max(0, width - len(inner_text))
+                if command in {"right", "ralign"}:
+                    emit(" " * padding + inner_text)
+                elif command == "lalign":
+                    emit(inner_text + " " * padding)
+                else:
+                    left_pad = padding // 2
+                    right_pad = padding - left_pad
+                    emit(" " * left_pad + inner_text + " " * right_pad)
+                continue
+
+            if command in {
+                "com", "res", "err", "txt", "inp", "input", "result", "text", "error",
+                "bf", "it", "sf", "ul", "hi", "hilite", "bold", "italic",
+            }:
+                if tag_content is not None:
+                    emit(_render_fragment(tag_content))
+                continue
+
+            if command in {"browse", "view", "help", "stata", "helpb", "helpi", "net", "ado", "update"}:
+                if tag_content is not None:
+                    emit(_render_fragment(tag_content))
+                elif len(parts) > 1:
+                    emit(" ".join(parts[1:]))
+                continue
+
+            if tag_content is not None:
+                emit(_render_fragment(tag_content))
+
+        return "".join(out)
+
+    return _render_fragment(text)
+
+
+def strip_smcl(text: str) -> str:
+    """Render SMCL command output as layout-preserving plain text."""
+    if not text:
+        return ""
+    return _render_smcl_layout(text)
 
 
 

@@ -108,6 +108,55 @@ def test_multiple_title_sections_all_appear():
     assert "## Options" in md
 
 
+def test_help_file_sections_are_split_and_isolated():
+    smcl = textwrap.dedent(
+        """
+        {smcl}
+        {title:Syntax}
+
+        {pstd}
+        regress depvar [indepvars] [if] [in] [, options]
+        {p_end}
+
+        {title:Description}
+
+        {pstd}
+        Fits a linear regression model.
+        {p_end}
+
+        {title:Options}
+
+        {dlgtab:Model}
+        {pstd}{opt noconstant} suppresses the constant term.{p_end}
+
+        {dlgtab:SE/Robust}
+        {pstd}{opt vce(vcetype)} specifies robust standard errors.{p_end}
+
+        {title:Stored results}
+
+        {pstd}
+        r(table) contains the coefficient table.
+        {p_end}
+        """
+    ).strip() + "\n"
+
+    md = smcl_to_markdown(smcl, current_file="regress")
+
+    syntax_pos = md.index("## Syntax")
+    desc_pos = md.index("## Description")
+    opts_pos = md.index("## Options")
+    stored_pos = md.index("## Stored results")
+
+    assert syntax_pos < desc_pos < opts_pos < stored_pos
+    assert "### Model" in md
+    assert "### SE/Robust" in md
+    assert "regress depvar [indepvars] [if] [in] [, options]" in md[syntax_pos:desc_pos]
+    assert "Fits a linear regression model." in md[desc_pos:opts_pos]
+    assert "suppresses the constant term." in md[opts_pos:stored_pos]
+    assert "r(table) contains the coefficient table." in md[stored_pos:]
+    assert "fits a linear regression model" not in md[opts_pos:]
+
+
 def test_sections_appear_in_order():
     smcl = (
         "{smcl}\n"
@@ -480,9 +529,9 @@ def test_p2col_section_header():
     md = smcl_to_markdown(smcl, current_file="test")
     assert "## Stored results" in md
     assert "**Scalars**" in md
-    assert "`e(N)`" in md
+    assert "e(N)" in md
     assert "number of observations" in md
-    assert "`e(r2)`" in md
+    assert "e(r2)" in md
     assert "R-squared" in md
 
 
@@ -582,8 +631,14 @@ def test_regress_sample_all_sections():
 
 def test_regress_sample_subsections():
     md = smcl_to_markdown(REGRESS_SAMPLE, current_file="regress")
+    syntax_pos = md.index("## Syntax")
+    description_pos = md.index("## Description")
+    options_pos = md.index("## Options")
     assert "### Model" in md
     assert "### Reporting" in md
+    assert "`regress` *depvar* [*indepvars*] [`,` *options*]" in md[syntax_pos:description_pos]
+    assert "set confidence level; default is" in md[syntax_pos:options_pos]
+    assert "ordinary least-squares linear regression" in md[description_pos:options_pos]
 
 
 def test_regress_sample_option_table():

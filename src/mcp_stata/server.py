@@ -327,6 +327,7 @@ async def stata_load_data(
     clear: bool = True,
     as_json: bool = True,
     raw: bool = False,
+    strip_smcl: bool = True,
     max_output_lines: int | None = None,
     session_id: str = "default",
 ) -> str:
@@ -341,6 +342,7 @@ async def stata_load_data(
         clear: If True (default), clears any existing data in memory before loading.
         as_json: If True, returns a structured JSON response envelope.
         raw: If True, returns only the raw Stata output or error message.
+        strip_smcl: If True, removes Stata SMCL tags from the output for readability.
         max_output_lines: Optional limit on the number of output lines to return.
         session_id: The ID of the Stata session to load data into.
         
@@ -349,7 +351,14 @@ async def stata_load_data(
     """
     _log_tool_call("stata_load_data")
     session = await session_manager.get_or_create_session(session_id)
-    result_dict = await session.call("load_data", {"source": source, "options": {"clear": clear, "max_output_lines": max_output_lines}})
+    result_dict = await session.call(
+        "load_data",
+        {
+            "source": source,
+            "strip_smcl": strip_smcl,
+            "options": {"clear": clear, "max_output_lines": max_output_lines},
+        },
+    )
     result = CommandResponse.model_validate(result_dict)
     if raw:
         return result.stdout if result.success else (result.error.message if result.error else result.stdout)
@@ -1043,6 +1052,7 @@ async def stata_inspect_data(
     count: int = 50,
     include_missing: bool = True,
     compress_numeric: bool = False,
+    strip_smcl: bool = True,
     session_id: str = "default",
 ) -> str:
     """Inspect the active dataset (describe, codebook, summarize, search, get data).
@@ -1063,6 +1073,7 @@ async def stata_inspect_data(
         variables: Optional list of variables to include in the "summary" action.
         start: 0-indexed starting observation for the "get" action.
         count: Number of observations to retrieve for the "get" action.
+        strip_smcl: If True, removes Stata SMCL tags from text-like outputs.
         session_id: The ID of the Stata session to inspect.
         
     Returns:
@@ -1071,11 +1082,17 @@ async def stata_inspect_data(
     _log_tool_call("stata_inspect_data")
     session = await session_manager.get_or_create_session(session_id)
     if action == "describe":
-        result_dict = await session.call("run_command_structured", {"code": "describe", "options": {"echo": True}})
+        result_dict = await session.call(
+            "run_command_structured",
+            {"code": "describe", "strip_smcl": strip_smcl, "options": {"echo": True}},
+        )
         result = CommandResponse.model_validate(result_dict)
         return result.stdout if result.success else (result.error.message if result.error else "")
     elif action == "codebook":
-        result_dict = await session.call("codebook", {"variable": query, "options": {}})
+        result_dict = await session.call(
+            "codebook",
+            {"variable": query, "strip_smcl": strip_smcl, "options": {}},
+        )
         result = CommandResponse.model_validate(result_dict)
         return result.model_dump_json()
     elif action == "summary":

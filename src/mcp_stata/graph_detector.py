@@ -183,7 +183,7 @@ class GraphCreationDetector:
                     stata_cmd = ""
                     for i, name in enumerate(graph_names):
                         resolved = self._stata_client._resolve_graph_name_for_stata(name)
-                        stata_cmd += f"quietly graph describe {resolved}\n"
+                        stata_cmd += f"capture quietly graph describe {resolved}\n"
                         stata_cmd += f"macro define mcp_ts_{i} \"`r(command_date)'_`r(command_time)'\"\n"
                     
                     self._stata_client.stata.run(stata_cmd, echo=False)

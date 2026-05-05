@@ -34,7 +34,8 @@ async def test_smcl_perfection_clamp(client: StataClient, tmp_path):
     resp = await client.run_do_file_streaming(
         str(do_path),
         notify_log=notify_log,
-        echo=True
+        echo=True,
+        strip_smcl=False
     )
 
     # --- VERIFICATION 1: JSON Response Contents ---

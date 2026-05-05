@@ -25,6 +25,7 @@ def test_run_command_streaming_emits_log_and_progress(client):
             notify_log=notify_log,
             notify_progress=notify_progress,
             echo=True,
+            strip_smcl=False,
         )
         assert res.rc == 0
         assert "{com}. display 5+5" in res.stdout
@@ -92,6 +93,7 @@ def test_run_do_file_streaming_progress_inference(tmp_path, client):
             notify_log=notify_log,
             notify_progress=notify_progress,
             echo=True,
+            strip_smcl=False,
         )
         assert res.rc == 0
         assert "{com}. do" in res.stdout

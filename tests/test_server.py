@@ -26,7 +26,7 @@ async def wait_for_task_result(task_id, timeout=10.0):
 
 async def test_server_tools_consolidated(client):
     # Test stata_run (sync)
-    res = json.loads(await stata_run("display 5+5"))
+    res = json.loads(await stata_run("display 5+5", strip_smcl=False))
     assert res["rc"] == 0
     assert "{com}. display 5+5" in res["stdout"]
     assert "{res}10" in res["stdout"]
@@ -99,7 +99,7 @@ async def test_server_run_do_file_consolidated(client, tmp_path):
     tmp = tmp_path / "test.do"
     tmp.write_text('display "ok"\n')
     
-    do_resp = json.loads(await stata_run(str(tmp), is_file=True))
+    do_resp = json.loads(await stata_run(str(tmp), is_file=True, strip_smcl=False))
     assert do_resp["rc"] == 0
     assert "{res}ok" in do_resp["stdout"]
 
@@ -159,3 +159,36 @@ async def test_inspect_data_variants(client):
     # Summary
     res = json.loads(await stata_inspect_data(action="summary", variables=["price"]))
     assert "price" in res
+
+
+async def test_server_retains_complex_table_smcl_when_stripping_disabled(client):
+    await stata_run("sysuse auto, clear")
+
+    res = json.loads(
+        await stata_run(
+            "tabstat price mpg weight length displacement gear_ratio, by(foreign) "
+            "statistics(n mean sd min p25 p50 p75 max) columns(statistics)",
+            strip_smcl=False,
+        )
+    )
+
+    stdout = res["stdout"]
+
+    assert res["rc"] == 0
+    assert "{txt}" in stdout
+    assert "{hline" in stdout
+    assert "{ralign" in stdout or "{c |}" in stdout
+    assert "Summary for variables:" in stdout
+    assert "Group variable: foreign (Car origin)" in stdout
+    assert "price" in stdout
+    assert "mpg" in stdout
+    assert "weight" in stdout
+    assert "length" in stdout
+    assert "displacement" in stdout
+    assert "gear_ratio" in stdout
+    assert "Turn circle" not in stdout  # sanity: only requested vars should appear
+    assert "mean" in stdout.lower()
+    assert "sd" in stdout.lower()
+    assert "p50" in stdout.lower() or "median" in stdout.lower()
+    assert "6072.423" in stdout or "6384.682" in stdout
+    assert "2.806538" in stdout or "3.74" in stdout
