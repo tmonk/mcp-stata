@@ -28,6 +28,14 @@ from mcp_stata.server import (
     run_do_file_background,
     get_task_status,
     get_task_result,
+    stata_wait_for_task,
+    stata_tail_log,
+    stata_set_profile,
+    stata_list_variables,
+    stata_inspect_results,
+    session_manager,
+    BackgroundTask,
+    _background_tasks,
 )
 
 # Mark all tests in this module as requiring Stata and being async
@@ -349,4 +357,109 @@ async def test_polling_friction_fix_e2e(client):
     
     assert status["status"] in {"running", "done"}
     assert not status.get("error") or "Polling is disabled" not in str(status["error"])
+
+
+@pytest.mark.asyncio
+async def test_smcl_stripping():
+    """Test that SMCL stripping correctly cleans output."""
+    try:
+        await session_manager.start()
+        
+        # Command with bold SMCL: {bf:bold text}
+        code = 'display "{bf:bold text}"'
+        
+        # 1. Without stripping (raw SMCL)
+        res_raw_json = await run_command(code, strip_smcl=False)
+        res_raw = json.loads(res_raw_json)
+        assert "{bf:bold text}" in res_raw.get("stdout", "")
+        
+        # 2. With stripping (Markdown)
+        res_stripped_json = await run_command(code, strip_smcl=True)
+        res_stripped = json.loads(res_stripped_json)
+        # strip_smcl should convert {bf:text} to **text**
+        assert "**bold text**" in res_stripped.get("stdout", "")
+        assert "{bf:" not in res_stripped.get("stdout", "")
+        
+    finally:
+        await session_manager.stop_all()
+
+@pytest.mark.asyncio
+async def test_output_filtering():
+    """Test line-based filtering of output."""
+    try:
+        await session_manager.start()
+        
+        code = 'display "line 1"\ndisplay "line 2"\ndisplay "exclude me"'
+        
+        # 1. Filter pattern
+        res_f_json = await run_command(code, filter_pattern="line")
+        res_f = json.loads(res_f_json)
+        assert "line 1" in res_f.get("stdout", "")
+        assert "line 2" in res_f.get("stdout", "")
+        assert "exclude me" not in res_f.get("stdout", "")
+        
+        # 2. Exclude pattern
+        res_e_json = await run_command(code, exclude_pattern="exclude")
+        res_e = json.loads(res_e_json)
+        assert "line 1" in res_e.get("stdout", "")
+        assert "exclude me" not in res_e.get("stdout", "")
+        
+    finally:
+        await session_manager.stop_all()
+
+@pytest.mark.asyncio
+async def test_wait_for_task_and_tail():
+    """Test blocking wait and log tailing."""
+    try:
+        await session_manager.start()
+        
+        # Run a command that takes a bit of time
+        res_json = await run_command_background('display "delayed output"', session_id="wait_test")
+        res = json.loads(res_json)
+        task_id = res["task_id"]
+        
+        # Wait for it
+        status_json = await stata_wait_for_task(task_id, timeout=10)
+        status = json.loads(status_json)
+        assert status["status"] == "done"
+        
+        # Tail the log
+        tail = stata_tail_log(status["log_path"], lines=2)
+        assert "delayed output" in tail
+        
+        # Test tail_lines in get_task_status
+        status_with_tail_json = get_task_status(task_id, tail_lines=2)
+        status_with_tail = json.loads(status_with_tail_json)
+        assert "delayed output" in status_with_tail.get("tail", "")
+        
+    finally:
+        await session_manager.stop_all()
+
+@pytest.mark.asyncio
+async def test_discovery_tools():
+    """Test variables and results discovery tools."""
+    try:
+        await session_manager.start()
+        
+        # Load some data
+        await run_command("sysuse auto, clear")
+        
+        # List variables
+        vars_json = await stata_list_variables()
+        vars_data = json.loads(vars_json)
+        assert any(v["name"] == "make" for v in vars_data["variables"])
+        assert any(v["name"] == "price" for v in vars_data["variables"])
+        
+        # Run a regression to get results
+        await run_command("regress price mpg")
+        
+        # Inspect results
+        results_json = await stata_inspect_results()
+        results = json.loads(results_json)
+        assert "e" in results
+        assert "N" in results["e"]
+        assert results["e"]["N"] == 74
+        
+    finally:
+        await session_manager.stop_all()
 

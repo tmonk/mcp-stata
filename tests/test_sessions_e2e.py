@@ -5,6 +5,7 @@ from mcp_stata.server import (
     create_session,
     list_sessions,
     run_command,
+    stata_set_profile,
     session_manager
 )
 
@@ -80,6 +81,30 @@ async def test_mcp_auto_create_session():
         sessions_json = list_sessions()
         sessions = json.loads(sessions_json)
         assert any(s["id"] == "auto_session" for s in sessions["sessions"])
+        
+    finally:
+        await session_manager.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_session_profile():
+    """Test that session profile runs before every command."""
+    try:
+        await session_manager.start()
+        
+        # Set profile to define a global
+        await stata_set_profile('global my_test_var "hello profile"', session_id="profile_test")
+        
+        # Run command that uses the global
+        res_json = await run_command('display "$my_test_var"', session_id="profile_test")
+        res = json.loads(res_json)
+        assert "hello profile" in res.get("stdout", "")
+        
+        # Clear profile and verify (it shouldn't run anymore, but the global might persist in the session)
+        await stata_set_profile('global my_test_var "updated profile"', session_id="profile_test")
+        res2_json = await run_command('display "$my_test_var"', session_id="profile_test")
+        res2 = json.loads(res2_json)
+        assert "updated profile" in res2.get("stdout", "")
         
     finally:
         await session_manager.stop_all()

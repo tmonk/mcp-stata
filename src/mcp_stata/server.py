@@ -1,6 +1,7 @@
 from __future__ import annotations
 import anyio
 import asyncio
+import inspect
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
@@ -33,6 +34,7 @@ import uuid
 from functools import wraps
 from typing import Optional, Dict
 import threading
+import time
 
 from .ui_http import UIChannelManager
 
@@ -214,12 +216,79 @@ async def stop_session(session_id: str) -> str:
     """
     await session_manager.stop_session(session_id)
     return json.dumps({"status": "stopped", "session_id": session_id})
+    
+@mcp.tool()
+async def stata_set_profile(
+    code: str | None,
+    session_id: str = "default",
+) -> str:
+    """Register a setup script for a session that runs automatically before every command.
+    
+    Use this to set globals, cd to project directories, or run configuration .do files
+    once per session to reduce token usage and redundant setup.
+    
+    Args:
+        code: Stata code to run (e.g. "global mypath /data", "do config.do"). Pass None to clear.
+        session_id: The ID of the Stata session.
+    """
+    _log_tool_call("stata_set_profile")
+    session = await session_manager.get_or_create_session(session_id)
+    await session.set_profile(code)
+    return f"Profile updated for session '{session_id}'."
 
 @mcp.tool()
 def list_sessions() -> str:
     """List all active Stata sessions and their status."""
     sessions = session_manager.list_sessions()
     return SessionListResponse(sessions=sessions).model_dump_json()
+
+@mcp.tool()
+def stata_tail_log(
+    path: str,
+    lines: int = 50,
+) -> str:
+    """Read the last N lines of a log file.
+    
+    Use this to quickly check the progress or end of a long-running task
+    without reading the entire log file.
+    
+    Args:
+        path: Absolute path to the log file.
+        lines: Number of lines to read from the end.
+    """
+    _log_tool_call("stata_tail_log")
+    tail = _tail_file(path, lines)
+    if tail is None:
+        return f"Error: Could not read log at {path}"
+    return tail
+
+@mcp.tool()
+async def stata_list_variables(
+    session_id: str = "default",
+) -> str:
+    """Returns a clean JSON list of all variables in the active dataset.
+    
+    Provides variable names, types, and labels in a structured format
+    optimized for LLM processing.
+    """
+    _log_tool_call("stata_list_variables")
+    session = await session_manager.get_or_create_session(session_id)
+    results = await session.call("list_variables_structured", {})
+    return json.dumps(results)
+
+@mcp.tool()
+async def stata_inspect_results(
+    session_id: str = "default",
+) -> str:
+    """Return all scalars and macros currently stored in r(), e(), and s().
+    
+    Use this to get precise values (e.g. coefficients, N, R-squared) as JSON
+    without parsing large regression tables or summary output.
+    """
+    _log_tool_call("stata_inspect_results")
+    session = await session_manager.get_or_create_session(session_id)
+    results = await session.call("get_stored_results", {})
+    return json.dumps(results)
 
 
 async def _noop_log(_text: str) -> None:
@@ -453,7 +522,7 @@ def _extract_ctx(args: tuple[object, ...], kwargs: dict[str, object]) -> Context
 
 def log_call(func):
     """Decorator to log tool and resource calls."""
-    if asyncio.iscoroutinefunction(func):
+    if inspect.iscoroutinefunction(func):
         @wraps(func)
         async def async_inner(*args, **kwargs):
             ctx = _extract_ctx(args, kwargs)
@@ -481,6 +550,9 @@ async def run_do_file_background(
     max_output_lines: int = None,
     cwd: str | None = None,
     session_id: str = "default",
+    strip_smcl: bool = False,
+    filter_pattern: Optional[str] = None,
+    exclude_pattern: Optional[str] = None,
 ) -> str:
     """Run a Stata do-file in the background and return a task id.
 
@@ -574,6 +646,9 @@ async def run_do_file_background(
                 "run_do_file",
                 {
                     "path": path,
+                    "strip_smcl": strip_smcl,
+                    "filter_pattern": filter_pattern,
+                    "exclude_pattern": exclude_pattern,
                     "options": {
                         "echo": echo,
                         "trace": trace,
@@ -619,12 +694,34 @@ async def run_do_file_background(
     })
 
 
+def _tail_file(path: str, lines: int) -> str | None:
+    """Read the last N lines of a file."""
+    if not path or not os.path.exists(path) or lines <= 0:
+        return None
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            # Read at most 100kb or enough for requested lines
+            read_size = min(size, max(102400, lines * 500))
+            f.seek(max(0, size - read_size))
+            content = f.read().decode("utf-8", errors="replace")
+            split_lines = content.splitlines()
+            return "\n".join(split_lines[-lines:])
+    except Exception:
+        return None
+
 @mcp.tool()
 @log_call
-def get_task_status(task_id: str, allow_polling: bool = True) -> str:
+def get_task_status(task_id: str, allow_polling: bool = True, tail_lines: int = 0) -> str:
     """Return task status for background executions.
     
     Note: Notifications are preferred over polling.
+    
+    Args:
+        task_id: The ID of the task.
+        allow_polling: If False, returns an error if polling is requested.
+        tail_lines: If > 0, include the last N lines of the log in the response.
     """
     notice = "Prefer task_done logMessage notifications over polling get_task_status."
     if not allow_polling:
@@ -645,7 +742,8 @@ def get_task_status(task_id: str, allow_polling: bool = True) -> str:
             "status": "not_found", 
             "notice": notice
         })
-    return json.dumps({
+        
+    res = {
         "task_id": task_id,
         "status": "done" if task_info.done else "running",
         "kind": task_info.kind,
@@ -653,6 +751,45 @@ def get_task_status(task_id: str, allow_polling: bool = True) -> str:
         "log_path": task_info.log_path,
         "error": task_info.error,
         "notice": notice,
+    }
+    
+    if tail_lines > 0:
+        res["tail"] = _tail_file(task_info.log_path, tail_lines)
+        
+    return json.dumps(res)
+
+
+@mcp.tool()
+async def stata_wait_for_task(
+    task_id: str,
+    timeout: float = 60.0,
+    poll_interval: float = 1.0,
+) -> str:
+    """Blocking wait for a background task to complete.
+    
+    Use this when you want to wait for a long-running command (like a regression)
+    to finish before proceeding to the next step, without manual polling.
+    
+    Args:
+        task_id: The ID of the task to wait for.
+        timeout: Maximum time to wait in seconds.
+        poll_interval: Interval between polls in seconds.
+    """
+    _log_tool_call("stata_wait_for_task")
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        status_json = get_task_status(task_id, allow_polling=True)
+        status = json.loads(status_json)
+        if status.get("status") == "done":
+            return status_json
+        if status.get("status") == "not_found":
+            return status_json
+        await asyncio.sleep(poll_interval)
+    
+    return json.dumps({
+        "task_id": task_id,
+        "status": "timeout",
+        "error": f"Task did not complete within {timeout} seconds."
     })
 
 
@@ -740,6 +877,9 @@ async def run_command_background(
     max_output_lines: int = None,
     cwd: str | None = None,
     session_id: str = "default",
+    strip_smcl: bool = False,
+    filter_pattern: Optional[str] = None,
+    exclude_pattern: Optional[str] = None,
 ) -> str:
     """Run a Stata command in the background and return a task id.
 
@@ -825,6 +965,9 @@ async def run_command_background(
                 "run_command",
                 {
                     "code": code,
+                    "strip_smcl": strip_smcl,
+                    "filter_pattern": filter_pattern,
+                    "exclude_pattern": exclude_pattern,
                     "options": {
                         "echo": echo,
                         "trace": trace,
@@ -881,6 +1024,9 @@ async def run_command(
     max_output_lines: int = None,
     cwd: str | None = None,
     session_id: str = "default",
+    strip_smcl: bool = False,
+    filter_pattern: Optional[str] = None,
+    exclude_pattern: Optional[str] = None,
 ) -> str:
     """
     Executes Stata code.
@@ -942,6 +1088,9 @@ async def run_command(
         "run_command",
         {
             "code": code,
+            "strip_smcl": strip_smcl,
+            "filter_pattern": filter_pattern,
+            "exclude_pattern": exclude_pattern,
             "options": {
                 "echo": echo,
                 "trace": trace,
@@ -1279,6 +1428,9 @@ async def run_do_file(
     max_output_lines: int = None,
     cwd: str | None = None,
     session_id: str = "default",
+    strip_smcl: bool = False,
+    filter_pattern: Optional[str] = None,
+    exclude_pattern: Optional[str] = None,
 ) -> str:
     """
     Executes a .do file.
@@ -1335,6 +1487,9 @@ async def run_do_file(
         "run_do_file",
         {
             "path": path,
+            "strip_smcl": strip_smcl,
+            "filter_pattern": filter_pattern,
+            "exclude_pattern": exclude_pattern,
             "options": {
                 "echo": echo,
                 "trace": trace,

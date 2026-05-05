@@ -25,6 +25,7 @@ class StataSession:
         self.status = "starting"
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.pid: Optional[int] = None
+        self.profile_code: Optional[str] = None
         
         self._parent_conn, self._child_conn = Pipe()
         self._process = Process(target=self._run_worker, args=(self._child_conn,))
@@ -162,6 +163,12 @@ class StataSession:
         except (AttributeError, BrokenPipeError, ConnectionResetError) as e:
              self._cleanup_listeners(msg_id)
              raise RuntimeError(f"Failed to send command to worker: {e}")
+
+    async def set_profile(self, code: Optional[str]):
+        """Set code that runs before every command in this session."""
+        self.profile_code = code
+        # We also notify the worker so it can store it
+        await self.call("set_profile", {"code": code})
 
     async def send_break(self):
         """Send an out-of-band break signal to the worker."""

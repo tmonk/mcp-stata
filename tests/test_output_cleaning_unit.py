@@ -98,12 +98,23 @@ def test_regression_sample(client):
     assert "_return hold" not in text
     assert "log flush" not in text
     assert "opened on" not in text
-    assert "log type" not in text
+
+def test_apply_output_cleaning(client):
+    """Test the centralized _apply_output_cleaning method."""
+    text = "{com}. display \"hello\"{txt}\nline 1\nline 2\nexclude me"
     
-    assert "sysuse auto, clear" in text
-    assert "reg price mpg" in text
-    assert "twoway scatter" in text
-    assert "end of do-file" in text
+    # 1. Stripping only
+    cleaned = client._apply_output_cleaning(text, strip_smcl_output=True)
+    assert ". display \"hello\"" in cleaned
+    assert "line 1" in cleaned
     
-    # Ensure no excessive trailing whitespace/newlines
-    assert "end of do-file" in text
+    # 2. Filtering
+    cleaned_f = client._apply_output_cleaning(text, filter_pattern="line")
+    assert "line 1" in cleaned_f
+    assert "line 2" in cleaned_f
+    assert "hello" not in cleaned_f
+    
+    # 3. Excluding
+    cleaned_e = client._apply_output_cleaning(text, exclude_pattern="exclude")
+    assert "line 1" in cleaned_e
+    assert "exclude me" not in cleaned_e

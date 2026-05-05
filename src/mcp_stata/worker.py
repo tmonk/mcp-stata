@@ -25,6 +25,7 @@ class StataWorker:
         asyncio.set_event_loop(self.loop)
         self._command_queue = queue.Queue()
         self._is_running = True
+        self.profile_code: Optional[str] = None
 
     def _listen_on_pipe(self):
         """Background thread to listen for out-of-band signals (like 'break')."""
@@ -112,6 +113,15 @@ class StataWorker:
         msg_id = msg.get("id")
         args = msg.get("args", {})
 
+        async def run_profile():
+            if self.profile_code and self.client:
+                # Run profile silently
+                await self.client.run_command_streaming(
+                    self.profile_code,
+                    notify_log=lambda x: asyncio.sleep(0), # Drop output
+                    echo=False
+                )
+
         async def notify_log(text: str):
             self.conn.send({"event": "log", "id": msg_id, "text": text})
 
@@ -120,22 +130,34 @@ class StataWorker:
 
         try:
             if msg_type == "run_command":
+                await run_profile()
                 result = await self.client.run_command_streaming(
                     args["code"],
                     notify_log=notify_log,
                     notify_progress=notify_progress,
+                    strip_smcl=args.get("strip_smcl", False),
+                    filter_pattern=args.get("filter_pattern"),
+                    exclude_pattern=args.get("exclude_pattern"),
                     **args.get("options", {})
                 )
                 self.conn.send({"event": "result", "id": msg_id, "result": result.model_dump()})
             
             elif msg_type == "run_do_file":
+                await run_profile()
                 result = await self.client.run_do_file_streaming(
                     args["path"],
                     notify_log=notify_log,
                     notify_progress=notify_progress,
+                    strip_smcl=args.get("strip_smcl", False),
+                    filter_pattern=args.get("filter_pattern"),
+                    exclude_pattern=args.get("exclude_pattern"),
                     **args.get("options", {})
                 )
                 self.conn.send({"event": "result", "id": msg_id, "result": result.model_dump()})
+
+            elif msg_type == "set_profile":
+                self.profile_code = args.get("code")
+                self.conn.send({"event": "result", "id": msg_id, "result": None})
 
             elif msg_type == "get_data":
                 data = self.client.get_data(args.get("start", 0), args.get("count", 50))
@@ -158,15 +180,33 @@ class StataWorker:
                 self.conn.send({"event": "result", "id": msg_id, "result": help_text})
 
             elif msg_type == "run_command_structured":
-                result = self.client.run_command_structured(args["code"], **args.get("options", {}))
+                result = self.client.run_command_structured(
+                    args["code"],
+                    strip_smcl=args.get("strip_smcl", False),
+                    filter_pattern=args.get("filter_pattern"),
+                    exclude_pattern=args.get("exclude_pattern"),
+                    **args.get("options", {})
+                )
                 self.conn.send({"event": "result", "id": msg_id, "result": result.model_dump()})
 
             elif msg_type == "load_data":
-                result = self.client.load_data(args["source"], **args.get("options", {}))
+                result = self.client.load_data(
+                    args["source"],
+                    strip_smcl=args.get("strip_smcl", False),
+                    filter_pattern=args.get("filter_pattern"),
+                    exclude_pattern=args.get("exclude_pattern"),
+                    **args.get("options", {})
+                )
                 self.conn.send({"event": "result", "id": msg_id, "result": result.model_dump()})
 
             elif msg_type == "codebook":
-                result = self.client.codebook(args["variable"], **args.get("options", {}))
+                result = self.client.codebook(
+                    args["variable"],
+                    strip_smcl=args.get("strip_smcl", False),
+                    filter_pattern=args.get("filter_pattern"),
+                    exclude_pattern=args.get("exclude_pattern"),
+                    **args.get("options", {})
+                )
                 self.conn.send({"event": "result", "id": msg_id, "result": result.model_dump()})
 
             elif msg_type == "get_dataset_state":
