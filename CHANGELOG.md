@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v2.2.0 (2026-05-05)
+
+### Features
+
+- Enable SMCL stripping by default
+  ([`6cfe753`](https://github.com/tmonk/mcp-stata/commit/6cfe753cbbe3f11893b87e52cb40f3b18622303f))
+
+
 ## v2.1.0 (2026-05-05)
 
 ### Documentation
