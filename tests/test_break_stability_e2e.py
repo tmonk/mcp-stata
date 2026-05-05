@@ -114,7 +114,7 @@ async def test_session_stability_after_break():
         assert baseline == after_break, "Dataset state changed or describe output mismatched after break"
 
         # Final check on task state
-        status_res = await session.call_tool("stata_task_status", {"task_id": task_id, "allow_polling": True})
+        status_res = await session.call_tool("stata_task_status", {"task_id": task_id})
         status_payload = json.loads(status_res.content[0].text)
         assert status_payload["status"] == "done", "Interrupted task should be marked as done"
 
@@ -167,7 +167,7 @@ async def test_session_stability_after_break_session_tool():
         assert baseline == after_break
         
         # Check background task also finished
-        status_res = await session.call_tool("stata_task_status", {"task_id": task_id, "allow_polling": True})
+        status_res = await session.call_tool("stata_task_status", {"task_id": task_id})
         status_payload = json.loads(status_res.content[0].text)
         assert status_payload["status"] == "done"
 

@@ -232,7 +232,7 @@ def test_e2e_background_do_file_streams_output(tmp_path):
                 while True:
                     task_result = await session.call_tool(
                         "stata_task_status",
-                        {"task_id": task_id, "allow_polling": True},
+                        {"task_id": task_id},
                     )
                     parsed = json.loads(task_result.content[0].text)
                     if parsed.get("status") == "done":
@@ -473,7 +473,7 @@ def test_e2e_background_command_returns_log_path():
                 while True:
                     task_result = await session.call_tool(
                         "stata_task_status",
-                        {"task_id": task_id, "allow_polling": True},
+                        {"task_id": task_id},
                     )
                     parsed = json.loads(task_result.content[0].text)
                     if parsed.get("status") == "done":
@@ -549,7 +549,7 @@ def test_e2e_background_do_file_returns_log_path(tmp_path):
                 while True:
                     task_result = await session.call_tool(
                         "stata_task_status",
-                        {"task_id": task_id, "allow_polling": True},
+                        {"task_id": task_id},
                     )
                     parsed = json.loads(task_result.content[0].text)
                     if parsed.get("status") == "done":

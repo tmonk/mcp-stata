@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 
-from mcp_stata.server import stata_read_log, stata_inspect_data
+from mcp_stata.server import stata_read_log
 
 
 def _write_temp_log(content: str) -> Path:
@@ -50,7 +50,7 @@ def test_read_log_missing_file():
 def test_find_in_log_literal_and_context():
     log_path = _write_temp_log("one\ntwo\nthree\nfour\n")
     try:
-        payload = json.loads(stata_inspect_data(action="search", path=str(log_path), query="three", before=1, after=1))
+        payload = json.loads(stata_read_log(str(log_path), query="three", before=1, after=1))
         assert payload["matches"]
         context = payload["matches"][0]["context"]
         assert context == ["two", "three", "four"]
@@ -61,9 +61,9 @@ def test_find_in_log_literal_and_context():
 def test_find_in_log_regex_case_sensitive():
     log_path = _write_temp_log("Alpha\nbeta\nALPHA\n")
     try:
-        insensitive = json.loads(stata_inspect_data(action="search", path=str(log_path), query="alpha", case_sensitive=False))
+        insensitive = json.loads(stata_read_log(str(log_path), query="alpha", case_sensitive=False))
         assert len(insensitive["matches"]) == 2
-        sensitive = json.loads(stata_inspect_data(action="search", path=str(log_path), query=r"^Alpha$", regex=True, case_sensitive=True))
+        sensitive = json.loads(stata_read_log(str(log_path), query=r"^Alpha$", regex=True, case_sensitive=True))
         assert len(sensitive["matches"]) == 1
     finally:
         log_path.unlink(missing_ok=True)
@@ -72,10 +72,10 @@ def test_find_in_log_regex_case_sensitive():
 def test_find_in_log_start_offset_and_max_matches():
     log_path = _write_temp_log("hit\nmiss\nhit\nmiss\nhit\n")
     try:
-        first_pass = json.loads(stata_inspect_data(action="search", path=str(log_path), query="hit", max_matches=1, max_bytes=8))
+        first_pass = json.loads(stata_read_log(str(log_path), query="hit", max_matches=1, max_bytes=8))
         assert len(first_pass["matches"]) == 1
         next_offset = first_pass["next_offset"]
-        second_pass = json.loads(stata_inspect_data(action="search", path=str(log_path), query="hit", start_offset=next_offset, max_matches=2))
+        second_pass = json.loads(stata_read_log(str(log_path), query="hit", offset=next_offset, max_matches=2))
         assert len(second_pass["matches"]) >= 1
     finally:
         log_path.unlink(missing_ok=True)

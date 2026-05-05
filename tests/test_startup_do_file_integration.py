@@ -89,36 +89,59 @@ class TestClearAllRestoresPrograms:
     """Programs from startup .do files must survive ``clear all``."""
 
     def test_profile_do_program_survives_clear_all(self, stata_client):
-        """add_numbers from profile.do is restored after ``clear all``.
-
-        Relies on the real profile.do at
-        ``~/Documents/Stata/ado/personal/profile.do`` being loaded
-        during init.  Skipped when no profile.do is discovered.
-        """
+        """Startup program is restored after ``clear all``."""
         client = stata_client
-        if not client._profile_do_path:
-            pytest.skip("No profile.do discovered — cannot test")
+        with tempfile.NamedTemporaryFile(
+            suffix=".do", mode="w", delete=False
+        ) as tf:
+            tf.write(
+                "capture program drop add_numbers\n"
+                "program define add_numbers, rclass\n"
+                "    args a b\n"
+                "    local s = `a' + `b'\n"
+                "    display `s'\n"
+                "    return scalar sum = `s'\n"
+                "end\n"
+            )
+            startup_path = tf.name
 
-        # Ensure startup programs are loaded (another parallel test may
-        # have dropped them without triggering the reload hook).
-        client._load_startup_do_file()
+        old_env = os.environ.get("MCP_STATA_STARTUP_DO_FILE")
+        os.environ["MCP_STATA_STARTUP_DO_FILE"] = startup_path
 
-        # 1) Confirm add_numbers is available.
-        res1 = client.run_command_structured("add_numbers 3 4", echo=False)
-        assert res1.rc == 0, f"add_numbers not available at startup: {res1.stdout}"
-        assert "7" in res1.stdout
+        saved_checked = client._profile_do_checked
+        saved_sys = client._sysprofile_do_path
+        saved_prof = client._profile_do_path
+        try:
+            client._profile_do_checked = False
+            client._sysprofile_do_path = None
+            client._profile_do_path = None
+            client._load_startup_do_file()
 
-        # 2) clear all — wipes user programs.
-        res_clear = client.run_command_structured("clear all", echo=False)
-        assert res_clear.rc == 0, f"clear all failed: {res_clear.stdout}"
+            res1 = client.run_command_structured("add_numbers 3 4", echo=False)
+            assert res1.rc == 0, f"add_numbers not available at startup: {res1.stdout}"
+            assert "7" in res1.stdout
 
-        # 3) add_numbers should be back (sentinel → reload).
-        res2 = client.run_command_structured("add_numbers 10 20", echo=False)
-        assert res2.rc == 0, (
-            f"add_numbers NOT restored after clear all (rc={res2.rc}): "
-            f"{res2.stdout}"
-        )
-        assert "30" in res2.stdout
+            res_clear = client.run_command_structured("clear all", echo=False)
+            assert res_clear.rc == 0, f"clear all failed: {res_clear.stdout}"
+
+            res2 = client.run_command_structured("add_numbers 10 20", echo=False)
+            assert res2.rc == 0, (
+                f"add_numbers NOT restored after clear all (rc={res2.rc}): "
+                f"{res2.stdout}"
+            )
+            assert "30" in res2.stdout
+        finally:
+            if old_env is None:
+                os.environ.pop("MCP_STATA_STARTUP_DO_FILE", None)
+            else:
+                os.environ["MCP_STATA_STARTUP_DO_FILE"] = old_env
+            client._profile_do_checked = saved_checked
+            client._sysprofile_do_path = saved_sys
+            client._profile_do_path = saved_prof
+            try:
+                os.unlink(startup_path)
+            except OSError:
+                pass
 
     def test_env_startup_program_survives_clear_all(self, stata_client):
         """Program from MCP_STATA_STARTUP_DO_FILE survives ``clear all``.

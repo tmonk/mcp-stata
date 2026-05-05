@@ -3,13 +3,11 @@ import os
 import pytest
 import asyncio
 import tempfile
-import shutil
-from pathlib import Path
 from mcp_stata.sessions import SessionManager
+from mcp_stata.discovery import find_stata_path
 
 pytestmark = pytest.mark.xdist_group("stata_heavy")
 
-@pytest.mark.skipif(os.getenv("STATA_BIN") is None and shutil.which("stata") is None, reason="Stata not found")
 @pytest.mark.requires_stata
 @pytest.mark.asyncio
 async def test_startup_do_file_e2e():
@@ -21,8 +19,8 @@ async def test_startup_do_file_e2e():
         tf.write('scalar startup_val = 999\n')
         startup_file_path = tf.name
 
-    # Set the environment variable for the server process (SessionManager spawns worker processes)
-    # SessionManager doesn't take env vars easily but it inherits from current process
+    stata_path, _ = find_stata_path()
+    os.environ["STATA_BIN"] = stata_path
     os.environ["MCP_STATA_STARTUP_DO_FILE"] = startup_file_path
     
     manager = SessionManager()
@@ -42,10 +40,11 @@ async def test_startup_do_file_e2e():
         await manager.stop_all()
         if os.path.exists(startup_file_path):
             os.unlink(startup_file_path)
+        if "STATA_BIN" in os.environ:
+            del os.environ["STATA_BIN"]
         if "MCP_STATA_STARTUP_DO_FILE" in os.environ:
             del os.environ["MCP_STATA_STARTUP_DO_FILE"]
 
-@pytest.mark.skipif(os.getenv("STATA_BIN") is None and shutil.which("stata") is None, reason="Stata not found")
 @pytest.mark.requires_stata
 @pytest.mark.asyncio
 async def test_startup_do_file_error_resilience():
@@ -56,6 +55,8 @@ async def test_startup_do_file_error_resilience():
         tf.write('this is not a stata command\n')
         startup_file_path = tf.name
 
+    stata_path, _ = find_stata_path()
+    os.environ["STATA_BIN"] = stata_path
     os.environ["MCP_STATA_STARTUP_DO_FILE"] = startup_file_path
     
     manager = SessionManager()
@@ -71,11 +72,12 @@ async def test_startup_do_file_error_resilience():
         await manager.stop_all()
         if os.path.exists(startup_file_path):
             os.unlink(startup_file_path)
+        if "STATA_BIN" in os.environ:
+            del os.environ["STATA_BIN"]
         if "MCP_STATA_STARTUP_DO_FILE" in os.environ:
             del os.environ["MCP_STATA_STARTUP_DO_FILE"]
 
 
-@pytest.mark.skipif(os.getenv("STATA_BIN") is None and shutil.which("stata") is None, reason="Stata not found")
 @pytest.mark.requires_stata
 @pytest.mark.asyncio
 async def test_startup_do_file_multiple_paths_deduped_e2e():
@@ -89,6 +91,8 @@ async def test_startup_do_file_multiple_paths_deduped_e2e():
         tf2.write('global STARTUP_SEQ "B"\n')
         tf2_path = tf2.name
 
+    stata_path, _ = find_stata_path()
+    os.environ["STATA_BIN"] = stata_path
     os.environ["MCP_STATA_STARTUP_DO_FILE"] = f"{tf1_path}{os.pathsep}{tf1_path}{os.pathsep}{tf2_path}"
 
     manager = SessionManager()
@@ -103,11 +107,12 @@ async def test_startup_do_file_multiple_paths_deduped_e2e():
         for path in (tf1_path, tf2_path):
             if os.path.exists(path):
                 os.unlink(path)
+        if "STATA_BIN" in os.environ:
+            del os.environ["STATA_BIN"]
         if "MCP_STATA_STARTUP_DO_FILE" in os.environ:
             del os.environ["MCP_STATA_STARTUP_DO_FILE"]
 
 
-@pytest.mark.skipif(os.getenv("STATA_BIN") is None and shutil.which("stata") is None, reason="Stata not found")
 @pytest.mark.requires_stata
 @pytest.mark.asyncio
 async def test_startup_do_file_duplicate_only_runs_once_e2e():
@@ -119,6 +124,8 @@ async def test_startup_do_file_duplicate_only_runs_once_e2e():
         tf.write('global STARTUP_COUNT = $STARTUP_COUNT + 1\n')
         tf_path = tf.name
 
+    stata_path, _ = find_stata_path()
+    os.environ["STATA_BIN"] = stata_path
     os.environ["MCP_STATA_STARTUP_DO_FILE"] = f"{tf_path}{os.pathsep}{tf_path}"
 
     manager = SessionManager()
@@ -132,6 +139,8 @@ async def test_startup_do_file_duplicate_only_runs_once_e2e():
         await manager.stop_all()
         if os.path.exists(tf_path):
             os.unlink(tf_path)
+        if "STATA_BIN" in os.environ:
+            del os.environ["STATA_BIN"]
         if "MCP_STATA_STARTUP_DO_FILE" in os.environ:
             del os.environ["MCP_STATA_STARTUP_DO_FILE"]
 
@@ -163,6 +172,8 @@ async def test_clear_all_restores_startup_programs_e2e():
         )
         startup_file_path = tf.name
 
+    stata_path, _ = find_stata_path()
+    os.environ["STATA_BIN"] = stata_path
     os.environ["MCP_STATA_STARTUP_DO_FILE"] = startup_file_path
 
     manager = SessionManager()
@@ -198,6 +209,8 @@ async def test_clear_all_restores_startup_programs_e2e():
         await manager.stop_all()
         if os.path.exists(startup_file_path):
             os.unlink(startup_file_path)
+        if "STATA_BIN" in os.environ:
+            del os.environ["STATA_BIN"]
         if "MCP_STATA_STARTUP_DO_FILE" in os.environ:
             del os.environ["MCP_STATA_STARTUP_DO_FILE"]
 
