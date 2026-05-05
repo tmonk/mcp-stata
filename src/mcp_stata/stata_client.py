@@ -3790,12 +3790,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         result = CommandResponse(
             command=code,
+            success=success,
             rc=rc,
+            error=error,
+            log_path=log_path,
             stdout=stdout_final,
             stderr=stderr_final,
-            log_path=log_path,
-            success=success,
-            error=error,
             smcl_output=smcl_content,
             artifacts=artifacts if artifacts else None,
         )
@@ -4152,12 +4152,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         result = CommandResponse(
             command=command,
+            success=success,
             rc=rc,
+            error=error,
+            log_path=log_path,
             stdout=stdout_final,
             stderr=stderr_final,
-            log_path=log_path,
-            success=success,
-            error=error,
             smcl_output=smcl_content,
         )
 

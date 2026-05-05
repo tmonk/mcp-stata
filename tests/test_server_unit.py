@@ -33,7 +33,7 @@ async def test_stata_wait_for_task_unit():
     try:
         result_json = await stata_task_status(task_id, wait=True, timeout=2, poll_interval=0.01)
         result = json.loads(result_json)
-        assert result["status"] == "done"
+        assert result["status"] == "completed"
     finally:
         marker_task.cancel()
         if task_id in _background_tasks:
@@ -77,6 +77,38 @@ async def test_get_task_status_unit():
         res = json.loads(res_json)
         assert res["task_id"] == task_id
         assert res["status"] == "running"
+    finally:
+        if task_id in _background_tasks:
+            del _background_tasks[task_id]
+
+@pytest.mark.asyncio
+async def test_get_task_status_failed_unit():
+    """Test get_task_status tool returns failed status and error details."""
+    from mcp_stata.server import BackgroundTask, _background_tasks
+    from mcp_stata.models import ErrorEnvelope
+    import datetime
+    
+    task_id = "fail_test_task"
+    error_env = ErrorEnvelope(message="test error", rc=1)
+    _background_tasks[task_id] = BackgroundTask(
+        task_id=task_id,
+        kind="command",
+        task=None,
+        log_path="/tmp/test_fail.log",
+        created_at=datetime.datetime.now(),
+        error="test error",
+        error_details=error_env,
+        done=True
+    )
+    
+    try:
+        res_json = await stata_task_status(task_id)
+        res = json.loads(res_json)
+        assert res["task_id"] == task_id
+        assert res["status"] == "failed"
+        assert res["error"] == "test error"
+        assert res["error_details"]["message"] == "test error"
+        assert res["error_details"]["rc"] == 1
     finally:
         if task_id in _background_tasks:
             del _background_tasks[task_id]

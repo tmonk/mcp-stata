@@ -79,3 +79,24 @@ def test_find_in_log_start_offset_and_max_matches():
         assert len(second_pass["matches"]) >= 1
     finally:
         log_path.unlink(missing_ok=True)
+
+def test_read_log_by_task_id():
+    from mcp_stata.server import BackgroundTask, _background_tasks
+    import datetime
+    log_path = _write_temp_log("task log content\n")
+    task_id = "test_read_task"
+    _background_tasks[task_id] = BackgroundTask(
+        task_id=task_id,
+        kind="command",
+        task=None,
+        log_path=str(log_path),
+        created_at=datetime.datetime.now()
+    )
+    try:
+        payload = json.loads(stata_read_log(task_id=task_id))
+        assert payload["path"] == str(log_path)
+        assert "task log content" in payload["data"]
+    finally:
+        log_path.unlink(missing_ok=True)
+        if task_id in _background_tasks:
+            del _background_tasks[task_id]

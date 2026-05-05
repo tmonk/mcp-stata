@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class ErrorEnvelope(BaseModel):
@@ -19,14 +19,21 @@ class ErrorEnvelope(BaseModel):
 
 class CommandResponse(BaseModel):
     command: str
-    rc: int
-    stdout: str
-    stderr: Optional[str] = None
-    log_path: Optional[str] = None
     success: bool
+    rc: int
     error: Optional[ErrorEnvelope] = None
+    error_message: Optional[str] = None
+    log_path: Optional[str] = None
+    stdout: Optional[str] = None
+    stderr: Optional[str] = None
     smcl_output: Optional[str] = None
     artifacts: Optional[List[Dict[str, Any]]] = None
+
+    @model_validator(mode="after")
+    def populate_error_message(self) -> "CommandResponse":
+        if self.error and self.error_message is None:
+            self.error_message = self.error.message
+        return self
 
 
 class DataResponse(BaseModel):

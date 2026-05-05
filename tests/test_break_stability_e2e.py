@@ -116,7 +116,7 @@ async def test_session_stability_after_break():
         # Final check on task state
         status_res = await session.call_tool("stata_task_status", {"task_id": task_id})
         status_payload = json.loads(status_res.content[0].text)
-        assert status_payload["status"] == "done", "Interrupted task should be marked as done"
+        assert status_payload["status"] in ("done", "completed", "failed"), "Interrupted task should be marked as finished"
 
 @pytest.mark.anyio
 async def test_session_stability_after_break_session_tool():
@@ -169,7 +169,7 @@ async def test_session_stability_after_break_session_tool():
         # Check background task also finished
         status_res = await session.call_tool("stata_task_status", {"task_id": task_id})
         status_payload = json.loads(status_res.content[0].text)
-        assert status_payload["status"] == "done"
+        assert status_payload["status"] in ("done", "completed", "failed")
 
 @pytest.mark.anyio
 async def test_foreground_break_session_immediacy():

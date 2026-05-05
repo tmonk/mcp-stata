@@ -235,7 +235,7 @@ def test_e2e_background_do_file_streams_output(tmp_path):
                         {"task_id": task_id},
                     )
                     parsed = json.loads(task_result.content[0].text)
-                    if parsed.get("status") == "done":
+                    if parsed.get("status") in ("done", "completed", "failed"):
                         break
                     await anyio.sleep(0.05)
 
@@ -476,7 +476,7 @@ def test_e2e_background_command_returns_log_path():
                         {"task_id": task_id},
                     )
                     parsed = json.loads(task_result.content[0].text)
-                    if parsed.get("status") == "done":
+                    if parsed.get("status") in ("done", "completed", "failed"):
                         break
                     await anyio.sleep(0.05)
 
@@ -552,7 +552,7 @@ def test_e2e_background_do_file_returns_log_path(tmp_path):
                         {"task_id": task_id},
                     )
                     parsed = json.loads(task_result.content[0].text)
-                    if parsed.get("status") == "done":
+                    if parsed.get("status") in ("done", "completed", "failed"):
                         break
                     await anyio.sleep(0.05)
 

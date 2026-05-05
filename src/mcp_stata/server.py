@@ -377,6 +377,7 @@ class BackgroundTask:
     log_path: Optional[str] = None
     result: Optional[str] = None
     error: Optional[str] = None
+    error_details: Optional[ErrorEnvelope] = None
     done: bool = False
 
 
@@ -530,6 +531,39 @@ def _format_command_result(result, raw: bool, as_json: bool) -> str:
     # expect results in the return value.
     
     if as_json:
+        # Truncate large fields to prevent sidecar hiding in some platforms
+        limit = 100_000
+        keep = 50_000
+        
+        # Truncate top-level fields
+        for field in ['stdout', 'smcl_output']:
+            val = getattr(result, field, None)
+            if val and len(val) > limit:
+                orig_len = len(val)
+                truncated = (
+                    val[:keep] + 
+                    f"\n... [{field} truncated: {orig_len} total characters, full log at {result.log_path}] ...\n" + 
+                    val[-keep:]
+                )
+                setattr(result, field, truncated)
+        
+        # Truncate fields inside error envelope if present
+        if result.error:
+            if result.error.smcl_output and len(result.error.smcl_output) > limit:
+                orig_len = len(result.error.smcl_output)
+                result.error.smcl_output = (
+                    result.error.smcl_output[:keep] + 
+                    f"\n... [smcl_output truncated: {orig_len} total characters] ...\n" + 
+                    result.error.smcl_output[-keep:]
+                )
+            if result.error.stdout and len(result.error.stdout) > limit:
+                orig_len = len(result.error.stdout)
+                result.error.stdout = (
+                    result.error.stdout[:keep] + 
+                    f"\n... [stdout truncated: {orig_len} total characters] ...\n" + 
+                    result.error.stdout[-keep:]
+                )
+
         return result.model_dump_json()
     return result.model_dump_json()
 
@@ -548,6 +582,7 @@ async def _notify_task_done(session: object | None, task_info: BackgroundTask, r
         "status": "done" if task_info.done else "unknown",
         "log_path": task_info.log_path,
         "error": task_info.error,
+        "error_details": task_info.error_details.model_dump() if task_info.error_details else None,
     }
     try:
         await session.send_log_message(level="info", data=json.dumps(payload), related_request_id=request_id)
@@ -648,17 +683,27 @@ async def stata_task_status(
             return json.dumps({"task_id": task_id, "status": "not_found"})
 
         if task_info.done or not wait or (time.time() - start_time >= timeout):
+            status = "running"
+            if task_info.done:
+                status = "failed" if task_info.error else "completed"
+            
             res = {
                 "task_id": task_id,
-                "status": "done" if task_info.done else "running",
+                "status": status,
                 "kind": task_info.kind,
                 "created_at": task_info.created_at.isoformat(),
                 "log_path": task_info.log_path,
                 "error": task_info.error,
+                "error_details": task_info.error_details.model_dump() if task_info.error_details else None,
                 "result": task_info.result if task_info.done else None
             }
             if tail_lines > 0:
                 res["tail"] = _tail_file(task_info.log_path, tail_lines)
+            
+            # If it failed and no tail was requested, add a small tail anyway for visibility
+            if status == "failed" and tail_lines <= 0:
+                res["error_tail"] = _tail_file(task_info.log_path, 10)
+
             if not task_info.done and wait and (time.time() - start_time >= timeout):
                 res["status"] = "timeout"
                 res["error"] = f"Task did not complete within {timeout} seconds."
@@ -856,6 +901,7 @@ async def stata_run(
                 task_info.log_path = result.log_path
             if result.error:
                 task_info.error = result.error.message
+                task_info.error_details = result.error
             task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
             _ensure_ui_channel()
             if ui_channel:
@@ -891,6 +937,7 @@ async def stata_run(
         _ensure_ui_channel()
         if ui_channel:
             ui_channel.notify_potential_dataset_change(session_id)
+        logger.info("stata_run sync result: %s", result)
         return _format_command_result(result, raw=raw, as_json=as_json)
 
 
@@ -989,7 +1036,8 @@ def _find_in_log_logic(
 @mcp.tool()
 @log_call
 def stata_read_log(
-    path: str,
+    path: Optional[str] = None,
+    task_id: Optional[str] = None,
     offset: int = 0,
     max_bytes: int = 262144,
     tail_lines: int = 0,
@@ -1006,7 +1054,8 @@ def stata_read_log(
     ranges, tailing the end of logs, and searching for patterns with context lines.
     
     Args:
-        path: Absolute path to the log file on disk.
+        path: Optional absolute path to the log file on disk.
+        task_id: Optional ID of a background task to read the log for (alternative to path).
         offset: Starting byte position for the read operation.
         max_bytes: Maximum number of bytes to read from the log (defaults to 256kb).
         tail_lines: If > 0, returns the last N lines of the log, overriding offset.
@@ -1021,6 +1070,16 @@ def stata_read_log(
         A JSON string containing the read data, current offset, and any search matches.
     """
     _log_tool_call("stata_read_log")
+    logger.info(f"stata_read_log called with path={path}, task_id={task_id}")
+    
+    if task_id:
+        task_info = _background_tasks.get(task_id)
+        if not task_info or not task_info.log_path:
+            return json.dumps({"error": f"Task {task_id} not found or has no log path"})
+        path = task_info.log_path
+
+    if not path:
+        return json.dumps({"error": "Either path or task_id must be provided"})
     if query:
         return _find_in_log_logic(path, query, offset, max_bytes, before, after, case_sensitive, regex, max_matches)
     elif tail_lines > 0:
