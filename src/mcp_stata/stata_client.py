@@ -2450,14 +2450,14 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
         # Search for sysprofile.do — first match wins.
         for d in dirs:
-            sysprofile_path = os.path.join(d, "sysprofile.do")
+            sysprofile_path = os.path.normpath(os.path.join(d, "sysprofile.do"))
             if os.path.exists(sysprofile_path):
                 self._sysprofile_do_path = sysprofile_path
                 break
 
         # Search for profile.do — first match wins.
         for d in dirs:
-            profile_path = os.path.join(d, "profile.do")
+            profile_path = os.path.normpath(os.path.join(d, "profile.do"))
             if os.path.exists(profile_path):
                 self._profile_do_path = profile_path
                 break

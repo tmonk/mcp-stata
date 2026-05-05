@@ -66,7 +66,8 @@ class TestStartupDoFileUnit(unittest.TestCase):
         mock_getenv.return_value = f"{path1}{os.pathsep}{path1}{os.pathsep}{path2}"
 
         def exists_side_effect(path):
-            return path in (path1, path2)
+            norm_path = os.path.normpath(path)
+            return norm_path in (os.path.normpath(path1), os.path.normpath(path2))
 
         mock_exists.side_effect = exists_side_effect
 

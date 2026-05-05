@@ -68,7 +68,7 @@ def test_root_climbing_logic():
         if bin_dir not in ordered_candidates:
             ordered_candidates.append(bin_dir)
             
-        assert "/Applications/Stata" in [str(Path(c)) for c in ordered_candidates]
+        assert str(Path("/Applications/Stata")) in [str(Path(c)) for c in ordered_candidates]
 
 def test_sys_path_prioritization_logic():
     """

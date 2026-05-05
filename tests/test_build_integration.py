@@ -16,7 +16,7 @@ import pytest
 
 def run(cmd, *, cwd=None, check=True, env=None):
     """Run command and return result. Fails with full output on error."""
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", env=env)
     if check and result.returncode != 0:
         pytest.fail(
             f"Command failed: {' '.join(map(str, cmd))}\n"
