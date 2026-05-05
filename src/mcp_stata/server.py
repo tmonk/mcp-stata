@@ -256,6 +256,7 @@ async def stata_manage_session(
     action: str,
     session_id: str = "default",
     code: Optional[str] = None,
+    since_command: Optional[int] = None,
 ) -> str:
     """Manage Stata sessions (create, stop, list, profile, UI channel).
     
@@ -268,9 +269,13 @@ async def stata_manage_session(
             - "stop": Terminates an existing Stata session.
             - "list": Returns a JSON list of all active sessions.
             - "set_profile": Executes initialization code for a session.
+            - "history_diff": Returns tracked session state changes.
+            - "history_stats": Returns retained history window metadata.
             - "get_ui_channel": Retrieves connection details for the UI proxy.
         session_id: Unique identifier for the Stata session (defaults to "default").
         code: Stata code to execute when using the "set_profile" action.
+        since_command: Optional command index for "history_diff". If omitted, compares
+            to the last diff checkpoint for this session.
         
     Returns:
         A JSON string containing the status of the action or the requested data.
@@ -289,6 +294,16 @@ async def stata_manage_session(
         stata_session = await session_manager.get_or_create_session(session_id)
         await stata_session.set_profile(code)
         return json.dumps({"status": "profile_set", "session_id": session_id})
+    elif action == "history_diff":
+        stata_session = await session_manager.get_or_create_session(session_id)
+        payload = await stata_session.get_session_diff(since_command=since_command)
+        payload["session_id"] = session_id
+        return json.dumps(payload)
+    elif action == "history_stats":
+        stata_session = await session_manager.get_or_create_session(session_id)
+        payload = stata_session.get_history_stats()
+        payload["session_id"] = session_id
+        return json.dumps(payload)
     elif action == "get_ui_channel":
         _ensure_ui_channel()
         if ui_channel is None:

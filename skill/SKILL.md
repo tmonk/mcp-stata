@@ -18,6 +18,7 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
   - Use `stata_inspect_results` to return `r()`/`e()`/`s()` results after commands for validation.
   - Use `stata_read_log` to tail, read, or search output from long-running commands.
   - Use `stata_manage_session(action="get_ui_channel")` to obtain a localhost HTTP endpoint for high-volume data browsing.
+  - Use `stata_manage_session(action="history_diff")` / `stata_manage_session(action="history_stats")` for session state tracking without introducing extra tools.
   - Use `stata_task_status` and `stata_control(action="cancel", id=...)` for background task orchestration.
   - Use `stata_control(action="break", id=<session_id>)` to interrupt a running Stata command.
 3. Surface `rc`/`stderr` info back to the user, referencing `r()`/`e()` codes.
@@ -72,11 +73,13 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
 
 ### Session Management
 
-- `stata_manage_session(action, session_id="default", code=None)`:
+- `stata_manage_session(action, session_id="default", code=None, since_command=None)`:
   - `action="create"`: create a session.
   - `action="list"`: list active sessions and status.
   - `action="stop"`: terminate a session.
   - `action="set_profile"`: run profile/setup Stata code for a session (`code` required).
+  - `action="history_stats"`: inspect retained history metadata (`history_size`, command bounds).
+  - `action="history_diff"`: return changes in variables/macros since prior checkpoint or `since_command`.
   - `action="get_ui_channel"`: return UI channel connection details.
 
 ### UI Data Browser
@@ -189,6 +192,11 @@ stata_read_log("/tmp/stata_log_abc123.log", offset=4096)
 # Create/list sessions
 stata_manage_session(action="create", session_id="analysis")
 stata_manage_session(action="list")
+
+# Inspect session history
+stata_manage_session(action="history_stats", session_id="analysis")
+stata_manage_session(action="history_diff", session_id="analysis")
+stata_manage_session(action="history_diff", session_id="analysis", since_command=42)
 
 # Run in background and monitor
 stata_run("quietly do /path/to/long_job.do", background=True, session_id="analysis")

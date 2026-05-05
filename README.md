@@ -86,9 +86,16 @@ Optional `env` example (add inside your MCP server entry):
 "env": {
   "STATA_PATH": "/Applications/StataNow/StataMP.app/Contents/MacOS/stata-mp",
   "MCP_STATA_STARTUP_DO_FILE": "/path/to/my/startup.do",
-  "MCP_STATA_NO_RELOAD_ON_CLEAR": "1"
+  "MCP_STATA_NO_RELOAD_ON_CLEAR": "1",
+  "MCP_STATA_MAX_SESSION_HISTORY": "200",
+  "MCP_STATA_HISTORY_SNAPSHOT_TIMEOUT": "1.5"
 }
 ```
+
+Session history tuning variables:
+
+- `MCP_STATA_MAX_SESSION_HISTORY`: max retained per-session snapshots (default `200`).
+- `MCP_STATA_HISTORY_SNAPSHOT_TIMEOUT`: timeout in seconds for post-command history capture (default `1.5`). Snapshot capture is best-effort; command execution still completes if snapshot collection times out.
 
 ## IDE Setup (MCP)
 
@@ -263,8 +270,10 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 * `stata_manage_graphs(action, graph_name=None, format="svg", session_id="default")`: Graph management (`list`, `export`, `export_all`).
 * `stata_inspect_results(session_id="default")`: Get current `r()`, `e()`, and `s()` results as JSON.
 * `stata_get_help(topic, plain_text=False, merge_paragraphs=True, session_id="default")`: Markdown or plain-text Stata help.
-* `stata_manage_session(action, session_id="default", code=None)`: Session lifecycle and UI channel orchestration.
-  - `action`: `create`, `stop`, `list`, `set_profile`, or `get_ui_channel`.
+* `stata_manage_session(action, session_id="default", code=None, since_command=None)`: Session lifecycle, state history, and UI channel orchestration.
+  - `action`: `create`, `stop`, `list`, `set_profile`, `history_diff`, `history_stats`, or `get_ui_channel`.
+  - `history_diff` returns tracked changes in variables/macros and dataset dimensions. Pass `since_command` to diff from a specific command index; omit it to diff from the previous history checkpoint.
+  - `history_stats` returns retained window metadata (`history_size`, `earliest_command`, `latest_command`, `max_history_entries`).
 
 ### Common action examples
 
@@ -273,6 +282,11 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 stata_manage_session(action="create", session_id="analysis")
 stata_manage_session(action="list")
 stata_manage_session(action="stop", session_id="analysis")
+
+# Session history tracking
+stata_manage_session(action="history_stats", session_id="analysis")
+stata_manage_session(action="history_diff", session_id="analysis")
+stata_manage_session(action="history_diff", session_id="analysis", since_command=42)
 
 # Run a do-file (replacement for run_do_file)
 stata_run("/path/to/analysis.do", is_file=True, session_id="analysis")

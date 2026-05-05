@@ -21,6 +21,31 @@ async def test_session_process_isolation():
     finally:
         await manager.stop_all()
 
+
+@pytest.mark.asyncio
+async def test_session_history_diff_tracks_schema_and_results():
+    """Verify command-indexed history diffs on a real Stata-backed session."""
+    manager = SessionManager()
+    try:
+        await manager.start()
+        session = manager.get_session("default")
+
+        await session.call("run_command", {"code": "clear", "options": {"echo": False}})
+        await session.call("run_command", {"code": "set obs 3", "options": {"echo": False}})
+        await session.call("run_command", {"code": "gen x = _n", "options": {"echo": False}})
+
+        stats = session.get_history_stats()
+        baseline_cmd = stats["latest_command"]
+        assert baseline_cmd is not None
+
+        await session.call("run_command", {"code": "gen y = x*2", "options": {"echo": False}})
+        diff = await session.get_session_diff(since_command=baseline_cmd)
+        assert "y" in diff["new_variables"]
+        assert diff["n_vars"] >= 2
+
+    finally:
+        await manager.stop_all()
+
 @pytest.mark.asyncio
 async def test_session_memory_isolation():
     """Verify that scalars defined in one session are not visible in another."""

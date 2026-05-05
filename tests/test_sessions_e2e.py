@@ -105,3 +105,30 @@ async def test_session_profile():
         
     finally:
         await session_manager.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_mcp_session_history_actions():
+    """Exercise history_diff/history_stats through the existing manage-session tool."""
+    try:
+        await session_manager.start()
+        sid = "hist_e2e"
+        await stata_manage_session(action="create", session_id=sid)
+        await stata_run("clear", session_id=sid)
+        await stata_run("set obs 5", session_id=sid)
+        await stata_run("gen x = _n", session_id=sid)
+
+        stats_json = await stata_manage_session(action="history_stats", session_id=sid)
+        stats = json.loads(stats_json)
+        assert stats["session_id"] == sid
+        assert stats["latest_command"] is not None
+        baseline = stats["latest_command"]
+
+        await stata_run("gen z = x^2", session_id=sid)
+        diff_json = await stata_manage_session(action="history_diff", session_id=sid, since_command=baseline)
+        diff = json.loads(diff_json)
+        assert diff["session_id"] == sid
+        assert "z" in diff["new_variables"]
+        assert diff["command_count"] >= baseline + 1
+    finally:
+        await session_manager.stop_all()

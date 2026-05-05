@@ -219,6 +219,27 @@ class StataWorker:
                 state = self.client.get_dataset_state()
                 self.conn.send({"event": "result", "id": msg_id, "result": state})
 
+            elif msg_type == "get_session_state":
+                variables = self.client.list_variables_structured()
+                stored_results = self.client.get_stored_results(
+                    force_fresh=False,
+                    include_matrices=False,
+                    matrix_max_rows=0,
+                    matrix_max_cols=0,
+                )
+                dataset_state = self.client.get_dataset_state()
+                self.conn.send(
+                    {
+                        "event": "result",
+                        "id": msg_id,
+                        "result": {
+                            "variables": variables.model_dump(),
+                            "stored_results": stored_results,
+                            "dataset_state": dataset_state,
+                        },
+                    }
+                )
+
             elif msg_type == "get_arrow_stream":
                 # StataClient.get_arrow_stream supports offset, limit, vars, etc.
                 arrow_bytes = self.client.get_arrow_stream(**args)
