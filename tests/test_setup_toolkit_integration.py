@@ -14,13 +14,21 @@ import setup_toolkit
 
 @pytest.fixture
 def mock_home(tmp_path):
-    with patch("pathlib.Path.home", return_value=tmp_path):
+    # Clear env vars that might override Path.home() based logic
+    env_patch = {
+        "XDG_CONFIG_HOME": str(tmp_path / ".config"),
+        "APPDATA": str(tmp_path / "AppData/Roaming"),
+        "USERPROFILE": str(tmp_path),
+        "HOME": str(tmp_path)
+    }
+    with patch("pathlib.Path.home", return_value=tmp_path), \
+         patch.dict(os.environ, env_patch):
         yield tmp_path
 
 def test_configure_editor_mcp(mock_home):
-    # Setup mock paths for macOS structure
-    vscode_path = mock_home / "Library/Application Support/Code/User/mcp.json"
-    claude_path = mock_home / "Library/Application Support/Claude/claude_desktop_config.json"
+    # Get platform-specific paths
+    vscode_path = setup_toolkit.get_mcp_config_path("vscode")
+    claude_path = setup_toolkit.get_mcp_config_path("claude_desktop")
     
     # Run configuration
     setup_toolkit.configure_editor_mcp("vscode")
@@ -45,8 +53,8 @@ def test_configure_codex(mock_home):
     assert 'command = "uvx"' in content
 
 def test_configure_editor_mcp_existing(mock_home):
-    vscode_path = mock_home / "Library/Application Support/Code/User/mcp.json"
-    vscode_path.parent.mkdir(parents=True)
+    vscode_path = setup_toolkit.get_mcp_config_path("vscode")
+    vscode_path.parent.mkdir(parents=True, exist_ok=True)
     
     existing_config = {"servers": {"other_server": {"command": "echo"}}}
     with open(vscode_path, "w") as f:
