@@ -1,4 +1,4 @@
-# Stata MCP Server
+# Stata MCP Server (mcp-stata)
 
 <a href="https://cursor.com/en-US/install-mcp?name=mcp-stata&config=eyJjb21tYW5kIjogInV2eCAtLXJlZnJlc2ggLS1yZWZyZXNoLXBhY2thZ2UgbWNwLXN0YXRhIC0tZnJvbSBtY3Atc3RhdGFAbGF0ZXN0IG1jcC1zdGF0YSJ9"><img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Install MCP Server" height="20"></a>&nbsp;
 <a href="https://pypi.org/project/mcp-stata/"><img src="https://img.shields.io/pypi/v/mcp-stata?style=flat&color=black" alt="PyPI - Version" height="20"></a> 
@@ -241,9 +241,13 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 
 ---
 
-## Skills
+## Skills Catalog
 
-- Skill file (for Claude/Codex): [skill/SKILL.md](skill/SKILL.md)
+The toolkit includes a catalog of "Skills" that provide deep domain knowledge to AI agents.
+
+- **Modernize Skill**: [modernize/SKILL.md](skills-catalog/modernize/SKILL.md) — Replaces legacy Stata patterns (frames, gtools, dynamic paths).
+- **Setup Skill**: [setup/SKILL.md](skills-catalog/setup/SKILL.md) — Automates environment configuration and package management.
+- **Base Skill**: [skill/SKILL.md](skill/SKILL.md) — Core Stata programming best practices.
 
 ## Tools Available (from server.py)
 
@@ -259,13 +263,15 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 * `stata_read_log(path, offset=0, max_bytes=262144, tail_lines=0, query=None, before=2, after=2, case_sensitive=False, regex=False, max_matches=50)`: Read, tail, or search a log file.
 * `stata_load_data(source, clear=True, as_json=True, raw=False, max_output_lines=None, session_id="default")`: Heuristic loader (sysuse/webuse/use/path/URL) for the specified session.
 * `stata_inspect_data(action, query=None, variables=None, start=0, count=50, session_id="default")`: Unified data inspector.
-  - `action`: `describe`, `codebook`, `summary`, `search`, `list`, or `get`.
+  - `action`: `describe`, `codebook`, `summary`, `search`, `list`, `get`, or **`lint`**.
+  - `lint`: performs static analysis of `.do` and `.ado` files for modern best practices.
 * `stata_manage_graphs(action, graph_name=None, format="svg", session_id="default")`: Graph management (`list`, `export`, `export_all`).
 * `stata_get_results(session_id="default", include_formatting=False, include_matrices=True, matrix_max_rows=200, matrix_max_cols=200, include_mata=False, as_json=True)`: Unified stored-results tool for coherent structured `r()`/`e()`/`s()` payloads with optional structured Mata snapshot.
 * `stata_get_help(topic, plain_text=False, merge_paragraphs=True, session_id="default")`: Markdown or plain-text Stata help.
 * `stata_manage_session(action, session_id="default", code=None, since_command=None)`: Session lifecycle, state history, and UI channel orchestration.
-  - `action`: `create`, `stop`, `list`, `set_profile`, `history_diff`, `history_stats`, or `get_ui_channel`.
-  - `history_diff` returns tracked changes in variables/macros and dataset dimensions. Pass `since_command` to diff from a specific command index; omit it to diff from the previous history checkpoint.
+  - `action`: `create`, `stop`, `list`, `set_profile`, `history_diff`, `history_stats`, `get_ui_channel`, or **`detect`**.
+  - `detect`: Returns metadata about the Stata installation (version, flavor, OS) and optionally SSC packages.
+  - `history_diff` returns tracked changes in variables/macros and dataset dimensions.
   - `history_stats` returns retained window metadata (`history_size`, `earliest_command`, `latest_command`, `max_history_entries`).
 
 ### Common action examples

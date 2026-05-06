@@ -23,6 +23,7 @@ from .models import (
     SessionListResponse,
 )
 from .sessions import SessionManager
+from .linter import StataLinter
 import logging
 import sys
 import json
@@ -257,8 +258,9 @@ async def stata_manage_session(
     session_id: str = "default",
     code: Optional[str] = None,
     since_command: Optional[int] = None,
+    include_packages: bool = False,
 ) -> str:
-    """Manage Stata sessions (create, stop, list, profile, UI channel).
+    """Manage Stata sessions (create, stop, list, profile, UI channel, detect).
     
     This tool allows for orchestration of multiple Stata sessions, including their
     lifecycle management and configuration.
@@ -272,10 +274,12 @@ async def stata_manage_session(
             - "history_diff": Returns tracked session state changes.
             - "history_stats": Returns retained history window metadata.
             - "get_ui_channel": Retrieves connection details for the UI proxy.
+            - "detect": Returns metadata about the Stata installation and environment.
         session_id: Unique identifier for the Stata session (defaults to "default").
         code: Stata code to execute when using the "set_profile" action.
         since_command: Optional command index for "history_diff". If omitted, compares
             to the last diff checkpoint for this session.
+        include_packages: If True (for "detect"), lists all user-installed packages.
         
     Returns:
         A JSON string containing the status of the action or the requested data.
@@ -316,6 +320,26 @@ async def stata_manage_session(
             "capabilities": ui_channel.capabilities(),
             "sessionId": session_id,
         })
+    elif action == "detect":
+        stata_session = await session_manager.get_or_create_session(session_id)
+        vars_to_get = ["stata_version", "version", "flavor", "os", "osdtl", "machine_type"]
+        info = {}
+        for var in vars_to_get:
+            res_dict = await stata_session.call(
+                "run_command_structured",
+                {"code": f"display c({var})", "strip_smcl": True, "options": {"echo": False}},
+            )
+            res = CommandResponse.model_validate(res_dict)
+            if res.success:
+                info[var] = res.stdout.strip()
+        if include_packages:
+            pkg_result_dict = await stata_session.call(
+                "run_command_structured",
+                {"code": "ado", "strip_smcl": True, "options": {"echo": False}},
+            )
+            pkg_result = CommandResponse.model_validate(pkg_result_dict)
+            info["packages"] = pkg_result.stdout
+        return json.dumps(info)
     else:
         return json.dumps({"error": f"Invalid action: {action}"})
 
@@ -1113,12 +1137,14 @@ async def stata_inspect_data(
     compress_numeric: bool = False,
     strip_smcl: bool = True,
     session_id: str = "default",
+    path: Optional[str] = None,
+    linemax: int = 80,
+    indent: int = 4,
 ) -> str:
-    """Inspect the active dataset (describe, codebook, summarize, search, get data).
+    """Inspect the active dataset (describe, codebook, summarize, search, get data) or code (lint).
     
     Comprehensive tool for exploring the structure and content of the current 
-    Stata dataset. Supports metadata inspection, summary statistics, and 
-    variable searching.
+    Stata dataset or performing static analysis on Stata code files.
     
     Args:
         action: The inspection action to perform:
@@ -1128,12 +1154,16 @@ async def stata_inspect_data(
             - "search": Finds variables matching a name or label pattern.
             - "list": Returns a structured list of all variables in the dataset.
             - "get": Retrieves raw data observations from the dataset.
+            - "lint": Performs static analysis on a .do or .ado file.
         query: Search term for the "search" action or variable name for "codebook".
         variables: Optional list of variables to include in the "summary" action.
         start: 0-indexed starting observation for the "get" action.
         count: Number of observations to retrieve for the "get" action.
         strip_smcl: If True, removes Stata SMCL tags from text-like outputs.
         session_id: The ID of the Stata session to inspect.
+        path: (For "lint") Absolute path to the file to check.
+        linemax: (For "lint") Maximum line length (default 80).
+        indent: (For "lint") Required indentation size (default 4).
         
     Returns:
         A JSON string or formatted text containing the requested inspection data.
@@ -1178,6 +1208,19 @@ async def stata_inspect_data(
         )
         resp = DataResponse(start=start, count=count, data=data)
         return resp.model_dump_json()
+    elif action == "lint":
+        if not path:
+            return json.dumps({"error": "Path must be provided for lint action"})
+        linter = StataLinter(linemax=linemax, indent=indent)
+        try:
+            results = linter.lint_file(path)
+            return json.dumps({
+                "path": path,
+                "violations": results,
+                "count": len(results)
+            })
+        except Exception as e:
+            return json.dumps({"error": str(e)})
     else:
         return json.dumps({"error": f"Invalid action: {action}"})
 
@@ -1287,6 +1330,8 @@ async def stata_get_help(
         {"topic": topic, "plain_text": plain_text, "merge_paragraphs": merge_paragraphs},
     )
     return _extract_help_format(help_text, format=format)
+
+
 
 @mcp.resource("stata://data/summary")
 async def get_summary() -> str:

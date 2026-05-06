@@ -21,8 +21,9 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
   - Use `stata_manage_session(action="history_diff")` / `stata_manage_session(action="history_stats")` for session state tracking without introducing extra tools.
   - Use `stata_task_status` and `stata_control(action="cancel", id=...)` for background task orchestration.
   - Use `stata_control(action="break", id=<session_id>)` to interrupt a running Stata command.
-3. Surface `rc`/`stderr` info back to the user, referencing `r()`/`e()` codes.
-4. If Stata isn't auto-discovered, remind the user to set `STATA_PATH` (examples in README).
+3. Use the **Modern Stata Skill** (available in the skills catalog) for guidance on frames, `gtools`, and avoiding legacy anti-patterns.
+4. Surface `rc`/`stderr` info back to the user, referencing `r()`/`e()` codes.
+5. If Stata isn't auto-discovered, remind the user to set `STATA_PATH` (examples in README).
 
 ## Tool quick reference
 
@@ -55,6 +56,7 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
   - `action="search"`: search variables (`query=<term>`).
   - `action="list"`: list all variables.
   - `action="get"`: retrieve rows (`start`/`count`).
+  - `action="lint"`: perform static analysis on a `.do` or `.ado` file (`path=<path>` required).
 
 ### Graph Management
 
@@ -81,6 +83,7 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
   - `action="history_stats"`: inspect retained history metadata (`history_size`, command bounds).
   - `action="history_diff"`: return changes in variables/macros since prior checkpoint or `since_command`.
   - `action="get_ui_channel"`: return UI channel connection details.
+  - `action="detect"`: return Stata installation metadata (version, flavor, OS). Pass `include_packages=True` to list user packages.
 
 ### UI Data Browser
 
