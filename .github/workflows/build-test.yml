@@ -66,9 +66,11 @@ jobs:
         continue-on-error: false
 
       - name: Run Mock Protocol Tests (Option B)
+        env:
+          MCP_STATA_MOCK: "1"
         run: |
           # Run integration tests using Protocol Mocking
-          MCP_STATA_MOCK=1 uv run pytest -v tests/test_mock_protocol.py
+          uv run pytest -v tests/test_mock_protocol.py
         timeout-minutes: 5
         continue-on-error: false
 
