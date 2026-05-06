@@ -2,6 +2,24 @@
 
 <!-- version list -->
 
+## v2.4.0 (2026-05-06)
+
+### Continuous Integration
+
+- Use env mapping for MCP_STATA_MOCK in workflow
+  ([`06f750b`](https://github.com/tmonk/mcp-stata/commit/06f750b026b4fe80ab310428807660b10f5ce01b))
+
+### Documentation
+
+- Update lede
+  ([`5f41b5c`](https://github.com/tmonk/mcp-stata/commit/5f41b5cd97f10e96bf1ff1bc324d478c722b2e86))
+
+### Features
+
+- Add Stata linter, setup script, and tests
+  ([`1128127`](https://github.com/tmonk/mcp-stata/commit/1128127b5ecd29e17f42019c8419f14bcf6a9c29))
+
+
 ## v2.3.2 (2026-05-05)
 
 
