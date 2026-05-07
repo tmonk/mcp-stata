@@ -46,7 +46,6 @@ Client-specific examples:
 | **Windsurf** | `bash <(curl -LsSf https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh) --agent windsurf` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent windsurf` |
 | **VS Code** | `bash <(curl -LsSf https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh) --agent vscode` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent vscode` |
 | **Auto-detect / default** | `bash <(curl -LsSf https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh)` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1)))` |
-
 ### 2 · Verify
 
 Ask your agent:
@@ -82,43 +81,7 @@ The toolkit is designed for empirical economics research.
 
 > **Note on `pystata`**: This server uses the proprietary `pystata` module that is included with your Stata installation. There is a third-party package named `pystata` on PyPI that is **not** the official Stata package and should not be installed. MCP-Stata handles finding and loading the official module from your Stata directory automatically.
 
-## Installation
-
-Use the shared cross-agent installer:
-
-```bash
-bash plugin/install.sh
-```
-
-```powershell
-pwsh -ExecutionPolicy Bypass -File plugin/install.ps1
-```
-
-If you need a permalink you can share, use the tagged raw script URL:
-
-```bash
-curl -LsSf https://raw.githubusercontent.com/tmonk/mcp-stata/v3.0.1/plugin/install.sh | bash
-```
-
-Useful variants:
-
-```bash
-bash plugin/install.sh --agent claude --scope project
-bash plugin/install.sh --scope user
-bash plugin/install.sh --version 2.5.1
-bash plugin/install.sh --local-source /path/to/mcp-stata
-bash plugin/install.sh --verify
-```
-
-```powershell
-pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent claude --scope project
-pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --scope user
-pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --version 2.5.1
-pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --local-source C:\path\to\mcp-stata
-pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --verify
-```
-
-### Run as a published tool with `uvx`
+## Run as a published tool with `uvx`
 
 ```bash
 uvx --refresh --refresh-package mcp-stata --from mcp-stata@latest mcp-stata

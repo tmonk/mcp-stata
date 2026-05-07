@@ -11,6 +11,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$RepoUrl = 'https://github.com/tmonk/mcp-stata.git'
 
 # ── Formatting ────────────────────────────────────────────────────────────────
 function Write-Step { param($msg) Write-Host "[INFO]  $msg" -ForegroundColor Cyan }
@@ -22,6 +23,53 @@ function Write-Fail { param($msg) Write-Host "[ERROR] $msg" -ForegroundColor Red
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Split-Path -Parent $ScriptDir
 $UvBinDir  = Join-Path $env:USERPROFILE '.local\bin'
+$InstallRepoRoot = $RepoRoot
+$TempCloneDir = $null
+
+function Cleanup-TempClone {
+    if ($TempCloneDir -and (Test-Path $TempCloneDir)) {
+        Remove-Item -Recurse -Force $TempCloneDir -ErrorAction SilentlyContinue
+    }
+}
+
+function Ensure-Git {
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        Write-Ok "git found: $((Get-Command git).Source)"
+        return
+    }
+
+    Write-Step "git not found - attempting to install..."
+
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget install --id Git.Git -e --accept-package-agreements --accept-source-agreements
+    } elseif (Get-Command choco -ErrorAction SilentlyContinue) {
+        choco install git -y
+    } else {
+        Write-Fail "git is required but neither winget nor choco was found. Install git and re-run."
+    }
+
+    # Refresh PATH from machine/user scopes for current process
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:Path = "$machinePath;$userPath"
+
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Fail "git installation did not succeed. Install git and re-run."
+    }
+
+    Write-Ok "git installed: $((Get-Command git).Source)"
+}
+
+function Ensure-RepoRoot {
+    if (Test-Path (Join-Path $RepoRoot 'scripts\setup_toolkit.py')) { return }
+
+    Ensure-Git
+    $script:TempCloneDir = Join-Path ([System.IO.Path]::GetTempPath()) ("mcp-stata-install-" + [guid]::NewGuid().ToString('N'))
+    Write-Step "Cloning mcp-stata into temporary directory..."
+    git clone --depth 1 $RepoUrl $script:TempCloneDir
+    $script:InstallRepoRoot = $script:TempCloneDir
+    Write-Ok "Repository cloned"
+}
 
 # ── Bootstrap uv ──────────────────────────────────────────────────────────────
 function Ensure-Uv {
@@ -52,7 +100,12 @@ function Ensure-Uv {
 }
 
 # ── Entry point ───────────────────────────────────────────────────────────────
-Ensure-Uv
-Write-Step "Launching mcp-stata installer..."
-& uv run --python 3.11 "$RepoRoot\scripts\setup_toolkit.py" @PassthroughArgs
-exit $LASTEXITCODE
+try {
+    Ensure-RepoRoot
+    Ensure-Uv
+    Write-Step "Launching mcp-stata installer..."
+    & uv run --python 3.11 "$InstallRepoRoot\scripts\setup_toolkit.py" @PassthroughArgs
+    exit $LASTEXITCODE
+} finally {
+    Cleanup-TempClone
+}
