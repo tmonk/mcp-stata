@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v3.0.0 (2026-05-07)
+
+### Bug Fixes
+
+- Bump plugin versions to 2.6.0; tests & sync fixes
+  ([`5d07080`](https://github.com/tmonk/mcp-stata/commit/5d0708038453965c3868bc38d865fb569870e434))
+
+- Revise mcp-stata description for clarity
+  ([`4a62ecf`](https://github.com/tmonk/mcp-stata/commit/4a62ecf811428cb30829784c1300923756115d22))
+
+- Update README content for clarity
+  ([`d1bc1c1`](https://github.com/tmonk/mcp-stata/commit/d1bc1c1982c216887c908db5126c290b2731fbd3))
+
+### Documentation
+
+- Refine README project description
+  ([`1a745b5`](https://github.com/tmonk/mcp-stata/commit/1a745b513a254176a676bfa6cff55409d31ec8c2))
+
+
 ## v2.6.0 (2026-05-07)
 
 ### Bug Fixes
