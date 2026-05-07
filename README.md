@@ -3,7 +3,7 @@
 <a href="https://cursor.com/en-US/install-mcp?name=mcp-stata&config=eyJjb21tYW5kIjogInV2eCAtLXJlZnJlc2ggLS1yZWZyZXNoLXBhY2thZ2UgbWNwLXN0YXRhIC0tZnJvbSBtY3Atc3RhdGFAbGF0ZXN0IG1jcC1zdGF0YSJ9"><img src="https://cursor.com/deeplink/mcp-install-dark.svg" alt="Install MCP Server" height="20"></a>&nbsp;
 <a href="https://pypi.org/project/mcp-stata/"><img src="https://img.shields.io/pypi/v/mcp-stata?style=flat&color=black" alt="PyPI - Version" height="20"></a> 
 
-**mcp-stata** is an MCP server that gives AI agents native control over a local Stata installation - execute commands, inspect data, verify stored results, and export graphs, all through a structured tool interface. Featured in <a href="https://www.stata.com/stata-news/news41-2/community-corner-ai-tools/"><img src="https://raw.githubusercontent.com/tmonk/mcp-stata/refs/heads/main/img/stata.svg"  height="10px" alt="Stata" style="vertical-align:middle; margin-top: -5px;"/> News</a>.
+**mcp-stata** is an agentic toolkit for empirical researchers. It gives AI agents native control over a local Stata installation — running do-files, inspecting data, checking stored results, and exporting graphs — and ships with a skills catalog covering the workflows researchers actually do: data audits, replication and robustness checks, specification comparisons, publication QA, referee responses, and modernization of legacy code. Featured in <a href="https://www.stata.com/stata-news/news41-2/community-corner-ai-tools/"><img src="https://raw.githubusercontent.com/tmonk/mcp-stata/refs/heads/main/img/stata.svg"  height="10px" alt="Stata" style="vertical-align:middle; margin-top: -5px;"/> News</a>.
 
 > If you'd like a fully integrated VS Code extension to run Stata code without leaving your IDE, and also allow AI agent interaction, check out my other project: [<img src="https://raw.githubusercontent.com/tmonk/stata-workbench/refs/heads/main/img/icon.png" height="12px"> Stata Workbench](https://github.com/tmonk/stata-workbench/).
 
@@ -16,6 +16,8 @@ This server enables LLMs to:
 - **Export graphics**: generate and view Stata graphs (histograms, scatterplots).
 - **Streaming graph caching**: automatically cache graphs during command execution for instant exports.
 - **Verify results**: programmatically check stored results (`r()`, `e()`) for accurate validation.
+- **Drive paper workflows**: run structured research audits, estimation planning, specification comparisons, publication checks, and reproducibility diagnostics.
+- **Use modern MCP surfaces**: discover prompts, project/session resources, artifacts, and safety metadata through structured tool envelopes.
 
 ## Quickstart
 
@@ -23,8 +25,8 @@ This server enables LLMs to:
 
 | Client | Command |
 |--------|---------|
-| **Claude Code** | `claude mcp add mcp_stata -- uvx --refresh --refresh-package mcp-stata --from mcp-stata@latest mcp-stata` |
-| **Codex** | `codex mcp add mcp_stata -- uvx --refresh --refresh-package mcp-stata --from mcp-stata@latest mcp-stata` |
+| **Claude Code** | `claude mcp add --scope project mcp-stata -- uvx --refresh --refresh-package mcp-stata --from mcp-stata@latest mcp-stata` |
+| **Codex** | `bash plugin/install.sh --agent codex --scope project` |
 | **Other** | See [IDE Setup](#ide-setup-mcp) below |
 
 ### 2 · Verify
@@ -43,6 +45,17 @@ It will confirm the connection and describe all available tools and skills.
 Load the auto dataset and run a regression of price on mpg
 ```
 
+## Academic Research Workflows
+
+The toolkit is designed for economics and empirical social-science workflows, not just raw command execution.
+
+- Replication and robustness: rerun pipelines, compare specifications, and preserve an audit trail.
+- Data audit: check structure, missingness, duplicate identifiers, suspicious coding, and documentation readiness.
+- Publication QA: review tables and figures for paper-ready presentation.
+- Referee response: organize reruns and evidence for critiques or coauthor requests.
+- Environment diagnosis: troubleshoot Stata discovery, package availability, graph export, and managed-machine quirks.
+- Safety and diagnostics: classify command risk, enforce `read_only=True`, gate unsafe paths, and run `stata_doctor`.
+
 ## Prerequisites
 
 - **Stata 17+** (Stata MP, SE, or BE). Must be licensed and installed locally.
@@ -52,6 +65,21 @@ Load the auto dataset and run a regression of price on mpg
 > **Note on `pystata`**: This server uses the proprietary `pystata` module that is included with your Stata installation. There is a third-party package named `pystata` on PyPI that is **not** the official Stata package and should not be installed. MCP-Stata handles finding and loading the official module from your Stata directory automatically.
 
 ## Installation
+
+For the shared cross-agent installer, run:
+
+```bash
+bash plugin/install.sh --scope project
+```
+
+Useful variants:
+
+```bash
+bash plugin/install.sh --scope user
+bash plugin/install.sh --version 2.5.1
+bash plugin/install.sh --local-source /path/to/mcp-stata
+bash plugin/install.sh --verify
+```
 
 ### Run as a published tool with `uvx`
 
@@ -271,9 +299,13 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 
 The toolkit includes a catalog of "Skills" that provide deep domain knowledge to AI agents.
 
-- **Modernize Skill**: [modernize/SKILL.md](skills-catalog/modernize/SKILL.md) — Replaces legacy Stata patterns (frames, gtools, dynamic paths).
-- **Setup Skill**: [setup/SKILL.md](skills-catalog/setup/SKILL.md) — Automates environment configuration and package management.
-- **Base Skill**: [skill/SKILL.md](skill/SKILL.md) — Core Stata programming best practices.
+- **Base Skill**: [skill/SKILL.md](skill/SKILL.md) — Main Stata toolkit dispatcher.
+- **Modernize Skill**: [modernize/SKILL.md](skills-catalog/modernize/SKILL.md) — Replaces legacy Stata patterns.
+- **Replication Skill**: [replication/SKILL.md](skills-catalog/replication/SKILL.md) — Reproducibility and robustness workflows.
+- **Data Audit Skill**: [data-audit/SKILL.md](skills-catalog/data-audit/SKILL.md) — Dataset QA and sanity checks.
+- **Publication QA Skill**: [publication-qa/SKILL.md](skills-catalog/publication-qa/SKILL.md) — Tables and figures for paper readiness.
+- **Environment Diagnose Skill**: [environment-diagnose/SKILL.md](skills-catalog/environment-diagnose/SKILL.md) — Setup and platform troubleshooting.
+- Additional plugin skills cover causal inference, table building, power analysis, data provenance, and referee-response work.
 
 ## Tools Available (from server.py)
 

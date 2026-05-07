@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'mcp-stata loaded. Use /stata or ask whether the toolkit is available.'"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -8,6 +8,11 @@ from mcp_stata.server import (
     stata_manage_session,
 )
 
+
+def _unwrap(result):
+    return result.model_dump() if hasattr(result, "model_dump") else json.loads(result)
+
+
 @pytest.mark.asyncio
 async def test_stata_wait_for_task_unit():
     """Test blocking wait logic with mocked status polling."""
@@ -31,9 +36,8 @@ async def test_stata_wait_for_task_unit():
 
     marker_task = asyncio.create_task(_mark_done())
     try:
-        result_json = await stata_task_status(task_id, wait=True, timeout=2, poll_interval=0.01)
-        result = json.loads(result_json)
-        assert result["status"] == "done"
+        result = _unwrap(await stata_task_status(task_id, wait=True, timeout=2, poll_interval=0.01))
+        assert result["data"]["status"] == "done"
     finally:
         marker_task.cancel()
         if task_id in _background_tasks:
@@ -50,11 +54,9 @@ async def test_stata_list_variables_unit():
     mock_session.call.return_value = future
     
     with patch("mcp_stata.server.session_manager.get_or_create_session", return_value=mock_session):
-        res_json = await stata_inspect_data(action="list", session_id="test_id")
-        res = json.loads(res_json)
-        
-        assert "variables" in res
-        assert res["variables"][0]["name"] == "price"
+        res = _unwrap(await stata_inspect_data(action="list", session_id="test_id"))
+        assert "variables" in res["data"]
+        assert res["data"]["variables"][0]["name"] == "price"
         mock_session.call.assert_called_with("list_variables_structured", {})
 
 @pytest.mark.asyncio
@@ -73,10 +75,9 @@ async def test_get_task_status_unit():
     )
     
     try:
-        res_json = await stata_task_status(task_id)
-        res = json.loads(res_json)
-        assert res["task_id"] == task_id
-        assert res["status"] == "running"
+        res = _unwrap(await stata_task_status(task_id))
+        assert res["data"]["task_id"] == task_id
+        assert res["data"]["status"] == "running"
     finally:
         if task_id in _background_tasks:
             del _background_tasks[task_id]
@@ -102,13 +103,12 @@ async def test_get_task_status_failed_unit():
     )
     
     try:
-        res_json = await stata_task_status(task_id)
-        res = json.loads(res_json)
-        assert res["task_id"] == task_id
-        assert res["status"] == "failed"
-        assert res["error"] == "test error"
-        assert res["error_details"]["message"] == "test error"
-        assert res["error_details"]["rc"] == 1
+        res = _unwrap(await stata_task_status(task_id))
+        assert res["data"]["task_id"] == task_id
+        assert res["data"]["status"] == "failed"
+        assert res["data"]["error"] == "test error"
+        assert res["data"]["error_details"]["message"] == "test error"
+        assert res["data"]["error_details"]["rc"] == 1
     finally:
         if task_id in _background_tasks:
             del _background_tasks[task_id]
@@ -137,10 +137,10 @@ async def test_manage_session_history_actions_unit():
     })
 
     with patch("mcp_stata.server.session_manager.get_or_create_session", new=AsyncMock(return_value=mock_session)):
-        stats = json.loads(await stata_manage_session(action="history_stats", session_id="s1"))
+        stats = _unwrap(await stata_manage_session(action="history_stats", session_id="s1"))
         assert stats["session_id"] == "s1"
-        assert stats["history_size"] == 3
+        assert stats["data"]["history_size"] == 3
 
-        diff = json.loads(await stata_manage_session(action="history_diff", session_id="s1", since_command=3))
+        diff = _unwrap(await stata_manage_session(action="history_diff", session_id="s1", since_command=3))
         assert diff["session_id"] == "s1"
-        assert diff["new_variables"] == ["z"]
+        assert diff["data"]["new_variables"] == ["z"]

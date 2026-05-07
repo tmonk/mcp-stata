@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
   "name": "io.github.tmonk/mcp-stata",
   "title": "Stata MCP Server",
-  "description": "Agentic Stata toolkit: execute commands, inspect data, retrieve stored results, and export graphs.",
+  "description": "Agentic Stata toolkit built for research: execute Stata code with structured outputs, easily diagnose code, and use research-oriented audit tools.",
   "version": "2.6.0",
   "packages": [
     {

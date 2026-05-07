@@ -1,233 +1,709 @@
 #!/usr/bin/env python3
 """
-Stata Workbench Setup Script
-Automates MCP registration and verifies Stata connection.
+Cross-agent setup helpers for the mcp-stata toolkit.
+
+This script powers the repo-local installer and is also importable from tests.
 """
 
-import os
-import sys
+from __future__ import annotations
+
+import argparse
 import json
-import subprocess
+import os
+import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
-def print_step(msg):
+CANONICAL_SERVER_NAME = "mcp-stata"
+LEGACY_SERVER_NAMES = ("mcp_stata",)
+PACKAGE_NAME = "mcp-stata"
+DEFAULT_SCOPE = "project"
+SUPPORTED_AGENTS = ("claude", "codex", "gemini", "cursor", "windsurf", "vscode")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PLUGIN_ROOT = REPO_ROOT / "plugin"
+PLUGIN_SKILLS_DIR = PLUGIN_ROOT / "skills"
+AGENTS_BLOCK_START = "<!-- BEGIN MCP-STATA MANAGED BLOCK -->"
+AGENTS_BLOCK_END = "<!-- END MCP-STATA MANAGED BLOCK -->"
+
+
+def get_codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+
+
+def print_step(msg: str) -> None:
     print(f"\n[STEP] {msg}")
 
-def print_success(msg):
+
+def print_success(msg: str) -> None:
     print(f"  [SUCCESS] {msg}")
 
-def print_error(msg):
+
+def print_warning(msg: str) -> None:
+    print(f"  [WARNING] {msg}")
+
+
+def print_error(msg: str) -> None:
     print(f"  [ERROR] {msg}")
 
-def check_uv():
-    print_step("Checking for uv/uvx...")
-    if shutil.which("uv"):
-        print_success("uv is installed.")
-        return True
-    else:
-        print_error("uv is not installed. Please install it from https://astral.sh/uv")
-        return False
 
-def get_mcp_config_path(editor):
+def _placeholder_env() -> dict[str, str]:
+    return {
+        "STATA_PATH": "${STATA_PATH:-}",
+        "MCP_STATA_STARTUP_DO_FILE": "${MCP_STATA_STARTUP_DO_FILE:-}",
+        "MCP_STATA_TEMP_DIR": "${MCP_STATA_TEMP_DIR:-}",
+    }
+
+
+def build_uvx_args(
+    *,
+    version: str | None = None,
+    latest: bool = True,
+    local_source: str | None = None,
+) -> list[str]:
+    if local_source:
+        return ["--refresh", "--from", local_source, PACKAGE_NAME]
+    ref = "latest" if latest or not version else version
+    return ["--refresh", "--refresh-package", PACKAGE_NAME, "--from", f"{PACKAGE_NAME}@{ref}", PACKAGE_NAME]
+
+
+def build_server_entry(
+    *,
+    include_type: bool = False,
+    include_env: bool = False,
+    version: str | None = None,
+    latest: bool = True,
+    local_source: str | None = None,
+    placeholder_env: bool = False,
+) -> dict:
+    entry = {
+        "command": "uvx",
+        "args": build_uvx_args(version=version, latest=latest, local_source=local_source),
+    }
+    if include_type:
+        entry = {"type": "stdio", **entry}
+    if include_env:
+        if placeholder_env:
+            entry["env"] = _placeholder_env()
+        else:
+            env = {}
+            for key in ("STATA_PATH", "MCP_STATA_STARTUP_DO_FILE", "MCP_STATA_TEMP_DIR"):
+                value = os.environ.get(key)
+                if value:
+                    env[key] = value
+            if env:
+                entry["env"] = env
+    return entry
+
+
+def _migrate_server_keys(mapping: dict, canonical_entry: dict) -> dict:
+    for legacy in LEGACY_SERVER_NAMES:
+        mapping.pop(legacy, None)
+    mapping[CANONICAL_SERVER_NAME] = canonical_entry
+    return mapping
+
+
+def _load_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def merge_json_server_config(path: Path, *, top_key: str, entry: dict) -> Path:
+    data = _load_json(path)
+    section = data.setdefault(top_key, {})
+    if not isinstance(section, dict):
+        section = {}
+        data[top_key] = section
+    _migrate_server_keys(section, entry)
+    _write_json(path, data)
+    return path
+
+
+def _format_toml_value(value: str) -> str:
+    return json.dumps(value)
+
+
+def upsert_codex_config(
+    path: Path,
+    *,
+    entry: dict,
+) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = path.read_text() if path.exists() else ""
+    pattern = re.compile(
+        r'(?ms)^\[mcp_servers\.(?:"?mcp-stata"?|"?mcp_stata"?)\]\n.*?(?=^\[|\Z)'
+    )
+    content = pattern.sub("", content).rstrip()
+
+    block_lines = [
+        f"[mcp_servers.{CANONICAL_SERVER_NAME}]",
+        f'command = "{entry["command"]}"',
+        f"args = {json.dumps(entry['args'])}",
+    ]
+    env = entry.get("env", {})
+    if env:
+        block_lines.append(f"[mcp_servers.{CANONICAL_SERVER_NAME}.env]")
+        for key, value in env.items():
+            block_lines.append(f"{key} = {_format_toml_value(value)}")
+    block = "\n".join(block_lines) + "\n"
+    new_content = (content + "\n\n" + block).lstrip("\n")
+    path.write_text(new_content)
+    return path
+
+
+def get_project_root(project_root: Path | None = None) -> Path:
+    if project_root is not None:
+        return project_root
+    env_root = os.environ.get("MCP_STATA_PROJECT_ROOT")
+    if env_root:
+        return Path(env_root)
+    return REPO_ROOT
+
+
+def get_mcp_config_path(editor: str, scope: str = "user", project_root: Path | None = None) -> Path | None:
+    project_root = get_project_root(project_root)
     home = Path.home()
+    if scope == "project":
+        project_paths = {
+            "vscode": project_root / ".vscode" / "mcp.json",
+            "cursor": project_root / ".cursor" / "mcp.json",
+            "claude_desktop": project_root / ".mcp.json",
+        }
+        if editor in project_paths:
+            return project_paths[editor]
+
     if sys.platform == "darwin":
         paths = {
             "vscode": home / "Library/Application Support/Code/User/mcp.json",
-            "cursor": home / "Library/Application Support/Cursor/User/globalStorage/saoudrizwan.claude-dev/settings/mcp.json", # More common path for Claude Dev in Cursor
-            "claude_desktop": home / "Library/Application Support/Claude/claude_desktop_config.json"
+            "cursor": home / ".cursor" / "mcp.json",
+            "claude_desktop": home / "Library/Application Support/Claude/claude_desktop_config.json",
         }
     elif sys.platform == "win32":
         appdata = Path(os.environ.get("APPDATA", home))
         paths = {
             "vscode": appdata / "Code/User/mcp.json",
-            "cursor": Path(os.environ.get("USERPROFILE", home)) / ".cursor/mcp.json",
-            "claude_desktop": appdata / "Claude/claude_desktop_config.json"
+            "cursor": Path(os.environ.get("USERPROFILE", home)) / ".cursor" / "mcp.json",
+            "claude_desktop": appdata / "Claude" / "claude_desktop_config.json",
         }
     else:
         config_home = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
         paths = {
             "vscode": config_home / "Code/User/mcp.json",
-            "cursor": home / ".cursor/mcp.json",
-            "claude_desktop": config_home / "Claude/claude_desktop_config.json"
+            "cursor": home / ".cursor" / "mcp.json",
+            "claude_desktop": config_home / "Claude" / "claude_desktop_config.json",
         }
     return paths.get(editor)
 
-def configure_editor_mcp(editor):
-    print_step(f"Configuring MCP for {editor}...")
-    config_path = get_mcp_config_path(editor)
-    if not config_path:
-        print_error(f"Could not determine config path for {editor}.")
-        return
 
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, "r") as f:
-                config = json.load(f)
-        except Exception:
-            pass
+def check_uv() -> bool:
+    print_step("Checking for uv/uvx")
+    uv = shutil.which("uv")
+    uvx = shutil.which("uvx")
+    if uv or uvx:
+        print_success(f"Found {'uvx' if uvx else 'uv'}")
+        return True
+    print_error("uv/uvx not found. Install uv from https://astral.sh/uv")
+    return False
 
-    if "mcpServers" not in config and editor == "cursor":
-        config["mcpServers"] = {}
-    elif "servers" not in config:
-        config["servers"] = {}
 
-    server_key = "mcpServers" if editor == "cursor" else "servers"
-    
-    config[server_key]["mcp_stata"] = {
-        "command": "uvx",
-        "args": ["--refresh", "--refresh-package", "mcp-stata", "--from", "mcp-stata@latest", "mcp-stata"]
-    }
+def detect_stata(stata_path_override: str | None = None) -> tuple[str | None, str | None]:
+    if stata_path_override:
+        path = Path(stata_path_override)
+        if not path.exists():
+            raise FileNotFoundError(f"Stata executable not found: {stata_path_override}")
+        return str(path), "manual"
 
+    env_path = os.environ.get("STATA_PATH")
+    if env_path and Path(env_path).exists():
+        return env_path, "env"
+
+    src_path = REPO_ROOT / "src"
+    if src_path.exists():
+        sys.path.insert(0, str(src_path))
     try:
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=2)
-        print_success(f"Updated {config_path}")
-    except Exception as e:
-        print_error(f"Failed to update {config_path}: {e}")
-
-def configure_claude_code():
-    print_step("Configuring Claude Code...")
-    if not shutil.which("claude"):
-        print_error("claude CLI not found on PATH. Skipping.")
-        return
-
-    cmd = [
-        "claude", "mcp", "add", "mcp_stata", "--", 
-        "uvx", "--refresh", "--refresh-package", "mcp-stata", "--from", "mcp-stata@latest", "mcp-stata"
-    ]
-    try:
-        subprocess.run(cmd, check=True)
-        print_success("Added mcp_stata to Claude Code.")
-    except Exception as e:
-        print_error(f"Failed to add to Claude Code: {e}")
-
-def configure_claude_desktop():
-    print_step("Configuring Claude Desktop...")
-    config_path = get_mcp_config_path("claude_desktop")
-    if not config_path:
-        return
-
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, "r") as f:
-                config = json.load(f)
-        except Exception:
-            pass
-
-    if "mcpServers" not in config:
-        config["mcpServers"] = {}
-    
-    config["mcpServers"]["mcp_stata"] = {
-        "command": "uvx",
-        "args": ["--refresh", "--refresh-package", "mcp-stata", "--from", "mcp-stata@latest", "mcp-stata"]
-    }
-
-    try:
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=2)
-        print_success(f"Updated Claude Desktop config at {config_path}")
-    except Exception as e:
-        print_error(f"Failed to update Claude Desktop: {e}")
-
-def configure_codex():
-    print_step("Configuring Codex...")
-    home = Path.home()
-    config_path = home / ".codex" / "config.toml"
-    
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    mcp_block = (
-        '\n[mcp_servers.mcp_stata]\n'
-        'command = "uvx"\n'
-        'args = ["--refresh", "--refresh-package", "mcp-stata", "--from", "mcp-stata@latest", "mcp-stata"]\n'
-    )
-    
-    content = ""
-    if config_path.exists():
-        with open(config_path, "r") as f:
-            content = f.read()
-            
-    if "[mcp_servers.mcp_stata]" in content:
-        # Simple replacement if already exists
-        import re
-        content = re.sub(r'\[mcp_servers\.mcp_stata\].*?(?=\n\[|$)', mcp_block, content, flags=re.DOTALL)
-    else:
-        content += mcp_block
-        
-    try:
-        with open(config_path, "w") as f:
-            f.write(content)
-        print_success(f"Updated Codex config at {config_path}")
-    except Exception as e:
-        print_error(f"Failed to update Codex: {e}")
-
-def test_stata_connection():
-    print_step("Testing Stata connection...")
-    try:
-        # Since we're in the repo, we can import directly
-        # The script is in mcp-stata/scripts/, src is in mcp-stata/src/
-        repo_root = Path(__file__).parent.parent
-        src_path = repo_root / "src"
-        if src_path.exists():
-            sys.path.insert(0, str(src_path))
-        
-        # Now we can import
         from mcp_stata.discovery import find_stata_path
-        path, edition = find_stata_path()
-        print_success(f"Found Stata: {path} ({edition})")
-        
-        print("  Running test command 'display 2+2'...")
-        from mcp_stata.sessions import SessionManager
-        import asyncio
-        
-        async def run_test():
-            manager = SessionManager()
-            await manager.start()
-            session = await manager.get_or_create_session("test_setup")
-            res = await session.call("run_command", {"code": "display 2+2"})
-            await manager.stop_session("test_setup")
-            if res.get("success"):
-                print_success("Stata connection verified! Output: " + res.get("stdout", "").strip())
-                return True
-            else:
-                print_error("Stata command failed: " + str(res.get("error")))
-                return False
 
-        return asyncio.run(run_test())
-    except Exception as e:
-        print_error(f"Verification failed: {e}")
+        path, edition = find_stata_path()
+        return path, edition
+    except Exception:
+        return None, None
+
+
+def detect_agents() -> list[str]:
+    agents: list[str] = []
+    if shutil.which("claude"):
+        agents.append("claude")
+    if shutil.which("codex"):
+        agents.append("codex")
+    if shutil.which("gemini") or (Path.home() / ".gemini").exists():
+        agents.append("gemini")
+    if (Path.home() / ".cursor").exists():
+        agents.append("cursor")
+    if (Path.home() / ".codeium" / "windsurf").exists():
+        agents.append("windsurf")
+    if shutil.which("code"):
+        agents.append("vscode")
+    return agents
+
+
+def configure_editor_mcp(
+    editor: str,
+    *,
+    scope: str = "user",
+    version: str | None = None,
+    latest: bool = True,
+    local_source: str | None = None,
+    project_root: Path | None = None,
+) -> Path:
+    config_path = get_mcp_config_path(editor, scope=scope, project_root=project_root)
+    if not config_path:
+        raise RuntimeError(f"Could not determine config path for {editor}")
+    top_key = "servers" if editor == "vscode" else "mcpServers"
+    include_type = editor == "vscode"
+    include_env = scope == "project"
+    entry = build_server_entry(
+        include_type=include_type,
+        include_env=include_env,
+        version=version,
+        latest=latest,
+        local_source=local_source,
+        placeholder_env=scope == "project",
+    )
+    return merge_json_server_config(config_path, top_key=top_key, entry=entry)
+
+
+def configure_claude_code(
+    *,
+    scope: str = "user",
+    version: str | None = None,
+    latest: bool = True,
+    local_source: str | None = None,
+    project_root: Path | None = None,
+) -> Path | None:
+    if scope == "project":
+        entry = build_server_entry(
+            include_type=True,
+            include_env=True,
+            version=version,
+            latest=latest,
+            local_source=local_source,
+            placeholder_env=True,
+        )
+        return merge_json_server_config(
+            get_mcp_config_path("claude_desktop", scope="project", project_root=project_root),
+            top_key="mcpServers",
+            entry=entry,
+        )
+
+    if shutil.which("claude"):
+        cmd = ["claude", "mcp", "add", "--scope", scope, CANONICAL_SERVER_NAME, "--", "uvx", *build_uvx_args(version=version, latest=latest, local_source=local_source)]
+        try:
+            subprocess.run(cmd, check=True)
+            return None
+        except Exception:
+            print_warning("Claude CLI registration failed; falling back to JSON config.")
+
+    entry = build_server_entry(
+        version=version,
+        latest=latest,
+        local_source=local_source,
+    )
+    return merge_json_server_config(
+        get_mcp_config_path("claude_desktop", scope="user", project_root=project_root),
+        top_key="mcpServers",
+        entry=entry,
+    )
+
+
+def configure_claude_desktop(
+    *,
+    version: str | None = None,
+    latest: bool = True,
+    local_source: str | None = None,
+) -> Path:
+    entry = build_server_entry(version=version, latest=latest, local_source=local_source)
+    return merge_json_server_config(
+        get_mcp_config_path("claude_desktop", scope="user"),
+        top_key="mcpServers",
+        entry=entry,
+    )
+
+
+def configure_codex(
+    *,
+    scope: str = "user",
+    version: str | None = None,
+    latest: bool = True,
+    local_source: str | None = None,
+    project_root: Path | None = None,
+) -> Path:
+    target_dir = get_codex_home() if scope == "user" else get_project_root(project_root) / ".codex"
+    config_path = target_dir / "config.toml"
+    entry = build_server_entry(
+        include_env=scope == "project",
+        version=version,
+        latest=latest,
+        local_source=local_source,
+        placeholder_env=scope == "project",
+    )
+    return upsert_codex_config(config_path, entry=entry)
+
+
+def install_codex_skills(*, project_root: Path | None = None) -> Path | None:
+    skills_root = get_codex_home() / "skills"
+    skills_root.mkdir(parents=True, exist_ok=True)
+    link = skills_root / CANONICAL_SERVER_NAME
+    return link if _ensure_symlink(link, PLUGIN_SKILLS_DIR) else None
+
+
+def install_gemini_extension(*, project_root: Path | None = None) -> Path | None:
+    extensions_root = Path.home() / ".gemini" / "extensions"
+    extensions_root.mkdir(parents=True, exist_ok=True)
+    link = extensions_root / CANONICAL_SERVER_NAME
+    return link if _ensure_symlink(link, PLUGIN_ROOT) else None
+
+
+def register_generic_skills(*, project_root: Path | None = None) -> Path | None:
+    skills_root = Path.home() / ".agents" / "skills"
+    skills_root.mkdir(parents=True, exist_ok=True)
+    link = skills_root / CANONICAL_SERVER_NAME
+    return link if _ensure_symlink(link, PLUGIN_SKILLS_DIR) else None
+
+
+def _ensure_symlink(link: Path, target: Path) -> bool:
+    if link.is_symlink():
+        if link.resolve() == target.resolve():
+            return True
+        link.unlink()
+    elif link.exists():
+        print_warning(f"Skipping {link}: existing directory or file would be overwritten.")
+        return False
+    link.symlink_to(target)
+    return True
+
+
+def _managed_agents_block() -> str:
+    return "\n".join(
+        [
+            AGENTS_BLOCK_START,
+            "## mcp-stata Toolkit",
+            "",
+            "Always use the `mcp-stata` toolkit for Stata workflows in this project.",
+            "Reach for it for regressions, `.do` files, dataset inspection, graph export,",
+            "log review, replication checks, data audit, publication QA, and environment diagnostics.",
+            AGENTS_BLOCK_END,
+        ]
+    )
+
+
+def merge_project_agents_hint(project_root: Path | None = None) -> Path:
+    root = get_project_root(project_root)
+    target = root / "AGENTS.md"
+    managed_block = _managed_agents_block()
+    if target.exists():
+        content = target.read_text().rstrip()
+        pattern = re.compile(
+            rf"{re.escape(AGENTS_BLOCK_START)}.*?{re.escape(AGENTS_BLOCK_END)}",
+            re.DOTALL,
+        )
+        if pattern.search(content):
+            new_content = pattern.sub(managed_block, content)
+        else:
+            separator = "\n\n" if content else ""
+            new_content = f"{content}{separator}{managed_block}"
+    else:
+        new_content = managed_block
+    target.write_text(new_content.rstrip() + "\n")
+    return target
+
+
+def test_stata_connection() -> bool:
+    print_step("Running setup verification")
+    src_path = REPO_ROOT / "src"
+    if src_path.exists():
+        sys.path.insert(0, str(src_path))
+
+    try:
+        from mcp_stata.sessions import SessionManager
+    except Exception as exc:
+        print_error(f"Unable to import mcp-stata internals for verification: {exc}")
         return False
 
-def main():
-    print("=== Stata Workbench Setup ===")
-    
+    try:
+        path, edition = detect_stata()
+        if not path:
+            print_warning("Stata not found. Skipping live verification.")
+            return False
+        print_success(f"Found Stata: {path} ({edition or 'unknown'})")
+    except Exception as exc:
+        print_error(str(exc))
+        return False
+
+    import asyncio
+
+    async def _run() -> bool:
+        manager = SessionManager()
+        await manager.start()
+        session = await manager.get_or_create_session("setup_verification")
+        checks = [
+            ("display 2+2", "basic execution"),
+            ("cap which reghdfe\nlocal has_reghdfe = (_rc==0)\ndisplay `has_reghdfe'", "reghdfe availability"),
+            ("cap which gcollapse\nlocal has_gtools = (_rc==0)\ndisplay `has_gtools'", "gtools availability"),
+            ("tempname g\nsysuse auto, clear\nscatter price mpg\ngraph dir", "graph export readiness"),
+            ("capture noisily display c(sysdir_stata)\n", "startup/profile readiness"),
+        ]
+        ok = True
+        try:
+            for code, label in checks:
+                res = await session.call("run_command", {"code": code})
+                if res.get("success"):
+                    print_success(f"Verified {label}")
+                else:
+                    ok = False
+                    print_warning(f"Verification failed for {label}: {res.get('error')}")
+            log_res = await session.call("run_command", {"code": "noi di \"log-check\""})
+            if log_res.get("log_path"):
+                print_success("Verified log streaming path emission")
+            else:
+                ok = False
+                print_warning("Verification did not emit a log path")
+        finally:
+            await manager.stop_session("setup_verification")
+        return ok
+
+    try:
+        return asyncio.run(_run())
+    except Exception as exc:
+        print_error(f"Verification failed: {exc}")
+        return False
+
+
+def install_for_agent(
+    agent: str,
+    *,
+    scope: str,
+    version: str | None,
+    latest: bool,
+    local_source: str | None,
+    project_root: Path | None = None,
+) -> list[Path]:
+    written: list[Path] = []
+
+    def _append(path: Path | None) -> None:
+        if path is not None:
+            written.append(path)
+
+    if agent == "claude":
+        path = configure_claude_code(
+            scope=scope,
+            version=version,
+            latest=latest,
+            local_source=local_source,
+            project_root=project_root,
+        )
+        if path:
+            written.append(path)
+        return written
+
+    if agent == "codex":
+        _append(
+            configure_codex(
+                scope=scope,
+                version=version,
+                latest=latest,
+                local_source=local_source,
+                project_root=project_root,
+            )
+        )
+        _append(install_codex_skills(project_root=project_root))
+        _append(register_generic_skills(project_root=project_root))
+        _append(merge_project_agents_hint(project_root=project_root))
+        return written
+
+    if agent == "gemini":
+        _append(install_gemini_extension(project_root=project_root))
+        _append(register_generic_skills(project_root=project_root))
+        return written
+
+    if agent == "cursor":
+        _append(
+            configure_editor_mcp(
+                "cursor",
+                scope=scope,
+                version=version,
+                latest=latest,
+                local_source=local_source,
+                project_root=project_root,
+            )
+        )
+        _append(register_generic_skills(project_root=project_root))
+        return written
+
+    if agent == "windsurf":
+        _append(
+            merge_json_server_config(
+                Path.home() / ".codeium" / "windsurf" / "mcp_config.json",
+                top_key="mcpServers",
+                entry=build_server_entry(version=version, latest=latest, local_source=local_source),
+            )
+        )
+        _append(register_generic_skills(project_root=project_root))
+        return written
+
+    if agent == "vscode":
+        _append(
+            configure_editor_mcp(
+                "vscode",
+                scope=scope,
+                version=version,
+                latest=latest,
+                local_source=local_source,
+                project_root=project_root,
+            )
+        )
+        _append(register_generic_skills(project_root=project_root))
+        return written
+
+    raise ValueError(f"Unsupported agent: {agent}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Install and verify the mcp-stata toolkit.")
+    parser.add_argument("--agent", choices=[*SUPPORTED_AGENTS, "all"], default="")
+    parser.add_argument("--scope", choices=["project", "user"], default=DEFAULT_SCOPE)
+    parser.add_argument("--stata-path", default="")
+    parser.add_argument("--version", default="")
+    parser.add_argument("--latest", action="store_true", help="Force latest package resolution (default).")
+    parser.add_argument("--local-source", default="", help="Install from a local repo or wheel path for offline setups.")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--verify", action="store_true")
+    return parser
+
+
+def _print_dry_run(
+    agent: str,
+    *,
+    scope: str,
+    version: str | None,
+    latest: bool,
+    local_source: str | None,
+    project_root: Path,
+) -> None:
+    if agent == "claude":
+        if scope == "project":
+            print(f"  [dry-run] would write {project_root / '.mcp.json'}")
+        else:
+            print("  [dry-run] would run claude mcp add or update Claude settings")
+        return
+    if agent == "codex":
+        target_dir = get_codex_home() if scope == "user" else project_root / ".codex"
+        print(f"  [dry-run] would write {target_dir / 'config.toml'}")
+        print(f"  [dry-run] would symlink {PLUGIN_SKILLS_DIR} -> {get_codex_home() / 'skills' / CANONICAL_SERVER_NAME}")
+        print(f"  [dry-run] would merge project guidance into {project_root / 'AGENTS.md'}")
+        return
+    if agent == "gemini":
+        print(f"  [dry-run] would link {PLUGIN_ROOT} -> {Path.home() / '.gemini' / 'extensions' / CANONICAL_SERVER_NAME}")
+        return
+    if agent == "cursor":
+        print(f"  [dry-run] would write {get_mcp_config_path('cursor', scope=scope, project_root=project_root)}")
+        return
+    if agent == "windsurf":
+        print(f"  [dry-run] would write {Path.home() / '.codeium' / 'windsurf' / 'mcp_config.json'}")
+        return
+    if agent == "vscode":
+        print(f"  [dry-run] would write {get_mcp_config_path('vscode', scope=scope, project_root=project_root)}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    latest = True
+    if args.version:
+        latest = False
+    elif args.latest:
+        latest = True
+
+    print("=== mcp-stata Toolkit Setup ===")
+
     if not check_uv():
-        sys.exit(1)
+        return 1
 
-    # Configure editors
-    for editor in ["vscode", "cursor"]:
-        configure_editor_mcp(editor)
+    try:
+        stata_path, stata_edition = detect_stata(args.stata_path or None)
+    except FileNotFoundError as exc:
+        print_error(str(exc))
+        return 1
 
-    # Configure Claude Code (CLI)
-    configure_claude_code()
+    project_root = get_project_root()
+    agents = detect_agents() if not args.agent else ([] if args.agent == "all" else [args.agent])
+    if args.agent == "all":
+        agents = detect_agents()
+    if args.agent and args.agent not in ("", "all"):
+        agents = [args.agent]
+    if not agents:
+        print_error("Nothing to configure.")
+        return 1
 
-    # Configure Claude Desktop
-    configure_claude_desktop()
-    
-    # Configure Codex
-    configure_codex()
+    print_step("Configuration summary")
+    print_success(f"Scope: {args.scope}")
+    print_success(f"Agents: {', '.join(agents)}")
+    if args.local_source:
+        print_success(f"Install source: local ({args.local_source})")
+    elif args.version:
+        print_success(f"Install source: PyPI @{args.version}")
+    else:
+        print_success("Install source: PyPI @latest")
+    if stata_path:
+        print_success(f"Stata: {stata_path} ({stata_edition or 'unknown'})")
+    else:
+        print_warning("Stata not found. Set STATA_PATH before verification.")
 
-    # Test connection
-    test_stata_connection()
+    for agent in agents:
+        print_step(f"Configuring {agent}")
+        if args.dry_run:
+            _print_dry_run(
+                agent,
+                scope=args.scope,
+                version=args.version or None,
+                latest=latest,
+                local_source=args.local_source or None,
+                project_root=project_root,
+            )
+            continue
+        written = install_for_agent(
+            agent,
+            scope=args.scope,
+            version=args.version or None,
+            latest=latest,
+            local_source=args.local_source or None,
+            project_root=project_root,
+        )
+        for path in written:
+            print_success(f"Updated {path}")
+
+    if args.verify and not args.dry_run:
+        test_stata_connection()
 
     print("\n=== Setup Complete ===")
-    print("If you have VS Code or Cursor open, please restart the MCP server or the editor.")
+    print(f"Canonical server name: {CANONICAL_SERVER_NAME}")
+    print("Verify by asking your agent: Do you have access to mcp-stata, an agentic toolkit for Stata?")
+    print("Quick start: /stata-run sysuse auto, clear")
+    print("Quick start: /stata-inspect")
+    print("Quick start: /stata-run regress price mpg")
+    print("Quick start: /stata-results")
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

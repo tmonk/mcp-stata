@@ -1,0 +1,17 @@
+{
+  "version": "2.5.1",
+  "supported_agents": [
+    "claude",
+    "codex",
+    "gemini"
+  ],
+  "trigger_text": "Stata error diagnosis and debugging agent. Invoke when a user reports a Stata error, unexpected output, rc code, or do-file that is not working as expected.",
+  "tools": [
+    "mcp__mcp-stata__stata_run",
+    "mcp__mcp-stata__stata_read_log",
+    "mcp__mcp-stata__stata_inspect_data",
+    "mcp__mcp-stata__stata_get_help",
+    "mcp__mcp-stata__stata_get_results",
+    "mcp__mcp-stata__stata_manage_session"
+  ]
+}

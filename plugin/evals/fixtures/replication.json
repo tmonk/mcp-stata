@@ -1,0 +1,16 @@
+{
+  "name": "replication-comparison",
+  "input": {
+    "baseline": {
+      "coef_treat": 0.2,
+      "se_treat": 0.05
+    },
+    "variant": {
+      "coef_treat": 0.17,
+      "se_treat": 0.06
+    }
+  },
+  "expected": {
+    "requires_delta_check": true
+  }
+}

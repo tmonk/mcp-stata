@@ -1,0 +1,15 @@
+{
+  "version": "2.5.1",
+  "supported_agents": [
+    "claude",
+    "codex",
+    "gemini"
+  ],
+  "trigger_text": "Specialist agent for publication-ready Stata outputs. Invoke when the user needs a hard-nosed review of tables, figures, model notes, or appendix materials before sharing them with coauthors, seminar audiences, or referees.",
+  "tools": [
+    "mcp__mcp-stata__stata_get_results",
+    "mcp__mcp-stata__stata_manage_graphs",
+    "mcp__mcp-stata__stata_inspect_data",
+    "mcp__mcp-stata__stata_run"
+  ]
+}
