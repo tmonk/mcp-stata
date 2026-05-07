@@ -2,6 +2,34 @@
 
 <!-- version list -->
 
+## v3.0.2 (2026-05-08)
+
+### Bug Fixes
+
+- Clone repo when installer run standalone
+  ([`2f806dc`](https://github.com/tmonk/mcp-stata/commit/2f806dca73aad2d235a1e6956cbdfa358fdc1dfc))
+
+- Refactor Claude install flow and restore CLI args
+  ([`4b116fb`](https://github.com/tmonk/mcp-stata/commit/4b116fb651cb52e0cd10437a415a53ac4cf174e3))
+
+- Release 3.0.1: bump manifests and update installer
+  ([`b166aab`](https://github.com/tmonk/mcp-stata/commit/b166aab26c8ed0b94afb27f571c77c1733029407))
+
+- **docs**: Add marketplaces and cross-platform installers
+  ([`8ab0ba8`](https://github.com/tmonk/mcp-stata/commit/8ab0ba8e1b253831e8b393a084b72fce3f60ea7a))
+
+- **docs**: Fix table in README
+  ([`40a711a`](https://github.com/tmonk/mcp-stata/commit/40a711a50ec1a1b3f97f1b6586fa6d8b37a82fc4))
+
+### Documentation
+
+- README, use curl | bash for installer commands
+  ([`577ab92`](https://github.com/tmonk/mcp-stata/commit/577ab92b2fd7f2613ab8fa1f286a3901e438182e))
+
+- Use inline PowerShell install commands
+  ([`a10a408`](https://github.com/tmonk/mcp-stata/commit/a10a40887d4beca8483787b806771f5fc87a204e))
+
+
 ## v3.0.1 (2026-05-07)
 
 ### Bug Fixes
