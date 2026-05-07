@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v3.0.1 (2026-05-07)
+
+### Bug Fixes
+
+- Refactor graph caching/emit
+  ([`448fcaf`](https://github.com/tmonk/mcp-stata/commit/448fcafc7d43a3401fd76839b905e3e13d2b1a2d))
+
+
 ## v3.0.0 (2026-05-07)
 
 ### Bug Fixes
