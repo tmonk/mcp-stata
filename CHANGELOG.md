@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v2.5.1 (2026-05-07)
+
+### Bug Fixes
+
+- Enhance README with quickstart guide
+  ([`8640355`](https://github.com/tmonk/mcp-stata/commit/8640355f8790bb44fb6044c505a1b9a8d0e46f44))
+
+
 ## v2.5.0 (2026-05-07)
 
 ### Features
