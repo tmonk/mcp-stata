@@ -1,0 +1,9 @@
+{
+  "name": "publication-qa-checklist",
+  "input": {
+    "graph_name": "event_study_main"
+  },
+  "expected": {
+    "should_review_labels": true
+  }
+}

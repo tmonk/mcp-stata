@@ -1,0 +1,28 @@
+{
+  "name": "mcp-stata",
+  "version": "2.5.1",
+  "description": "mcp-stata — execute commands, inspect data, retrieve r()/e() results, and view graphs. Connects AI agents to a locally installed Stata instance via MCP.",
+  "contextFileName": "AGENTS.md",
+  "mcpServers": {
+    "mcp-stata": {
+      "cwd": "${extensionPath}",
+      "command": "uvx",
+      "args": [
+        "--refresh",
+        "--refresh-package",
+        "mcp-stata",
+        "--from",
+        "mcp-stata@latest",
+        "mcp-stata"
+      ],
+      "env": {
+        "STATA_PATH": "${STATA_PATH:-}",
+        "MCP_STATA_STARTUP_DO_FILE": "${MCP_STATA_STARTUP_DO_FILE:-}",
+        "MCP_STATA_TEMP_DIR": "${MCP_STATA_TEMP_DIR:-}"
+      }
+    }
+  },
+  "plan": {
+    "directory": ".gemini/plans"
+  }
+}

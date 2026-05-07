@@ -3,7 +3,7 @@
   "name": "io.github.tmonk/mcp-stata",
   "title": "Stata MCP Server",
   "description": "Agentic Stata toolkit: execute commands, inspect data, retrieve stored results, and export graphs.",
-  "version": "2.4.0",
+  "version": "2.5.1",
   "packages": [
     {
       "registryType": "pypi",

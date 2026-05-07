@@ -1,0 +1,11 @@
+{
+  "name": "data-audit-risk-summary",
+  "input": {
+    "n": 1200,
+    "vars": 42,
+    "missing_key_var": 18
+  },
+  "expected": {
+    "should_flag_missingness": true
+  }
+}

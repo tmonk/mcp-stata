@@ -27,11 +27,11 @@ def mock_home(tmp_path):
 
 def test_configure_editor_mcp(mock_home):
     # Get platform-specific paths
-    vscode_path = setup_toolkit.get_mcp_config_path("vscode")
-    claude_path = setup_toolkit.get_mcp_config_path("claude_desktop")
+    vscode_path = setup_toolkit.get_mcp_config_path("vscode", scope="user")
+    claude_path = setup_toolkit.get_mcp_config_path("claude_desktop", scope="user")
     
     # Run configuration
-    setup_toolkit.configure_editor_mcp("vscode")
+    setup_toolkit.configure_editor_mcp("vscode", scope="user")
     setup_toolkit.configure_claude_desktop()
     
     assert vscode_path.exists()
@@ -39,34 +39,34 @@ def test_configure_editor_mcp(mock_home):
     
     with open(claude_path, "r") as f:
         config = json.load(f)
-    assert "mcp_stata" in config["mcpServers"]
+    assert "mcp-stata" in config["mcpServers"]
 
 def test_configure_codex(mock_home):
     codex_path = mock_home / ".codex/config.toml"
     
-    setup_toolkit.configure_codex()
+    setup_toolkit.configure_codex(scope="user")
     
     assert codex_path.exists()
     with open(codex_path, "r") as f:
         content = f.read()
-    assert "[mcp_servers.mcp_stata]" in content
+    assert "[mcp_servers.mcp-stata]" in content
     assert 'command = "uvx"' in content
 
 def test_configure_editor_mcp_existing(mock_home):
-    vscode_path = setup_toolkit.get_mcp_config_path("vscode")
+    vscode_path = setup_toolkit.get_mcp_config_path("vscode", scope="user")
     vscode_path.parent.mkdir(parents=True, exist_ok=True)
     
     existing_config = {"servers": {"other_server": {"command": "echo"}}}
     with open(vscode_path, "w") as f:
         json.dump(existing_config, f)
         
-    setup_toolkit.configure_editor_mcp("vscode")
+    setup_toolkit.configure_editor_mcp("vscode", scope="user")
     
     with open(vscode_path, "r") as f:
         config = json.load(f)
     
     assert "other_server" in config["servers"]
-    assert "mcp_stata" in config["servers"]
+    assert "mcp-stata" in config["servers"]
 
 def test_configure_claude_code():
     with patch("shutil.which", return_value="/usr/local/bin/claude"), \
@@ -77,7 +77,20 @@ def test_configure_claude_code():
         assert "claude" in args
         assert "mcp" in args
         assert "add" in args
-        assert "mcp_stata" in args
+        assert "mcp-stata" in args
+
+def test_configure_project_scope_cursor(mock_home):
+    project_root = mock_home / "project"
+    cfg = project_root / ".cursor" / "mcp.json"
+    setup_toolkit.configure_editor_mcp("cursor", scope="project", project_root=project_root)
+    data = json.loads(cfg.read_text())
+    assert "mcp-stata" in data["mcpServers"]
+    assert data["mcpServers"]["mcp-stata"]["env"]["STATA_PATH"] == "${STATA_PATH:-}"
+
+def test_install_gemini_extension(mock_home):
+    link = setup_toolkit.install_gemini_extension()
+    assert link.exists()
+    assert link.is_symlink()
 
 @pytest.mark.requires_stata
 def test_stata_connection_verification():

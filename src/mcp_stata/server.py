@@ -38,6 +38,7 @@ import threading
 import time
 
 from .ui_http import UIChannelManager
+from .toolkit_catalog_data import SKILLS, SKILL_BY_ID
 
 
 # Configure logging
@@ -129,7 +130,7 @@ def setup_logging():
 
 
 # Initialize FastMCP
-mcp = FastMCP("mcp_stata")
+mcp = FastMCP("mcp-stata")
 # Set version on the underlying server to expose it in InitializeResult
 mcp._mcp_server.version = SERVER_VERSION
 
@@ -1367,55 +1368,32 @@ async def get_stored_results_resource() -> str:
 
 @mcp.resource("stata://skills/list")
 async def list_skills_resource() -> str:
-    """Returns a list of available skills included with the mcp-stata server."""
-    skills_dir = os.path.join(os.path.dirname(__file__), "skills")
+    """Returns manifest-backed metadata for packaged mcp-stata skills."""
     skills = []
-    
-    if os.path.isdir(skills_dir):
-        for item in os.listdir(skills_dir):
-            if item.endswith('.md'):
-                skill_path = os.path.join(skills_dir, item)
-                skills.append({
-                    "name": item.replace('.md', ''),
-                    "path": f"stata://skills/{item}",
-                    "type": "main"
-                })
-    
-    skills_catalog_dir = os.path.join(os.path.dirname(__file__), "skills-catalog")
-    if os.path.isdir(skills_catalog_dir):
-        for category in os.listdir(skills_catalog_dir):
-            category_path = os.path.join(skills_catalog_dir, category)
-            if os.path.isdir(category_path):
-                for item in os.listdir(category_path):
-                    if item.endswith('.md'):
-                        skills.append({
-                            "name": item.replace('.md', ''),
-                            "category": category,
-                            "path": f"stata://skills/{category}/{item}",
-                            "type": "catalog"
-                        })
-    
+    for item in SKILLS:
+        skills.append(
+            {
+                "id": item["id"],
+                "name": item["name"],
+                "description": item["description"],
+                "version": item["version"],
+                "supported_agents": item["supported_agents"],
+                "trigger_text": item["trigger_text"],
+                "invocation_type": item["invocation_type"],
+                "resource_uri": f"stata://skills/{item['id']}",
+            }
+        )
     return json.dumps({"skills": skills, "count": len(skills)})
 
 @mcp.resource("stata://skills/{skill_path}")
 async def get_skill_content(skill_path: str) -> str:
-    """Returns the content of a specific skill file."""
-    # Sanitize path to prevent directory traversal
+    """Returns the full Markdown content of a specific packaged skill."""
     if ".." in skill_path or skill_path.startswith("/"):
         raise ValueError("Invalid skill path")
-    
-    skills_dir = os.path.dirname(__file__)
-    skill_file = os.path.join(skills_dir, "skills", skill_path)
-    
-    # Try skills-catalog if not found in skills
-    if not os.path.exists(skill_file):
-        skill_file = os.path.join(skills_dir, "skills-catalog", skill_path)
-    
-    if not os.path.exists(skill_file) or not skill_file.endswith('.md'):
+    doc = SKILL_BY_ID.get(skill_path)
+    if not doc:
         raise ValueError(f"Skill not found: {skill_path}")
-    
-    with open(skill_file, 'r') as f:
-        return f.read()
+    return doc["content"]
 
 def main():
     if "--version" in sys.argv:
