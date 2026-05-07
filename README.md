@@ -47,14 +47,14 @@ Load the auto dataset and run a regression of price on mpg
 
 ## Academic Research Workflows
 
-The toolkit is designed for economics and empirical social-science workflows, not just raw command execution.
+The toolkit is designed for empirical economics research.
 
 - Replication and robustness: rerun pipelines, compare specifications, and preserve an audit trail.
 - Data audit: check structure, missingness, duplicate identifiers, suspicious coding, and documentation readiness.
 - Publication QA: review tables and figures for paper-ready presentation.
 - Referee response: organize reruns and evidence for critiques or coauthor requests.
 - Environment diagnosis: troubleshoot Stata discovery, package availability, graph export, and managed-machine quirks.
-- Safety and diagnostics: classify command risk, enforce `read_only=True`, gate unsafe paths, and run `stata_doctor`.
+- Safety and diagnostics: diagnose the MCP server, and enforce the safety of code run through the server.
 
 ## Prerequisites
 
@@ -297,15 +297,15 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 
 ## Skills Catalog
 
-The toolkit includes a catalog of "Skills" that provide deep domain knowledge to AI agents.
+The toolkit includes a catalog of "Skills", providing domain knowledge to AI agents.
 
 - **Base Skill**: [skill/SKILL.md](skill/SKILL.md) — Main Stata toolkit dispatcher.
-- **Modernize Skill**: [modernize/SKILL.md](skills-catalog/modernize/SKILL.md) — Replaces legacy Stata patterns.
+- **Modernize Skill**: [modernize/SKILL.md](skills-catalog/modernize/SKILL.md) — Replaces legacy Stata patterns (i.e. prefer frames over `preserve`, `restore`.)
 - **Replication Skill**: [replication/SKILL.md](skills-catalog/replication/SKILL.md) — Reproducibility and robustness workflows.
 - **Data Audit Skill**: [data-audit/SKILL.md](skills-catalog/data-audit/SKILL.md) — Dataset QA and sanity checks.
 - **Publication QA Skill**: [publication-qa/SKILL.md](skills-catalog/publication-qa/SKILL.md) — Tables and figures for paper readiness.
 - **Environment Diagnose Skill**: [environment-diagnose/SKILL.md](skills-catalog/environment-diagnose/SKILL.md) — Setup and platform troubleshooting.
-- Additional plugin skills cover causal inference, table building, power analysis, data provenance, and referee-response work.
+- Additional plugin skills cover basic causal inference, table building, power analysis, data provenance, and referee-response work.
 
 ## Tools Available (from server.py)
 
