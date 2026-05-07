@@ -65,7 +65,7 @@ def test_e2e_streaming_run_do_file_stream_emits_log_before_completion(tmp_path):
         progress_events.append((progress, total, message))
 
     async def main() -> None:
-        server_params = StdioServerParameters(command=cli, args=[], cwd=os.getcwd())
+        server_params = StdioServerParameters(command=cli, args=[], cwd=os.getcwd(), env={**os.environ, "MCP_STATA_ALLOWED_ROOTS": str(tmp_path)})
 
         async with AsyncExitStack() as stack:
             read_stream, write_stream = await stack.enter_async_context(stdio_client(server_params))
@@ -182,7 +182,7 @@ def test_e2e_background_do_file_streams_output(tmp_path):
         logs.append(text)
 
     async def main() -> None:
-        server_params = StdioServerParameters(command=cli, args=[], cwd=os.getcwd())
+        server_params = StdioServerParameters(command=cli, args=[], cwd=os.getcwd(), env={**os.environ, "MCP_STATA_ALLOWED_ROOTS": str(tmp_path)})
 
         async with AsyncExitStack() as stack:
             read_stream, write_stream = await stack.enter_async_context(stdio_client(server_params))
@@ -210,7 +210,7 @@ def test_e2e_background_do_file_streams_output(tmp_path):
             )
 
             payload = json.loads(result.content[0].text)
-            assert payload.get("task_id")
+            assert payload["data"].get("task_id")
 
             saw_start = anyio.Event()
 
@@ -227,7 +227,7 @@ def test_e2e_background_do_file_streams_output(tmp_path):
                 with anyio.fail_after(10):
                     await saw_start.wait()
 
-            task_id = payload["task_id"]
+            task_id = payload["data"]["task_id"]
             with anyio.fail_after(30):
                 while True:
                     task_result = await session.call_tool(
@@ -235,7 +235,7 @@ def test_e2e_background_do_file_streams_output(tmp_path):
                         {"task_id": task_id},
                     )
                     parsed = json.loads(task_result.content[0].text)
-                    if parsed.get("status") in ("done", "completed", "failed"):
+                    if parsed["data"].get("status") in ("done", "completed", "failed"):
                         break
                     await anyio.sleep(0.05)
 
@@ -288,7 +288,7 @@ def test_e2e_graph_ready_emitted_on_repeated_runs(tmp_path):
             graph_ready_events.append(payload)
 
     async def main() -> None:
-        server_params = StdioServerParameters(command=cli, args=[], cwd=os.getcwd())
+        server_params = StdioServerParameters(command=cli, args=[], cwd=os.getcwd(), env={**os.environ, "MCP_STATA_ALLOWED_ROOTS": str(tmp_path)})
 
         async with AsyncExitStack() as stack:
             read_stream, write_stream = await stack.enter_async_context(stdio_client(server_params))
@@ -374,7 +374,7 @@ def test_e2e_graph_ready_emitted_for_do_file(tmp_path):
             graph_ready_events.append(payload)
 
     async def main() -> None:
-        server_params = StdioServerParameters(command=cli, args=[], cwd=os.getcwd())
+        server_params = StdioServerParameters(command=cli, args=[], cwd=os.getcwd(), env={**os.environ, "MCP_STATA_ALLOWED_ROOTS": str(tmp_path)})
 
         async with AsyncExitStack() as stack:
             read_stream, write_stream = await stack.enter_async_context(stdio_client(server_params))
@@ -464,10 +464,10 @@ def test_e2e_background_command_returns_log_path():
             )
 
             payload = json.loads(result.content[0].text)
-            assert payload.get("task_id")
-            assert payload.get("log_path")
+            assert payload["data"].get("task_id")
+            assert payload["data"].get("log_path")
 
-            task_id = payload["task_id"]
+            task_id = payload["data"]["task_id"]
 
             with anyio.fail_after(30):
                 while True:
@@ -476,11 +476,11 @@ def test_e2e_background_command_returns_log_path():
                         {"task_id": task_id},
                     )
                     parsed = json.loads(task_result.content[0].text)
-                    if parsed.get("status") in ("done", "completed", "failed"):
+                    if parsed["data"].get("status") in ("done", "completed", "failed"):
                         break
                     await anyio.sleep(0.05)
 
-            assert parsed.get("result")
+            assert parsed["data"].get("result")
 
     anyio.run(main)
 
@@ -514,7 +514,7 @@ def test_e2e_background_do_file_returns_log_path(tmp_path):
     dofile.write_text('display "bg_start"\n' 'sleep 500\n' 'display "bg_end"\n')
 
     async def main() -> None:
-        server_params = StdioServerParameters(command=cli, args=[], cwd=os.getcwd())
+        server_params = StdioServerParameters(command=cli, args=[], cwd=os.getcwd(), env={**os.environ, "MCP_STATA_ALLOWED_ROOTS": str(tmp_path)})
 
         async with AsyncExitStack() as stack:
             read_stream, write_stream = await stack.enter_async_context(stdio_client(server_params))
@@ -540,10 +540,10 @@ def test_e2e_background_do_file_returns_log_path(tmp_path):
             )
 
             payload = json.loads(result.content[0].text)
-            assert payload.get("task_id")
-            assert payload.get("log_path")
+            assert payload["data"].get("task_id")
+            assert payload["data"].get("log_path")
 
-            task_id = payload["task_id"]
+            task_id = payload["data"]["task_id"]
 
             with anyio.fail_after(30):
                 while True:
@@ -552,10 +552,10 @@ def test_e2e_background_do_file_returns_log_path(tmp_path):
                         {"task_id": task_id},
                     )
                     parsed = json.loads(task_result.content[0].text)
-                    if parsed.get("status") in ("done", "completed", "failed"):
+                    if parsed["data"].get("status") in ("done", "completed", "failed"):
                         break
                     await anyio.sleep(0.05)
 
-            assert parsed.get("result")
+            assert parsed["data"].get("result")
 
     anyio.run(main)

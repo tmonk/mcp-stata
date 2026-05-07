@@ -14,7 +14,6 @@ import tempfile
 import threading
 import time
 import uuid
-import functools
 from contextlib import contextmanager, redirect_stdout, redirect_stderr
 from importlib.metadata import PackageNotFoundError, version
 from io import StringIO
@@ -522,11 +521,18 @@ class StataClient:
         on_graph_cached: Optional[Callable[[str, bool], Awaitable[None]]],
         notify_log: Callable[[str], Awaitable[None]],
         task_id: Optional[str] = None,
+        *,
+        notify_graph_cached_log: bool = True,
     ) -> Optional[StreamingGraphCache]:
         if not auto_cache_graphs:
             return None
         graph_cache = StreamingGraphCache(self, auto_cache=True)
-        graph_cache_callback = self._create_graph_cache_callback(on_graph_cached, notify_log, task_id=task_id)
+        graph_cache_callback = self._create_graph_cache_callback(
+            on_graph_cached,
+            notify_log,
+            task_id=task_id,
+            notify_graph_cached_log=notify_graph_cached_log,
+        )
         graph_cache.add_cache_callback(graph_cache_callback)
         return graph_cache
 
@@ -613,28 +619,6 @@ class StataClient:
                 )
         except Exception as e:
             logger.error(f"Post-execution graph detection failed: {e}")
-
-    def _emit_graph_ready_task(
-        self,
-        *,
-        emit_graph_ready: bool,
-        graph_ready_initial: Optional[dict[str, str]],
-        notify_log: Callable[[str], Awaitable[None]],
-        graph_ready_task_id: Optional[str],
-        graph_ready_format: str,
-    ) -> None:
-        if emit_graph_ready and graph_ready_initial is not None:
-            try:
-                asyncio.create_task(
-                    self._emit_graph_ready_events(
-                        graph_ready_initial,
-                        notify_log,
-                        graph_ready_task_id,
-                        graph_ready_format,
-                    )
-                )
-            except Exception as e:
-                logger.warning("graph_ready emission failed to start: %s", e)
 
     def _apply_output_cleaning(
         self,
@@ -1225,7 +1209,13 @@ class StataClient:
         return None
 
     @staticmethod
-    def _create_graph_cache_callback(on_graph_cached, notify_log, task_id=None):
+    def _create_graph_cache_callback(
+        on_graph_cached,
+        notify_log,
+        *,
+        task_id=None,
+        notify_graph_cached_log: bool = True,
+    ):
         """Create a standardized graph cache callback with proper error handling."""
         async def graph_cache_callback(graph_name: str, success: bool) -> None:
             try:
@@ -1233,9 +1223,11 @@ class StataClient:
                     await on_graph_cached(graph_name, success)
             except Exception as e:
                 logger.error(f"Graph cache callback failed: {e}")
-            
+
+            if not notify_graph_cached_log:
+                return
+
             try:
-                # Also notify via log channel
                 await notify_log(json.dumps({
                     "event": "graph_cached",
                     "graph": graph_name,
@@ -1244,7 +1236,7 @@ class StataClient:
                 }))
             except Exception as e:
                 logger.error(f"Failed to notify about graph cache: {e}")
-        
+
         return graph_cache_callback
 
     def _get_cached_graph_path(self, graph_name: str) -> Optional[str]:
@@ -1272,41 +1264,26 @@ class StataClient:
         task_id: Optional[str],
         export_format: str,
         graph_ready_initial: Optional[dict[str, str]] = None,
+        restrict_to_command_text: bool = True,
     ) -> int:
         code = getattr(self, "_current_command_code", "")
         named_graphs = set(self._extract_named_graphs(code))
-        sys.stderr.write(f"[mcp-stata DEBUG] _emit_graph_ready_for_graphs: graphs={graph_names}, code={code!r}, named={named_graphs}\n")
-        sys.stderr.flush()
 
         if not graph_names:
             return 0
-        # Deduplicate requested names while preserving order
         graph_names = list(dict.fromkeys(graph_names))
         fmt = (export_format or "svg").strip().lower()
         emitted = 0
 
-        # Heuristic: Find active graph to help decide which existing graphs were touched.
-        active_graph = None
-        try:
-            from sfi import Scalar
-            active_graph = Scalar.getValue("c(curgraph)")
-        except Exception:
-            pass
-        code = getattr(self, "_current_command_code", "")
-        named_graphs = set(self._extract_named_graphs(code))
-
         for graph_name in graph_names:
-            # Try to determine a stable signature before exporting; prefer cached path if present
             cached_path = self._get_cached_graph_path(graph_name) if fmt == "svg" else None
             pre_signature = self._get_graph_signature(graph_name)
             emit_key = f"{graph_name}:{self._command_idx}:{fmt}"
-            
-            # If we already emitted this EXACT signature in THIS command, skip.
+
             if self._last_emitted_graph_signatures.get(graph_name) == emit_key:
                 continue
 
-            # Emit only when the command matches the graph command or explicitly names it.
-            if graph_ready_initial is not None:
+            if restrict_to_command_text and graph_ready_initial is not None:
                 graph_cmd = self._get_graph_command_line(graph_name)
                 if not self._command_contains_graph_command(code, graph_cmd or ""):
                     if graph_name not in named_graphs:
@@ -1319,7 +1296,7 @@ class StataClient:
                     for attempt in range(6):
                         try:
                             export_path = await anyio.to_thread.run_sync(
-                                lambda: self.export_graph(graph_name, format=fmt)
+                                lambda gn=graph_name: self.export_graph(gn, format=fmt)
                             )
                             break
                         except Exception as exc:
@@ -1340,8 +1317,6 @@ class StataClient:
                     },
                 }
                 await notify_log(json.dumps(payload))
-                sys.stderr.write(f"[mcp-stata DEBUG] Emitted graph_ready for {graph_name}\n")
-                sys.stderr.flush()
                 emitted += 1
                 self._last_emitted_graph_signatures[graph_name] = emit_key
                 if graph_ready_initial is not None:
@@ -1364,46 +1339,41 @@ class StataClient:
                 out.append(name)
         return out
 
+    async def _collect_current_graphs_with_retry(self, attempts: int = 5, delay: float = 0.05) -> List[str]:
+        """Snapshot current graphs after a command, polling briefly for slow finalization."""
+        last: List[str] = []
+        for _ in range(max(1, attempts)):
+            try:
+                last = list(self.list_graphs(force_refresh=True))
+            except Exception as exc:
+                logger.debug("graph_ready list_graphs failed: %s", exc)
+                last = []
+            if last:
+                return list(dict.fromkeys(last))
+            await anyio.sleep(delay)
+        return list(dict.fromkeys(last))
+
     async def _maybe_cache_graphs_on_chunk(
         self,
         *,
         graph_cache: Optional[StreamingGraphCache],
-        emit_graph_ready: bool,
-        notify_log: Callable[[str], Awaitable[None]],
-        graph_ready_task_id: Optional[str],
-        graph_ready_format: str,
-        graph_ready_initial: Optional[dict[str, str]],
         last_check: List[float],
         force: bool = False,
-    ) -> int:
+    ) -> None:
+        """Incremental graph cache during SMCL streaming (graph_ready uses a single post-command pass)."""
         if not graph_cache or not graph_cache.auto_cache:
-            return 0
+            return
         if self._is_executing and not force:
-            sys.stderr.write("[mcp-stata DEBUG] Skipping graph poll: Stata is busy\n")
-            sys.stderr.flush()
-            return 0
-        sys.stderr.write(f"[mcp-stata DEBUG] Polling graphs: force={force}, _is_executing={self._is_executing}\n")
-        sys.stderr.flush()
+            return
         now = time.monotonic()
         if not force and last_check and now - last_check[0] < 0.75:
-            return 0
+            return
         if last_check:
             last_check[0] = now
         try:
-            cached_names = await graph_cache.cache_detected_graphs_with_pystata()
+            await graph_cache.cache_detected_graphs_with_pystata()
         except Exception as e:
-            logger.debug("graph_ready polling failed: %s", e)
-            return 0
-        if emit_graph_ready and cached_names:
-            async with self._ensure_graph_ready_lock():
-                return await self._emit_graph_ready_for_graphs(
-                    cached_names,
-                    notify_log=notify_log,
-                    task_id=graph_ready_task_id,
-                    export_format=graph_ready_format,
-                    graph_ready_initial=graph_ready_initial,
-                )
-        return 0
+            logger.debug("graph cache chunk polling failed: %s", e)
 
     def _ensure_graph_ready_lock(self) -> asyncio.Lock:
         lock = getattr(self, "_graph_ready_lock", None)
@@ -1411,43 +1381,6 @@ class StataClient:
             lock = asyncio.Lock()
             self._graph_ready_lock = lock
         return lock
-
-    async def _emit_graph_ready_events(
-        self,
-        initial_graphs: dict[str, str],
-        notify_log: Callable[[str], Awaitable[None]],
-        task_id: Optional[str],
-        export_format: str,
-    ) -> int:
-        if initial_graphs is None:
-            return 0
-        lock = self._ensure_graph_ready_lock()
-
-        fmt = (export_format or "svg").strip().lower()
-        emitted = 0
-
-        # Poll briefly for new graphs after command completion; emit once per batch.
-        for _ in range(5):
-            try:
-                current_graphs = list(self.list_graphs(force_refresh=True))
-            except Exception as exc:
-                logger.debug("graph_ready list_graphs failed: %s", exc)
-                current_graphs = []
-
-            if current_graphs:
-                async with lock:
-                    emitted += await self._emit_graph_ready_for_graphs(
-                        current_graphs,
-                        notify_log=notify_log,
-                        task_id=task_id,
-                        export_format=fmt,
-                        graph_ready_initial=initial_graphs,
-                    )
-                break
-
-            await anyio.sleep(0.05)
-
-        return emitted
 
     def _get_graph_signature(self, graph_name: str) -> str:
         """Return a stable signature for a graph name based on graph metadata."""
@@ -3520,12 +3453,13 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         smcl_content = ""
         smcl_path = None
 
-        # Setup streaming graph cache if enabled
+        # Setup streaming graph cache if enabled (suppress graph_cached logs when graph_ready drives UI)
         graph_cache = self._init_streaming_graph_cache(
-            auto_cache_graphs, 
-            on_graph_cached, 
+            auto_cache_graphs,
+            on_graph_cached,
             notify_log,
-            task_id=graph_ready_task_id
+            task_id=graph_ready_task_id,
+            notify_graph_cached_log=not emit_graph_ready,
         )
 
         _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
@@ -3571,15 +3505,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             now = time.monotonic()
             if graph_poll_state and now - graph_poll_state[0] < graph_poll_interval:
                 return
-            # Background the graph check so we don't block SMCL streaming or task completion
             asyncio.create_task(
                 self._maybe_cache_graphs_on_chunk(
                     graph_cache=graph_cache,
-                    emit_graph_ready=emit_graph_ready,
-                    notify_log=notify_log,
-                    graph_ready_task_id=graph_ready_task_id,
-                    graph_ready_format=graph_ready_format,
-                    graph_ready_initial=graph_ready_initial,
                     last_check=graph_poll_state,
                 )
             )
@@ -3600,7 +3528,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                             smcl_path=smcl_path,
                             notify_log=notify_log,
                             done=done,
-                            on_chunk=on_chunk_for_graphs if graph_cache else None,
+                            on_chunk=on_chunk_for_graphs if graph_cache and not emit_graph_ready else None,
                             start_offset=start_offset,
                             tee=tee,
                             strip_smcl_output=strip_smcl,
@@ -3665,7 +3593,6 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         smcl_content = self._clean_internal_smcl(smcl_content, strip_output=False)
 
 
-        graph_ready_emitted = 0
         if graph_cache:
             asyncio.create_task(
                 self._cache_new_graphs(
@@ -3675,41 +3602,17 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     completed_label="Command",
                 )
             )
-            if emit_graph_ready:
-                graph_ready_emitted = await self._maybe_cache_graphs_on_chunk(
-                    graph_cache=graph_cache,
-                    emit_graph_ready=emit_graph_ready,
+        if emit_graph_ready:
+            initial = graph_ready_initial if graph_ready_initial is not None else {}
+            async with self._ensure_graph_ready_lock():
+                targets = await self._collect_current_graphs_with_retry()
+                await self._emit_graph_ready_for_graphs(
+                    targets,
                     notify_log=notify_log,
-                    graph_ready_task_id=graph_ready_task_id,
-                    graph_ready_format=graph_ready_format,
-                    graph_ready_initial=graph_ready_initial,
-                    last_check=graph_poll_state,
-                    force=True,
+                    task_id=graph_ready_task_id,
+                    export_format=graph_ready_format,
+                    graph_ready_initial=initial,
                 )
-        if emit_graph_ready and not graph_ready_emitted and graph_ready_initial is not None:
-            try:
-                graph_ready_emitted = await self._emit_graph_ready_events(
-                    graph_ready_initial,
-                    notify_log,
-                    graph_ready_task_id,
-                    graph_ready_format,
-                )
-            except Exception as exc:
-                logger.debug("graph_ready fallback emission failed: %s", exc)
-        if emit_graph_ready and not graph_ready_emitted:
-            try:
-                fallback_names = self._extract_named_graphs(code)
-                if fallback_names:
-                    async with self._ensure_graph_ready_lock():
-                        await self._emit_graph_ready_for_graphs(
-                            list(dict.fromkeys(fallback_names)),
-                            notify_log=notify_log,
-                            task_id=graph_ready_task_id,
-                            export_format=graph_ready_format,
-                            graph_ready_initial=graph_ready_initial,
-                        )
-            except Exception as exc:
-                logger.debug("graph_ready fallback emission failed: %s", exc)
 
         combined = self._build_combined_log(tail, smcl_path, rc, trace, exc, start_offset=start_offset)
         
@@ -3879,10 +3782,11 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         smcl_path = None
 
         graph_cache = self._init_streaming_graph_cache(
-            auto_cache_graphs, 
-            on_graph_cached, 
+            auto_cache_graphs,
+            on_graph_cached,
             notify_log,
-            task_id=graph_ready_task_id
+            task_id=graph_ready_task_id,
+            notify_graph_cached_log=not emit_graph_ready,
         )
         _log_file, log_path, tail, tee = self._create_streaming_log(trace=trace)
 
@@ -3928,28 +3832,16 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                         await anyio.sleep(0.1)
 
                 async def on_chunk_for_graphs(_chunk: str) -> None:
-                    # Background the graph check so we don't block SMCL streaming or task completion.
-                    # Use tg.start_soon instead of asyncio.create_task to ensure all checks 
-                    # finish before the command is considered complete.
-                    tg.start_soon(
-                        functools.partial(
-                            self._maybe_cache_graphs_on_chunk,
+                    asyncio.create_task(
+                        self._maybe_cache_graphs_on_chunk(
                             graph_cache=graph_cache,
-                            emit_graph_ready=emit_graph_ready,
-                            notify_log=notify_log,
-                            graph_ready_task_id=graph_ready_task_id,
-                            graph_ready_format=graph_ready_format,
-                            graph_ready_initial=graph_ready_initial,
                             last_check=graph_poll_state,
                         )
                     )
 
                 async def actual_on_chunk(chunk: str) -> None:
-                    # Inform progress tracker
                     await on_chunk_for_progress(chunk)
-                    
-                    # Background graph detection
-                    if graph_cache:
+                    if graph_cache and not emit_graph_ready:
                         await on_chunk_for_graphs(chunk)
 
                 async def stream_smcl() -> None:
@@ -4026,7 +3918,6 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         smcl_content = self._clean_internal_smcl(smcl_content, strip_output=False)
 
 
-        graph_ready_emitted = 0
         if graph_cache:
             asyncio.create_task(
                 self._cache_new_graphs(
@@ -4036,41 +3927,17 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                     completed_label="Do-file",
                 )
             )
-            if emit_graph_ready:
-                graph_ready_emitted = await self._maybe_cache_graphs_on_chunk(
-                    graph_cache=graph_cache,
-                    emit_graph_ready=emit_graph_ready,
+        if emit_graph_ready:
+            initial = graph_ready_initial if graph_ready_initial is not None else {}
+            async with self._ensure_graph_ready_lock():
+                targets = await self._collect_current_graphs_with_retry()
+                await self._emit_graph_ready_for_graphs(
+                    targets,
                     notify_log=notify_log,
-                    graph_ready_task_id=graph_ready_task_id,
-                    graph_ready_format=graph_ready_format,
-                    graph_ready_initial=graph_ready_initial,
-                    last_check=graph_poll_state,
-                    force=True,
+                    task_id=graph_ready_task_id,
+                    export_format=graph_ready_format,
+                    graph_ready_initial=initial,
                 )
-        if emit_graph_ready and not graph_ready_emitted and graph_ready_initial is not None:
-            try:
-                graph_ready_emitted = await self._emit_graph_ready_events(
-                    graph_ready_initial,
-                    notify_log,
-                    graph_ready_task_id,
-                    graph_ready_format,
-                )
-            except Exception as exc:
-                logger.debug("graph_ready fallback emission failed: %s", exc)
-        if emit_graph_ready and not graph_ready_emitted:
-            try:
-                fallback_names = self._extract_named_graphs(dofile_text)
-                if fallback_names:
-                    async with self._ensure_graph_ready_lock():
-                        await self._emit_graph_ready_for_graphs(
-                            list(dict.fromkeys(fallback_names)),
-                            notify_log=notify_log,
-                            task_id=graph_ready_task_id,
-                            export_format=graph_ready_format,
-                            graph_ready_initial=graph_ready_initial,
-                        )
-            except Exception as exc:
-                logger.debug("graph_ready fallback emission failed: %s", exc)
 
         combined = self._build_combined_log(tail, smcl_path, rc, trace, exc, start_offset=start_offset)
         

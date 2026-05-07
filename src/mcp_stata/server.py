@@ -310,6 +310,7 @@ async def stata_manage_session(
     """
     _log_tool_call("stata_manage_session")
     if action == "create":
+        await session_manager.get_or_create_session(session_id)
         envelope = _build_envelope(
             tool="stata_manage_session",
             success=True,

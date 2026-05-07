@@ -1,5 +1,5 @@
 {
-  "version": "2.6.0",
+  "version": "3.0.0",
   "invocation_type": "slash-command",
   "argument_hint": "<path or task_id> [search_term]",
   "allowed_tools": [

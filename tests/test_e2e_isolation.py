@@ -42,12 +42,16 @@ async def test_e2e_command_isolation_and_log_path():
         session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
         await session.initialize()
 
+        def _log_path(env: dict) -> str | None:
+            log_block = env.get("log") or {}
+            return log_block.get("path") or (env.get("data") or {}).get("log_path")
+
         # Command 1
         res1 = await session.call_tool("stata_run", {"code": "display \"E2E_TOKEN_1\""})
         out1 = json.loads(res1.content[0].text)
-        path1 = out1.get("log_path")
+        path1 = _log_path(out1)
         assert path1 and os.path.exists(path1)
-        
+
         with open(path1, "r") as f:
             content1 = f.read()
         assert "E2E_TOKEN_1" in content1
@@ -56,7 +60,7 @@ async def test_e2e_command_isolation_and_log_path():
         # Command 2
         res2 = await session.call_tool("stata_run", {"code": "display \"E2E_TOKEN_2\""})
         out2 = json.loads(res2.content[0].text)
-        path2 = out2.get("log_path")
+        path2 = _log_path(out2)
         assert path2 and os.path.exists(path2)
         assert path1 != path2
 

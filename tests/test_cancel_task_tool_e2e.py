@@ -59,32 +59,31 @@ def test_cancel_task_tool_works():
                 {"code": code, "background": True}
             )
             
-            payload = json.loads(result.content[0].text)
+            payload = json.loads(result.content[0].text)["data"]
             task_id = payload.get("task_id")
             assert task_id, "Expected task_id in response"
-            
+
             # Wait a bit for it to start
             await anyio.sleep(1.0)
-            
+
             # Cancel it
             cancel_res = await session.call_tool(
                 "stata_control",
                 {"action": "cancel", "id": task_id}
             )
-            cancel_payload = json.loads(cancel_res.content[0].text)
+            cancel_payload = json.loads(cancel_res.content[0].text)["data"]
             assert cancel_payload.get("status") == "cancelling"
-            
+
             # Wait for it to finish (it should finish with an error/cancelled status)
-            # Give it some time to cleanup
             await anyio.sleep(1.0)
-            
+
             # Check result
             status_res = await session.call_tool(
                 "stata_task_status",
                 {"task_id": task_id}
             )
-            status_payload = json.loads(status_res.content[0].text)
-            
+            status_payload = json.loads(status_res.content[0].text)["data"]
+
             # With our new architecture, a cancelled task should be 'completed' or 'failed'
             assert status_payload.get("status") in ("done", "completed", "failed")
             # It might have an error if we set it, or just be done.

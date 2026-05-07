@@ -5,7 +5,7 @@ SKILLS = [
     "id": "stata",
     "name": "stata",
     "description": "Show mcp-stata identity, connected tools, and status. Entry point for mcp-stata, an agentic toolkit for Stata.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [
       "mcp__mcp-stata__stata_manage_session"
     ],
@@ -31,7 +31,7 @@ SKILLS = [
     "id": "stata-causal-inference",
     "name": "stata-causal-inference",
     "description": "Design, run, and critique causal inference workflows in Stata. Use when the user is working on identification, treatment effects, DiD, IV, event studies, RD, or assumption-sensitive empirical claims.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [],
     "argument_hint": "",
     "supported_agents": [
@@ -57,7 +57,7 @@ SKILLS = [
     "id": "stata-data-audit",
     "name": "stata-data-audit",
     "description": "Audit datasets for structure, missingness, labeling, suspicious values, duplicate identifiers, and documentation readiness. Use when a researcher asks for data QA, codebook review, sanity checks, or pre-analysis cleanup guidance.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [],
     "argument_hint": "",
     "supported_agents": [
@@ -83,7 +83,7 @@ SKILLS = [
     "id": "stata-data-provenance",
     "name": "stata-data-provenance",
     "description": "Track dataset lineage, transformation steps, merge logic, and reproducibility risks in Stata workflows. Use when the user needs to explain where data came from, how it changed, or why a pipeline can be trusted.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [],
     "argument_hint": "",
     "supported_agents": [
@@ -109,7 +109,7 @@ SKILLS = [
     "id": "stata-environment-diagnose",
     "name": "stata-environment-diagnose",
     "description": "Diagnose local Stata, MCP, package, startup, graph-export, and permissions issues. Use when setup is failing, Stata is not discovered, packages are missing, logs are truncated, or a managed machine behaves differently from a normal workstation.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [],
     "argument_hint": "",
     "supported_agents": [
@@ -137,7 +137,7 @@ SKILLS = [
     "id": "stata-graph",
     "name": "stata-graph",
     "description": "List, export, and review Stata graphs from the current session.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [
       "mcp__mcp-stata__stata_manage_graphs"
     ],
@@ -163,7 +163,7 @@ SKILLS = [
     "id": "stata-help",
     "name": "stata-help",
     "description": "Look up Stata command documentation and display formatted help text.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [
       "mcp__mcp-stata__stata_get_help"
     ],
@@ -189,7 +189,7 @@ SKILLS = [
     "id": "stata-inspect",
     "name": "stata-inspect",
     "description": "Describe and summarize the current dataset in memory. Optionally inspect a specific variable with codebook.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [
       "mcp__mcp-stata__stata_inspect_data"
     ],
@@ -215,7 +215,7 @@ SKILLS = [
     "id": "stata-lint",
     "name": "stata-lint",
     "description": "Run static analysis on a Stata .do or .ado file and report style and best-practice issues.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [
       "mcp__mcp-stata__stata_inspect_data"
     ],
@@ -241,7 +241,7 @@ SKILLS = [
     "id": "stata-log",
     "name": "stata-log",
     "description": "Tail, read, or search a Stata log file from a previous command or background task.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [
       "mcp__mcp-stata__stata_read_log"
     ],
@@ -267,7 +267,7 @@ SKILLS = [
     "id": "stata-modernize",
     "name": "stata-modernize",
     "description": "Improve, modernize, and optimize existing Stata code for performance, portability, and maintainability. Use when legacy patterns such as preserve/restore, cd, #delimit, slow aggregation, or weak fixed-effects workflows appear in code under review.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [],
     "argument_hint": "",
     "supported_agents": [
@@ -293,7 +293,7 @@ SKILLS = [
     "id": "stata-power-analysis",
     "name": "stata-power-analysis",
     "description": "Plan and critique power, MDE, and sample-size calculations for Stata-based research workflows. Use when the user is designing a study, checking detectability, or defending precision claims.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [],
     "argument_hint": "",
     "supported_agents": [
@@ -319,7 +319,7 @@ SKILLS = [
     "id": "stata-publication-qa",
     "name": "stata-publication-qa",
     "description": "Review regression outputs, tables, and graphs for publication readiness. Use when the user asks whether a result is ready for a paper, appendix, seminar, referee response, or coauthor review.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [],
     "argument_hint": "",
     "supported_agents": [
@@ -347,7 +347,7 @@ SKILLS = [
     "id": "stata-referee-response",
     "name": "stata-referee-response",
     "description": "Organize and execute Stata workflows for referee responses, robustness requests, and coauthor follow-ups. Use when the user needs to answer a critique with targeted reruns, tables, figures, and a defensible audit trail.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [],
     "argument_hint": "",
     "supported_agents": [
@@ -373,7 +373,7 @@ SKILLS = [
     "id": "stata-replication",
     "name": "stata-replication",
     "description": "Run replication, robustness, and specification-sensitivity workflows for Stata projects. Use when a researcher wants to reproduce a result, rerun a pipeline, compare specifications, audit a do-file sequence, or check whether a claim is stable.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [],
     "argument_hint": "",
     "supported_agents": [
@@ -402,7 +402,7 @@ SKILLS = [
     "id": "stata-results",
     "name": "stata-results",
     "description": "Fetch and display stored r(), e(), and s() results from the last Stata command.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [
       "mcp__mcp-stata__stata_get_results"
     ],
@@ -428,7 +428,7 @@ SKILLS = [
     "id": "stata-run",
     "name": "stata-run",
     "description": "Run arbitrary Stata code or a .do file and display the result.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [
       "mcp__mcp-stata__stata_run",
       "mcp__mcp-stata__stata_read_log"
@@ -455,7 +455,7 @@ SKILLS = [
     "id": "stata-setup",
     "name": "stata-setup",
     "description": "Install, configure, update, or verify mcp-stata across Claude Code, Codex, Gemini CLI, Cursor, Windsurf, and VS Code. Activate when users ask to set up the Stata toolkit or troubleshoot the installation.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [],
     "argument_hint": "",
     "supported_agents": [
@@ -479,7 +479,7 @@ SKILLS = [
     "id": "stata-table-builder",
     "name": "stata-table-builder",
     "description": "Build and review paper-ready regression, balance, and summary tables from Stata outputs. Use when the user needs a clean table for a draft, appendix, or coauthor share-out.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [],
     "argument_hint": "",
     "supported_agents": [
@@ -507,7 +507,7 @@ SKILLS = [
     "id": "stata-toolkit",
     "name": "stata-toolkit",
     "description": "Activate when users mention Stata commands, .do files, regressions, econometrics, stored results, graphs, dataset inspection, replication, or Stata errors. Route the task through mcp-stata tools and the specialized research skills instead of treating it as plain text coding.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "allowed_tools": [],
     "argument_hint": "",
     "supported_agents": [
@@ -538,7 +538,7 @@ AGENTS = [
     "id": "stata-analyst",
     "name": "stata-analyst",
     "description": "End-to-end statistical analysis agent for Stata. Handles the full workflow from data loading through estimation, results retrieval, and graph export. Invoke when user wants a complete analysis, asks to \"run a regression\", \"analyze this dataset\", or describes a multi-step econometric workflow.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "supported_agents": [
       "claude",
       "codex",
@@ -563,7 +563,7 @@ AGENTS = [
     "id": "stata-debugger",
     "name": "stata-debugger",
     "description": "Stata error diagnosis and debugging agent. Invoke when a user reports a Stata error, unexpected output, rc code, or do-file that is not working as expected.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "supported_agents": [
       "claude",
       "codex",
@@ -586,7 +586,7 @@ AGENTS = [
     "id": "stata-publication-reviewer",
     "name": "stata-publication-reviewer",
     "description": "Specialist agent for publication-ready Stata outputs. Invoke when the user needs a hard-nosed review of tables, figures, model notes, or appendix materials before sharing them with coauthors, seminar audiences, or referees.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "supported_agents": [
       "claude",
       "codex",
@@ -607,7 +607,7 @@ AGENTS = [
     "id": "stata-replication-lead",
     "name": "stata-replication-lead",
     "description": "Specialist agent for replication, robustness, and multi-specification evidence gathering in Stata. Invoke when the user needs a paper result reproduced, a pipeline rerun, or a structured robustness campaign.",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "supported_agents": [
       "claude",
       "codex",

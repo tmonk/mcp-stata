@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 from mcp_stata.server import stata_get_results, stata_run
@@ -27,8 +25,7 @@ async def test_stata_get_results_returns_mata_structured_state():
         strip_smcl=True,
     )
 
-    out = await stata_get_results(session_id=session_id, include_mata=True)
-    payload = json.loads(out)
+    payload = (await stata_get_results(session_id=session_id, include_mata=True)).data
     assert "mata" in payload
     assert payload["mata"]["success"] is True
     objects = {o["name"]: o for o in payload["mata"]["objects"]}

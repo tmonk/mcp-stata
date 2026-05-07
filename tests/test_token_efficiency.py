@@ -99,40 +99,34 @@ class TestOutputTruncation:
 class TestJSONCompactness:
     """Test that JSON responses are compact (no indentation)."""
     async def _run_command_async(self, command: str) -> str:
-        """Helper to run command and get JSON response."""
+        """Helper to run command and get JSON-string response."""
         from mcp_stata.server import stata_run, session_manager
         await session_manager.start()
-        return await stata_run(command)
+        return await stata_run(command, as_json=True)
 
     async def test_run_command_returns_compact_json(self):
         """Server tools should return compact JSON without indentation."""
         result_str = await self._run_command_async("display 1+1")
 
-        # Parse to ensure it's valid JSON
         parsed = json.loads(result_str)
-        assert parsed["rc"] == 0
+        assert parsed["data"]["rc"] == 0
 
-        # Check that it's compact - no newlines except in actual content
-        # We check for common indentation patterns.
         assert result_str.find('  "') == -1  # No double-space indent
         assert result_str.find('\n  ') == -1  # No newline + indent
 
     async def test_graph_export_returns_compact_json(self):
         """Graph export should return compact JSON."""
-        # Initialize with a graph
         await self._run_command_async("sysuse auto, clear")
         await self._run_command_async("scatter price mpg, name(CompactTest, replace)")
 
         from mcp_stata.server import stata_manage_graphs
-        result_str = await stata_manage_graphs(action="export_all")  # Already returns JSON string
+        result_str = await stata_manage_graphs(action="export_all", as_json=True)
         result = json.loads(result_str)
 
-        # Should be valid JSON
-        assert "graphs" in result
+        assert "graphs" in result["data"]
 
-        # Should not have indentation markers
-        assert result_str.find('  "') == -1  # No double-space indent
-        assert result_str.find('\n  ') == -1  # No newline + indent
+        assert result_str.find('  "') == -1
+        assert result_str.find('\n  ') == -1
 
 
 class TestTokenSavingsIntegration:

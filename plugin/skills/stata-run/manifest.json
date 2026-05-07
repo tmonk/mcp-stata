@@ -1,5 +1,5 @@
 {
-  "version": "2.6.0",
+  "version": "3.0.0",
   "invocation_type": "slash-command",
   "argument_hint": "<code or /path/to/file.do>",
   "allowed_tools": [

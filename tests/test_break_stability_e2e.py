@@ -34,12 +34,13 @@ def find_mcp_stata_cli():
     return None
 
 def normalize_describe(text: str) -> str:
-    # If it looks like a JSON response string (because raw=False returns the JSON string in content[0].text)
-    # try to parse it and get only the 'stdout'
+    # If it looks like an envelope JSON response, parse and extract data.stdout
     try:
-        data = json.loads(text)
-        text = data.get("stdout", text)
-    except:
+        envelope = json.loads(text)
+        data = envelope.get("data") if isinstance(envelope, dict) else None
+        if isinstance(data, dict) and "stdout" in data:
+            text = data["stdout"]
+    except Exception:
         pass
 
     # Remove the . desc echo if present
@@ -82,7 +83,7 @@ async def test_session_stability_after_break():
         # We use a display in a loop but with mod to keep output manageable
         code = "forvalues i = 1/1000000 { if mod(`i', 1000) == 0 { display `i' } }"
         bg_res = await session.call_tool("stata_run", {"code": code, "background": True})
-        task_id = json.loads(bg_res.content[0].text)["task_id"]
+        task_id = json.loads(bg_res.content[0].text)["data"]["task_id"]
 
         # 4. Wait a bit for it to be mid-flight
         await anyio.sleep(1.0)
@@ -115,7 +116,7 @@ async def test_session_stability_after_break():
 
         # Final check on task state
         status_res = await session.call_tool("stata_task_status", {"task_id": task_id})
-        status_payload = json.loads(status_res.content[0].text)
+        status_payload = json.loads(status_res.content[0].text)["data"]
         assert status_payload["status"] in ("done", "failed"), "Interrupted task should be marked as finished"
 
 @pytest.mark.anyio
@@ -145,7 +146,7 @@ async def test_session_stability_after_break_session_tool():
         # 2. Run background command
         code = "forvalues i = 1/1000000 { if mod(`i', 1000) == 0 { display `i' } }"
         bg_res = await session.call_tool("stata_run", {"code": code, "background": True})
-        task_id = json.loads(bg_res.content[0].text)["task_id"]
+        task_id = json.loads(bg_res.content[0].text)["data"]["task_id"]
 
         await anyio.sleep(1.0)
 
@@ -168,7 +169,7 @@ async def test_session_stability_after_break_session_tool():
         
         # Check background task also finished
         status_res = await session.call_tool("stata_task_status", {"task_id": task_id})
-        status_payload = json.loads(status_res.content[0].text)
+        status_payload = json.loads(status_res.content[0].text)["data"]
         assert status_payload["status"] in ("done", "failed")
 
 @pytest.mark.anyio

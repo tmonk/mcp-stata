@@ -140,28 +140,21 @@ def test_missing_threshold_fallback():
 @pytest.mark.asyncio
 async def test_get_stored_results_normalization_integration(client):
     """Verify that get_stored_results normalizes missing values in r() and e()."""
-    # 1. Test missing values in r() via summarize on empty set
     await stata_run("sysuse auto, clear")
     await stata_run("summarize price if 0")
-    
-    res_str = await stata_get_results()
-    res = json.loads(res_str)
-    
-    # r(mean) should be null for N=0
+
+    res = (await stata_get_results()).data
+
     if "r" in res:
         assert res["r"].get("mean") is None
         assert res["r"].get("N") == 0
-        
-    # 2. Test extended missing values in r() via explicit return
-    # Use 'return scalar' which works in modern Stata to set r()
+
     await stata_run("return scalar test_miss = .b")
-    res2_str = await stata_get_results()
-    res2 = json.loads(res2_str)
-    
-    # Some Stata versions might not support 'return scalar' at cmd line, 
-    # so we check if it exists before asserting.
+    res2 = (await stata_get_results()).data
+
     if "test_miss" in res2.get("r", {}):
         assert res2["r"]["test_miss"] is None
+
 
 @pytest.mark.requires_stata
 @pytest.mark.asyncio
@@ -172,12 +165,11 @@ async def test_get_data_extended_missing_normalization_integration(client):
     await stata_run("gen x = .")
     await stata_run("replace x = .a in 2")
     await stata_run("replace x = .z in 3")
-    
-    res_str = await stata_inspect_data(action="get", start=0, count=3)
-    res = json.loads(res_str)
-    data = res["data"]
-    
-    assert len(data) == 3
-    assert data[0]["x"] is None
-    assert data[1]["x"] is None
-    assert data[2]["x"] is None
+
+    res = (await stata_inspect_data(action="get", start=0, count=3)).data
+    rows = res["data"]
+
+    assert len(rows) == 3
+    assert rows[0]["x"] is None
+    assert rows[1]["x"] is None
+    assert rows[2]["x"] is None

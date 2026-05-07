@@ -81,15 +81,13 @@ def test_perf_session_history_diff_tool_path():
             for idx in range(1, 11):
                 await stata_run(f"gen v{idx} = {idx}", session_id=sid)
 
-            stats = await stata_manage_session(action="history_stats", session_id=sid)
-            assert "\"history_size\"" in stats
-            baseline_payload = await stata_manage_session(action="history_stats", session_id=sid)
-            import json
-            baseline = json.loads(baseline_payload)["latest_command"]
+            stats = (await stata_manage_session(action="history_stats", session_id=sid)).data
+            assert "history_size" in stats
+            baseline = stats["latest_command"]
 
             await stata_run("gen v11 = 11", session_id=sid)
-            diff = await stata_manage_session(action="history_diff", session_id=sid, since_command=baseline)
-            assert "\"new_variables\"" in diff
+            diff = (await stata_manage_session(action="history_diff", session_id=sid, since_command=baseline)).data
+            assert "new_variables" in diff
         finally:
             await session_manager.stop_all()
 

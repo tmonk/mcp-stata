@@ -1,4 +1,3 @@
-import json
 from urllib.parse import urljoin
 
 import anyio
@@ -11,9 +10,17 @@ from mcp_stata.server import stata_manage_session, stata_run
 pytestmark = [pytest.mark.requires_stata, pytest.mark.integration, pytest.mark.xdist_group("stata_heavy")]
 
 
-def _run_command_sync(code: str) -> str:
-    async def _main() -> str:
+def _run_command_sync(code: str):
+    async def _main():
         return await stata_run(code)
+
+    return anyio.run(_main)
+
+
+def _ui_channel_info() -> dict:
+    async def _main() -> dict:
+        env = await stata_manage_session(action="get_ui_channel")
+        return env.data
 
     return anyio.run(_main)
 
@@ -21,7 +28,7 @@ def _run_command_sync(code: str) -> str:
 def test_ui_http_auth_and_basic_endpoints():
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
+    info = _ui_channel_info()
     base = info["baseUrl"]
     token = info["token"]
 
@@ -47,7 +54,7 @@ def test_ui_http_auth_and_basic_endpoints():
 def test_ui_http_paging_and_views_filtering():
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
+    info = _ui_channel_info()
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -108,7 +115,7 @@ def test_ui_http_page_limit_validation():
     """Test that limit parameter is properly validated"""
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
+    info = _ui_channel_info()
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -216,7 +223,7 @@ def test_ui_http_page_offset_validation():
     """Test that offset parameter is properly validated"""
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
+    info = _ui_channel_info()
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -278,7 +285,7 @@ def test_ui_http_filter_price_less_than_5000():
     # Sort by price to make verification easier
     _run_command_sync("sort price")
 
-    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
+    info = _ui_channel_info()
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -396,7 +403,7 @@ def test_ui_http_sorting_ascending():
     """Test sorting by a single variable in ascending order"""
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
+    info = _ui_channel_info()
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -432,7 +439,7 @@ def test_ui_http_sorting_descending():
     """Test sorting by a single variable in descending order"""
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
+    info = _ui_channel_info()
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -468,7 +475,7 @@ def test_ui_http_sorting_multiple_variables():
     """Test sorting by multiple variables"""
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
+    info = _ui_channel_info()
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -513,7 +520,7 @@ def test_ui_http_sorting_with_filter():
     """Test that sorting works correctly with filtered views"""
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
+    info = _ui_channel_info()
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -564,7 +571,7 @@ def test_ui_http_sorting_invalid_variable():
     """Test that sorting with invalid variable returns proper error"""
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
+    info = _ui_channel_info()
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}
@@ -592,7 +599,7 @@ def test_ui_http_sorting_invalid_format():
     """Test that invalid sortBy format returns proper error"""
     _run_command_sync("sysuse auto, clear")
 
-    info = json.loads(anyio.run(stata_manage_session, "get_ui_channel"))
+    info = _ui_channel_info()
     base = info["baseUrl"]
     token = info["token"]
     headers = {"Authorization": f"Bearer {token}"}
