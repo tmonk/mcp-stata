@@ -20,3 +20,5 @@ target/*
 dist/*
 src/mcp_stata/*.so
 Cargo.lock
+AGENTS.md
+.codex/config.toml
