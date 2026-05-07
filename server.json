@@ -2,13 +2,18 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
   "name": "io.github.tmonk/mcp-stata",
   "title": "Stata MCP Server",
+<<<<<<< HEAD
   "description": "Agentic Stata toolkit: execute commands, inspect data, retrieve stored results, and export graphs.",
   "version": "2.4.0",
+=======
+  "description": "A lightweight MCP server for Stata.",
+  "version": "2.5.1",
+>>>>>>> 131d1d9b37f8deb2da689120e7420a2d93a6a1c3
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mcp-stata",
-      "version": "2.4.0",
+      "version": "2.5.1",
       "transport": {
         "type": "stdio"
       }
