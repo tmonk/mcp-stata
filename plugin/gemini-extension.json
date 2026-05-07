@@ -1,7 +1,7 @@
 {
   "name": "mcp-stata",
   "version": "2.5.1",
-  "description": "mcp-stata — execute commands, inspect data, retrieve r()/e() results, and view graphs. Connects AI agents to a locally installed Stata instance via MCP.",
+  "description": "mcp-stata — a research-grade Stata MCP toolkit with structured outputs, paper workflows, prompts, diagnostics, and safety guardrails for local AI agents.",
   "contextFileName": "AGENTS.md",
   "mcpServers": {
     "mcp-stata": {

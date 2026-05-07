@@ -16,6 +16,8 @@ This server enables LLMs to:
 - **Export graphics**: generate and view Stata graphs (histograms, scatterplots).
 - **Streaming graph caching**: automatically cache graphs during command execution for instant exports.
 - **Verify results**: programmatically check stored results (`r()`, `e()`) for accurate validation.
+- **Drive paper workflows**: run structured research audits, estimation planning, specification comparisons, publication checks, and reproducibility diagnostics.
+- **Use modern MCP surfaces**: discover prompts, project/session resources, artifacts, and safety metadata through structured tool envelopes.
 
 ## Quickstart
 
@@ -52,6 +54,7 @@ The toolkit is designed for economics and empirical social-science workflows, no
 - Publication QA: review tables and figures for paper-ready presentation.
 - Referee response: organize reruns and evidence for critiques or coauthor requests.
 - Environment diagnosis: troubleshoot Stata discovery, package availability, graph export, and managed-machine quirks.
+- Safety and diagnostics: classify command risk, enforce `read_only=True`, gate unsafe paths, and run `stata_doctor`.
 
 ## Prerequisites
 

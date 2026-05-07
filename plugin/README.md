@@ -66,6 +66,13 @@ Supports: `claude`, `codex`, `gemini`, `cursor`, `windsurf`, `vscode`.
 - Referee-response reruns and evidence tracking
 - Environment diagnosis on managed or unusual machines
 
+## New MCP Surfaces
+
+- Structured tool envelopes with explicit `data`, `error`, `artifacts`, and `log` fields
+- Prompt templates for replication, audit, debugging, causal design, and referee responses
+- Session/project resources such as `stata://project/manifest` and `stata://session/{session_id}/state`
+- Runtime guardrails including risk classification, path allowlists, `read_only=True`, and `stata_doctor`
+
 ## Plugin Files
 
 | File/Dir | Purpose |

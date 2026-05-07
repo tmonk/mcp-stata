@@ -626,5 +626,79 @@ AGENTS = [
   }
 ]
 
+PROMPTS = [
+  {
+    "id": "replicate_result",
+    "description": "Prompt template for replication and robustness checks."
+  },
+  {
+    "id": "audit_dataset",
+    "description": "Prompt template for structured dataset audits."
+  },
+  {
+    "id": "review_table",
+    "description": "Prompt template for publication-quality table review."
+  },
+  {
+    "id": "debug_do_file",
+    "description": "Prompt template for debugging failing Stata code."
+  },
+  {
+    "id": "design_causal_spec",
+    "description": "Prompt template for causal design review."
+  },
+  {
+    "id": "prepare_referee_response",
+    "description": "Prompt template for referee-response reruns."
+  }
+]
+
+RESOURCES = [
+  {
+    "uri": "stata://data/summary",
+    "description": "Structured summarize output for the default session."
+  },
+  {
+    "uri": "stata://data/metadata",
+    "description": "Structured describe output for the default session."
+  },
+  {
+    "uri": "stata://graphs/list",
+    "description": "Graph metadata for the default session."
+  },
+  {
+    "uri": "stata://variables/list",
+    "description": "Variable metadata for the default session."
+  },
+  {
+    "uri": "stata://results/stored",
+    "description": "Stored r()/e()/s() results for the default session."
+  },
+  {
+    "uri": "stata://project/manifest",
+    "description": "Project-level metadata for the installed toolkit."
+  },
+  {
+    "uri": "stata://session/{session_id}/state",
+    "description": "Composite session snapshot for an explicit session id."
+  },
+  {
+    "uri": "stata://session/{session_id}/logs",
+    "description": "Recent background log references for a session."
+  },
+  {
+    "uri": "stata://session/{session_id}/graphs",
+    "description": "Graph metadata for an explicit session id."
+  },
+  {
+    "uri": "stata://research/checklists/{topic}",
+    "description": "Packaged workflow references and checklists."
+  },
+  {
+    "uri": "stata://evals/report/latest",
+    "description": "The most recent scored eval report, when available."
+  }
+]
+
 SKILL_BY_ID = {item["id"]: item for item in SKILLS}
 AGENT_BY_ID = {item["id"]: item for item in AGENTS}

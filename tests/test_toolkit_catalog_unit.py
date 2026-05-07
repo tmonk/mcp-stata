@@ -34,6 +34,8 @@ def test_catalog_metadata_shape():
     assert "supported_agents" in replication
     assert "trigger_text" in replication
     assert "content" in replication
+    assert any(item["id"] == "replicate_result" for item in mod.PROMPTS)
+    assert any(item["uri"] == "stata://project/manifest" for item in mod.RESOURCES)
 
 
 def test_server_uses_generated_catalog():
