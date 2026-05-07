@@ -623,17 +623,29 @@ def install_for_agent(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Install and verify the mcp-stata toolkit.")
-    parser.add_argument("--agent", choices=[*SUPPORTED_AGENTS, "all"], default="")
-    parser.add_argument("--scope", choices=["project", "user"], default=DEFAULT_SCOPE)
-    parser.add_argument("--stata-path", default="")
-    parser.add_argument("--version", default="")
-    parser.add_argument("--latest", action="store_true", help="Force latest package resolution (default).")
-    parser.add_argument("--local-source", default="", help="Install from a local repo or wheel path for offline setups.")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--verify", action="store_true")
-    return parser
-
-
+        if scope == "project":
+            # For project scope: try marketplace, then always create .mcp.json
+            install_claude_marketplace(scope=scope, project_root=project_root)
+            path = configure_claude_code(
+                scope=scope,
+                version=version,
+                latest=latest,
+                local_source=local_source,
+                project_root=project_root,
+            )
+            _append(path)
+        else:
+            # For user scope: marketplace or fallback to .mcp.json
+            if not install_claude_marketplace(scope=scope, project_root=project_root):
+                path = configure_claude_code(
+                    scope=scope,
+                    version=version,
+                    latest=latest,
+                    local_source=local_source,
+                    project_root=project_root,
+                )
+                _append(path)
+        return written
 def _print_dry_run(
     agent: str,
     *,
