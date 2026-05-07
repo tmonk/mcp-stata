@@ -1365,6 +1365,58 @@ async def get_stored_results_resource() -> str:
     """Returns stored r() and e() results."""
     return await stata_get_results(session_id="default")
 
+@mcp.resource("stata://skills/list")
+async def list_skills_resource() -> str:
+    """Returns a list of available skills included with the mcp-stata server."""
+    skills_dir = os.path.join(os.path.dirname(__file__), "skills")
+    skills = []
+    
+    if os.path.isdir(skills_dir):
+        for item in os.listdir(skills_dir):
+            if item.endswith('.md'):
+                skill_path = os.path.join(skills_dir, item)
+                skills.append({
+                    "name": item.replace('.md', ''),
+                    "path": f"stata://skills/{item}",
+                    "type": "main"
+                })
+    
+    skills_catalog_dir = os.path.join(os.path.dirname(__file__), "skills-catalog")
+    if os.path.isdir(skills_catalog_dir):
+        for category in os.listdir(skills_catalog_dir):
+            category_path = os.path.join(skills_catalog_dir, category)
+            if os.path.isdir(category_path):
+                for item in os.listdir(category_path):
+                    if item.endswith('.md'):
+                        skills.append({
+                            "name": item.replace('.md', ''),
+                            "category": category,
+                            "path": f"stata://skills/{category}/{item}",
+                            "type": "catalog"
+                        })
+    
+    return json.dumps({"skills": skills, "count": len(skills)})
+
+@mcp.resource("stata://skills/{skill_path}")
+async def get_skill_content(skill_path: str) -> str:
+    """Returns the content of a specific skill file."""
+    # Sanitize path to prevent directory traversal
+    if ".." in skill_path or skill_path.startswith("/"):
+        raise ValueError("Invalid skill path")
+    
+    skills_dir = os.path.dirname(__file__)
+    skill_file = os.path.join(skills_dir, "skills", skill_path)
+    
+    # Try skills-catalog if not found in skills
+    if not os.path.exists(skill_file):
+        skill_file = os.path.join(skills_dir, "skills-catalog", skill_path)
+    
+    if not os.path.exists(skill_file) or not skill_file.endswith('.md'):
+        raise ValueError(f"Skill not found: {skill_path}")
+    
+    with open(skill_file, 'r') as f:
+        return f.read()
+
 def main():
     if "--version" in sys.argv:
         print(SERVER_VERSION)

@@ -69,6 +69,10 @@ packages = ["src/mcp_stata"]
 [tool.hatch.build.targets.sdist]
 exclude = ["/tests", "/uv.lock"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"skill/SKILL.md" = "mcp_stata/skills/SKILL.md"
+"skills-catalog/modernize/SKILL.md" = "mcp_stata/skills-catalog/modernize/SKILL.md"
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
