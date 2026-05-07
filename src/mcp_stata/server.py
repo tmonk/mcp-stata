@@ -38,6 +38,7 @@ import os
 import mimetypes
 import multiprocessing
 import re
+import tempfile
 import traceback
 import uuid
 from functools import wraps
@@ -410,6 +411,7 @@ async def stata_manage_session(
             )
             pkg_result = CommandResponse.model_validate(pkg_result_dict)
             info["packages"] = pkg_result.stdout
+            info["package_summary"] = _package_summary(pkg_result.stdout)
         envelope = _build_envelope(
             tool="stata_manage_session",
             success=True,
@@ -437,6 +439,7 @@ async def stata_load_data(
     strip_smcl: bool = True,
     max_output_lines: int | None = None,
     session_id: str = "default",
+    allow_unsafe_paths: bool = False,
 ) -> ToolEnvelope | str:
     """Loads a dataset into a Stata session.
     
@@ -457,6 +460,20 @@ async def stata_load_data(
         A JSON string (if as_json is True) or raw text containing the result of the load operation.
     """
     _log_tool_call("stata_load_data")
+    warnings: list[str] = []
+    if _looks_like_path(source) and not source.startswith(("http://", "https://")):
+        allowed, reason = _path_is_allowed(source)
+        if not allowed and not allow_unsafe_paths:
+            envelope = _build_envelope(
+                tool="stata_load_data",
+                success=False,
+                session_id=session_id,
+                error=ErrorEnvelope(message=reason or "Path is not allowed."),
+                warnings=["Set allow_unsafe_paths=True only when you explicitly trust the path."],
+            )
+            return envelope if not as_json else _envelope_legacy_json(envelope)
+        if not allowed:
+            warnings.append(reason or "Path is outside the default allowlist.")
     session = await session_manager.get_or_create_session(session_id)
     result_dict = await session.call(
         "load_data",
@@ -475,6 +492,7 @@ async def stata_load_data(
         "source": source,
         "clear": clear,
     }
+    envelope.warnings.extend(warnings)
     if as_json:
         return _envelope_legacy_json(envelope)
     return envelope
@@ -1027,6 +1045,8 @@ async def stata_run(
     strip_smcl: bool = True,
     filter_pattern: Optional[str] = None,
     exclude_pattern: Optional[str] = None,
+    read_only: bool = False,
+    allow_unsafe_paths: bool = False,
 ) -> ToolEnvelope | str:
     """Executes Stata code or a .do file.
 
@@ -1061,6 +1081,49 @@ async def stata_run(
             `stata_read_log` on the provided `log_path` for full execution details.
         For background calls: A JSON string containing the `task_id` and initial status.
     """
+    risk = _classify_command_risk(code)
+    warnings = []
+    if risk["categories"]:
+        warnings.append(f"Command risk categories: {', '.join(risk['categories'])}.")
+    for marker, message in (
+        ("shell", "Shell execution detected in the submitted command."),
+        ("erase", "Destructive file deletion detected in the submitted command."),
+        ("ssc install", "Package installation detected in the submitted command."),
+        ("net install", "Package installation detected in the submitted command."),
+        ("http://", "External URL detected in the submitted command."),
+        ("https://", "External URL detected in the submitted command."),
+    ):
+        if marker in code.lower():
+            warnings.append(message)
+
+    if read_only and risk["categories"]:
+        envelope = _build_envelope(
+            tool="stata_run",
+            success=False,
+            session_id=session_id,
+            error=ErrorEnvelope(message="read_only=True blocks mutating or unsafe commands."),
+            warnings=warnings,
+            next_actions=["Retry with read_only=False only if the mutation is intentional."],
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
+
+    path_candidates = [code] if is_file else _extract_quoted_paths(code)
+    if path_candidates:
+        path_warnings = []
+        for candidate in path_candidates:
+            allowed, reason = _path_is_allowed(candidate)
+            if not allowed and not allow_unsafe_paths:
+                envelope = _build_envelope(
+                    tool="stata_run",
+                    success=False,
+                    session_id=session_id,
+                    error=ErrorEnvelope(message=reason or "Path is not allowed."),
+                    warnings=["Set allow_unsafe_paths=True only when you explicitly trust the path."],
+                )
+                return _envelope_legacy_json(envelope) if as_json else envelope
+            if not allowed:
+                path_warnings.append(reason or "Path is outside the default allowlist.")
+        warnings.extend(path_warnings)
 
     session = getattr(getattr(ctx, "request_context", None), "session", None) if ctx is not None else None
     request_id = ctx.request_id if ctx is not None else None
@@ -1166,6 +1229,8 @@ async def stata_run(
                 task_info.error = result.error.message
                 task_info.error_details = result.error
             task_info.result = _format_command_result(result, raw=raw, as_json=False, session_id=session_id)
+            if isinstance(task_info.result, ToolEnvelope):
+                task_info.result.warnings.extend(warnings)
             _ensure_ui_channel()
             if ui_channel:
                 ui_channel.notify_potential_dataset_change(session_id)
@@ -1195,6 +1260,7 @@ async def stata_run(
             session_id=session_id,
             data=TaskResult(task_id=task_id, status="started").model_dump() | {"log_path": task_info.log_path},
             log_path=task_info.log_path,
+            warnings=warnings,
             next_actions=[
                 "Poll stata_task_status with the task_id to watch progress.",
                 "Use stata_read_log with the returned log path for incremental output.",
@@ -1208,7 +1274,15 @@ async def stata_run(
         if ui_channel:
             ui_channel.notify_potential_dataset_change(session_id)
         logger.info("stata_run sync result: %s", result)
-        return _format_command_result(result, raw=raw, as_json=as_json, session_id=session_id)
+        formatted = _format_command_result(result, raw=raw, as_json=as_json, session_id=session_id)
+        if isinstance(formatted, ToolEnvelope):
+            formatted.data = {
+                **(formatted.data if isinstance(formatted.data, dict) else {}),
+                "risk": risk,
+                "read_only": read_only,
+            }
+            formatted.warnings.extend(warnings)
+        return formatted
 
 
 def _read_log_logic(path: str, offset: int = 0, max_bytes: int = 65536) -> str:
@@ -1788,6 +1862,100 @@ def _read_reference_text(topic: str) -> str:
     return (REPO_ROOT / rel_path).read_text()
 
 
+def _allowed_path_roots() -> list[Path]:
+    roots = {
+        REPO_ROOT.resolve(),
+        Path.cwd().resolve(),
+        Path(tempfile.gettempdir()).resolve(),
+        (Path.home() / ".mcp-stata" / "temp").resolve(),
+    }
+    env_roots = os.getenv("MCP_STATA_ALLOWED_ROOTS", "")
+    for raw in [item.strip() for item in env_roots.split(os.pathsep) if item.strip()]:
+        try:
+            roots.add(Path(raw).expanduser().resolve())
+        except Exception:
+            continue
+    return sorted(roots)
+
+
+def _path_is_allowed(path_str: str) -> tuple[bool, str | None]:
+    try:
+        path = Path(path_str).expanduser().resolve()
+    except Exception:
+        return False, "Could not resolve the requested path."
+
+    deny_markers = (
+        ".ssh",
+        ".aws",
+        ".config/gcloud",
+        ".gnupg",
+        ".netrc",
+        "id_rsa",
+        "id_ed25519",
+    )
+    posix = path.as_posix()
+    for marker in deny_markers:
+        if marker in posix:
+            return False, f"Path falls under a protected directory or credential pattern: {marker}"
+
+    for root in _allowed_path_roots():
+        try:
+            path.relative_to(root)
+            return True, None
+        except ValueError:
+            continue
+    return False, "Path is outside the allowed project and temp roots."
+
+
+def _looks_like_path(value: str) -> bool:
+    return value.endswith(".dta") or value.endswith(".do") or "/" in value or value.startswith("~")
+
+
+def _extract_quoted_paths(code: str) -> list[str]:
+    candidates = []
+    for match in re.finditer(r'"([^"]+)"', code):
+        value = match.group(1)
+        if _looks_like_path(value):
+            candidates.append(value)
+    return candidates
+
+
+def _classify_command_risk(code: str) -> dict[str, Any]:
+    lowered = code.lower()
+    categories = []
+    if re.search(r"\b(clear all|erase|shell|!|copy\b.*\breplace\b|save\b.*\breplace\b)\b", lowered):
+        categories.append("destructive")
+    if re.search(r"\b(ssc install|net install)\b", lowered):
+        categories.append("package-installing")
+    if re.search(r"\b(save|graph export|log using|copy |file open|postfile)\b", lowered):
+        categories.append("file-writing")
+    if re.search(r"\b(drop|replace |rename |merge |append |collapse |contract |reshape |expand |gen |egen |encode |decode )\b", lowered):
+        categories.append("data-mutating")
+    if re.search(r"https?://", lowered):
+        categories.append("external-url")
+    risk_level = "read-only" if not categories else categories[0]
+    return {"risk_level": risk_level, "categories": categories}
+
+
+def _package_summary(ado_output: str | None) -> dict[str, bool]:
+    text = (ado_output or "").lower()
+    targets = [
+        "reghdfe",
+        "ivreghdfe",
+        "estout",
+        "outreg2",
+        "coefplot",
+        "gtools",
+        "ftools",
+        "boottest",
+        "rdrobust",
+        "csdid",
+        "eventstudyinteract",
+        "ppmlhdfe",
+    ]
+    return {name: bool(re.search(rf"\b{name}\b", text)) for name in targets}
+
+
 async def _list_variables_for_session(session_id: str) -> list[dict[str, Any]]:
     session = await session_manager.get_or_create_session(session_id)
     variables_dict = await session.call("list_variables_structured", {})
@@ -2122,6 +2290,69 @@ async def stata_project_reproducibility_report(
         next_actions=[
             "Archive this report alongside replication notes before sharing with coauthors.",
             "Run the scored eval suite after major workflow changes.",
+        ],
+    )
+    return _envelope_legacy_json(envelope) if as_json else envelope
+
+
+@mcp.tool(structured_output=True)
+@log_call
+async def stata_doctor(
+    session_id: str = "default",
+    as_json: bool = False,
+) -> ToolEnvelope | str:
+    """Run a deterministic environment and smoke-test diagnostic for mcp-stata."""
+    doctor_session_id = f"{session_id}__doctor"
+    await session_manager.get_or_create_session(doctor_session_id)
+    checks = []
+    artifacts: list[ArtifactRef] = []
+
+    detect = await stata_manage_session(action="detect", include_packages=True, session_id=doctor_session_id, as_json=False)
+    checks.append({"name": "detect", "success": isinstance(detect, ToolEnvelope) and detect.success, "data": detect.data if isinstance(detect, ToolEnvelope) else detect})
+
+    basic = await stata_run("display 2+2", session_id=doctor_session_id, strip_smcl=True, as_json=False)
+    checks.append({"name": "basic_execution", "success": isinstance(basic, ToolEnvelope) and basic.success, "data": basic.data if isinstance(basic, ToolEnvelope) else basic})
+    if isinstance(basic, ToolEnvelope) and basic.log and basic.log.path:
+        artifact = _artifact_from_path(basic.log.path, kind="log", title="doctor-basic-execution")
+        if artifact:
+            artifacts.append(artifact)
+
+    graph = await stata_run(
+        "sysuse auto, clear\ntwoway scatter price mpg, name(doctor_graph, replace)",
+        session_id=doctor_session_id,
+        strip_smcl=True,
+        as_json=False,
+    )
+    graph_list = await stata_manage_graphs(action="list", session_id=doctor_session_id, as_json=False)
+    checks.append(
+        {
+            "name": "graph_pipeline",
+            "success": isinstance(graph, ToolEnvelope) and graph.success,
+            "graphs": graph_list.data if isinstance(graph_list, ToolEnvelope) else graph_list,
+        }
+    )
+
+    warnings = []
+    if isinstance(detect, ToolEnvelope):
+        package_summary = detect.data.get("package_summary", {}) if isinstance(detect.data, dict) else {}
+        missing = [name for name, present in package_summary.items() if not present]
+        if missing:
+            warnings.append(f"Optional research packages not detected: {', '.join(missing[:6])}")
+
+    envelope = _build_envelope(
+        tool="stata_doctor",
+        success=all(item.get("success", True) for item in checks),
+        session_id=doctor_session_id,
+        data={
+            "session_id": doctor_session_id,
+            "checks": checks,
+            "allowed_roots": [str(path) for path in _allowed_path_roots()],
+        },
+        artifacts=artifacts,
+        warnings=warnings,
+        next_actions=[
+            "Use stata_manage_session(action='detect', include_packages=True) to inspect package coverage.",
+            "Run stata_project_reproducibility_report for a broader project snapshot.",
         ],
     )
     return _envelope_legacy_json(envelope) if as_json else envelope
