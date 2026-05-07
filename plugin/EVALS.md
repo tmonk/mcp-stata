@@ -1,25 +1,28 @@
 # Evals
 
-The toolkit includes mocked eval fixtures and a lightweight eval runner.
+The toolkit now ships with a scored eval runner that validates fixture integrity, produces JSON reports, and can execute an optional live-Stata smoke workflow.
 
-## Run mocked evals
-
-```bash
-python scripts/run_toolkit_evals.py
-```
-
-## Optional live Stata mode
+## Run scored fixture evals
 
 ```bash
-python scripts/run_toolkit_evals.py --live-stata
+./.venv/bin/python scripts/run_toolkit_evals.py
 ```
 
-Live mode is opt-in and should only be used when Stata is available and you want an end-to-end smoke test.
+The runner writes timestamped reports under `plugin/evals/reports/` and updates the `stata://evals/report/latest` resource.
+
+## Run live smoke checks
+
+```bash
+./.venv/bin/python scripts/run_toolkit_evals.py --live-stata
+```
+
+Live mode runs a compact discovery, execution, and graph pipeline smoke test when Stata is available.
 
 ## What the evals cover
 
-- replication comparisons,
+- replication fixture structure,
 - data audit findings,
 - publication QA scaffolds,
 - environment-report formatting,
-- table-readiness checks.
+- table-readiness checks,
+- live discovery/execution/graph readiness when enabled.
