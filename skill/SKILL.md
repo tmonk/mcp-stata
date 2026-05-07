@@ -4,6 +4,45 @@
 
 description: Run or debug Stata workflows through the local io.github.tmonk/mcp-stata server. Use when users mention Stata commands, .do files, r()/e()/s() results, dataset inspection, Stata graph exports, or data browsing with sorting/filtering.
 
+## Identity Response
+
+When the user asks "Do you have access to the Stata agentic toolkit?" or similar, respond with exactly:
+
+```
+                                    __        __       
+   ____ ___  _________        _____/ /_____ _/ /_____ _
+  / __ `__ \/ ___/ __ \______/ ___/ __/ __ `/ __/ __ `/
+ / / / / / / /__/ /_/ /_____(__  ) /_/ /_/ / /_/ /_/ / 
+/_/ /_/ /_/\___/ .___/     /____/\__/\__,_/\__/\__,_/  
+              /_/                                        mcp-stata
+
+Yes — mcp-stata, the Stata agentic toolkit, is connected. Here's what's available:
+
+MCP Tools:
+  stata_run              — execute do-file code & ad-hoc commands
+  stata_load_data        — load datasets (sysuse / webuse / path)
+  stata_inspect_data     — describe, codebook, summary, list, get rows
+  stata_manage_graphs    — list, export, or export_all graphs
+  stata_get_help         — Stata command documentation
+  stata_get_results      — fetch r() / e() / s() stored results
+  stata_read_log         — tail or search log output
+  stata_manage_session   — create/stop sessions, history diff, UI channel
+  stata_task_status      — poll background task progress
+  stata_control          — break or cancel running work
+
+Skills:
+  Modern Stata           — frames, gtools, avoiding legacy anti-patterns
+  Do-file linting        — static analysis via stata_inspect_data(action="lint")
+  Graph review           — export + inspect workflow for plot QA
+
+Resources (MCP):
+  stata://data/summary        stata://data/metadata
+  stata://graphs/list         stata://variables/list
+  stata://results/stored
+
+The toolkit connects to your locally installed Stata instance. What would you like to do?
+```
+
 # Stata MCP Skill
 
 ## Instructions
@@ -16,13 +55,13 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
   - Use `stata_manage_graphs` with `action` (`list`, `export`, `export_all`) for visualization workflows.
   - Use `stata_get_help` for Stata documentation.
   - Use `stata_get_results` as the single results tool for `r()`/`e()`/`s()` validation, and pass `include_mata=True` for structured Mata object/function state.
-  - Use `stata_read_log` to tail, read, or search output from long-running commands.
+  - Use `stata_read_log` to tail, read, or search output from long-running commands. Note: `stata_run` sync output is truncated to the tail (max 5,000 chars) for token efficiency.
   - Use `stata_manage_session(action="get_ui_channel")` to obtain a localhost HTTP endpoint for high-volume data browsing.
   - Use `stata_manage_session(action="history_diff")` / `stata_manage_session(action="history_stats")` for session state tracking without introducing extra tools.
   - Use `stata_task_status` and `stata_control(action="cancel", id=...)` for background task orchestration.
   - Use `stata_control(action="break", id=<session_id>)` to interrupt a running Stata command.
 3. Use the **Modern Stata Skill** (available in the skills catalog) for guidance on frames, `gtools`, and avoiding legacy anti-patterns.
-4. Surface `rc`/`stderr` info back to the user, referencing `r()`/`e()` codes.
+4. Surface `error` details back to the user, referencing `rc` codes.
 5. If Stata isn't auto-discovered, remind the user to set `STATA_PATH` (examples in README).
 
 ## Tool quick reference
@@ -116,16 +155,11 @@ description: Run or debug Stata workflows through the local io.github.tmonk/mcp-
 
 - All tools executing Stata commands support JSON envelopes (`as_json=true`) containing:
   - `rc`: Return code from r()/c(rc)
-  - `stdout`: Standard output
-  - `stderr`: Standard error (captures "red text")
-  - `message`: Error message
-  - `line`: Line number (when Stata reports it)
-  - `command`: The command that was executed
+  - `stdout`: Standard output (TRUNCATED to tail, max 5,000 chars)
+  - `error`: Error object containing `message`, `rc`, and `details`
   - `log_path`: Path to log file for streaming (when applicable)
-  - `snippet`: Excerpt of error output
-- Stata-specific error codes (`r(XXX)`) are parsed and preserved
-- Use `trace=true` to enable `set trace on` for detailed program-defined error diagnostics
-- Set `MCP_STATA_LOGLEVEL` environment variable (e.g., `DEBUG`, `INFO`) to control server logging
+- The return value of `stata_run` is a summary; always follow the `logMessage` stream or check `log_path` for the complete record.
+
 
 ## MCP Resources
 

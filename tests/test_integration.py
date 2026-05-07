@@ -131,7 +131,7 @@ def test_error_handling(client):
     result = client.run_command_structured("invalid_command_xyz")
     assert result.success is False
     assert result.error is not None
-    assert result.error.rc == 199 or "r(199)" in (result.error.snippet or "")
+    assert result.error.rc == 199 or "r(199)" in (result.error.details or "")
 
     # Test invalid export
     with pytest.raises(RuntimeError, match=r"Graph export failed|Graph window|r\(693\)|not found r\(111\)"):
@@ -152,7 +152,7 @@ def test_structured_error_envelope(client, tmp_path):
     assert resp2.success is False
     assert resp2.error is not None
     assert resp2.error.rc is not None
-    assert resp2.error.snippet is not None
+    assert resp2.error.details is not None
 
 
 def test_nested_do_and_program_errors(client, tmp_path):
@@ -172,7 +172,7 @@ def test_nested_do_and_program_errors(client, tmp_path):
     assert resp.success is False
     assert resp.error is not None
     assert resp.error.rc is not None
-    combined = (resp.error.snippet or "") + (resp.error.stderr or "") + (resp.error.stdout or "")
+    combined = (resp.error.details or "") + (resp.stdout or "")
     assert "bogusvar" in combined.lower()
 
     # Program-defined command inside a do-file with an error
@@ -189,7 +189,7 @@ def test_nested_do_and_program_errors(client, tmp_path):
     assert resp2.success is False
     assert resp2.error is not None
     assert resp2.error.rc is not None
-    combined2 = (resp2.error.snippet or "") + (resp2.error.stderr or "") + (resp2.error.stdout or "")
+    combined2 = (resp2.error.details or "") + (resp2.stdout or "")
     assert "bogusvar" in combined2.lower()
 
 
@@ -213,7 +213,7 @@ def test_additional_error_cases(client, tmp_path):
     assert cb.success is False
     assert cb.error is not None
     assert cb.error.rc is not None
-    combined = (cb.error.stderr or "") + (cb.error.stdout or "") + (cb.error.snippet or "")
+    combined = (cb.error.details or "") + (cb.stdout or "")
     assert "definitely_not_a_var" in combined
 
     # Nested do-file that references another missing do-file
@@ -232,7 +232,7 @@ def test_success_paths(client, tmp_path):
     assert ok_cmd.success is True
     assert ok_cmd.rc == 0
     assert "2" in ok_cmd.stdout
-    assert ok_cmd.smcl_output is not None
+    assert ok_cmd.stdout is not None
 
     # load_data success via sysuse heuristic
     load_ok = client.load_data("auto", clear=True)

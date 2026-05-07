@@ -91,8 +91,8 @@ class TestOutputTruncation:
         assert result.stdout == ""  # Empty in CommandResponse
         assert result.error is not None
         # Error output should be in error envelope (snippet always present)
-        assert result.error.snippet is not None
-        assert len(result.error.snippet) > 0
+        assert result.error.details is not None
+        assert len(result.error.details) > 0
 
 
 @pytest.mark.asyncio
@@ -146,8 +146,8 @@ class TestTokenSavingsIntegration:
         command_stdout_size = len(result.stdout)
         assert command_stdout_size == 0
 
-        # Error has the output in snippet (always present)
-        error_output_size = len(result.error.snippet) if result.error and result.error.snippet else 0
+        # Error has the output in details (always present)
+        error_output_size = len(result.error.details) if result.error and result.error.details else 0
         assert error_output_size > 0  # Should have error info
 
         # Old approach would have duplicated this in both CommandResponse and ErrorEnvelope

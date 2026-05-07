@@ -120,6 +120,6 @@ async def test_error_extraction_fidelity(stata_client):
     # Stata 111 can mean "no variables defined" or "variable not found"
     msg_lower = resp.error.message.lower()
     assert "no variables defined" in msg_lower or "not found" in msg_lower
-    # verify we got context
-    assert resp.error.context is not None
-    assert "summarize" in resp.error.context
+    # verify we got details
+    assert resp.error.details is not None
+    assert "summarize" in resp.error.details

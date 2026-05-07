@@ -9,12 +9,7 @@ class ErrorEnvelope(BaseModel):
     line: Optional[int] = None
     command: Optional[str] = None
     log_path: Optional[str] = None
-    context: Optional[str] = None
-    stdout: Optional[str] = None
-    stderr: Optional[str] = None
-    snippet: Optional[str] = None
-    trace: Optional[bool] = None
-    smcl_output: Optional[str] = None
+    details: Optional[str] = None
 
 
 class CommandResponse(BaseModel):
@@ -22,18 +17,16 @@ class CommandResponse(BaseModel):
     success: bool
     rc: int
     error: Optional[ErrorEnvelope] = None
-    error_message: Optional[str] = None
     log_path: Optional[str] = None
     stdout: Optional[str] = None
     stderr: Optional[str] = None
     smcl_output: Optional[str] = None
     artifacts: Optional[List[Dict[str, Any]]] = None
 
-    @model_validator(mode="after")
-    def populate_error_message(self) -> "CommandResponse":
-        if self.error and self.error_message is None:
-            self.error_message = self.error.message
-        return self
+    @property
+    def error_message(self) -> Optional[str]:
+        return self.error.message if self.error else None
+
 
 
 class DataResponse(BaseModel):

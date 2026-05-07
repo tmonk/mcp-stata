@@ -555,40 +555,34 @@ def _format_command_result(result, raw: bool, as_json: bool) -> str:
     # expect results in the return value.
     
     if as_json:
-        # Truncate large fields to prevent sidecar hiding in some platforms
-        limit = 100_000
-        keep = 50_000
+        # Streamline output: remove SMCL and truncate stdout aggressively (tail only)
+        # The agent should rely on logMessage notifications and the log file.
+        limit = 5000
         
-        # Truncate top-level fields
-        for field in ['stdout', 'smcl_output']:
-            val = getattr(result, field, None)
-            if val and len(val) > limit:
-                orig_len = len(val)
-                truncated = (
-                    val[:keep] + 
-                    f"\n... [{field} truncated: {orig_len} total characters, full log at {result.log_path}] ...\n" + 
-                    val[-keep:]
-                )
-                setattr(result, field, truncated)
+        # Always remove smcl_output from tool return to save tokens
+        result.smcl_output = None
         
-        # Truncate fields inside error envelope if present
+        # Truncate stdout to tail only if it exceeds limit
+        if result.stdout and len(result.stdout) > limit:
+            orig_len = len(result.stdout)
+            result.stdout = (
+                f"\n... [stdout truncated: {orig_len} total characters, showing tail only. Use stata_read_log for full output] ...\n" + 
+                result.stdout[-limit:]
+            )
+        
+        # Ensure error fields are also streamlined
         if result.error:
-            if result.error.smcl_output and len(result.error.smcl_output) > limit:
-                orig_len = len(result.error.smcl_output)
-                result.error.smcl_output = (
-                    result.error.smcl_output[:keep] + 
-                    f"\n... [smcl_output truncated: {orig_len} total characters] ...\n" + 
-                    result.error.smcl_output[-keep:]
-                )
-            if result.error.stdout and len(result.error.stdout) > limit:
-                orig_len = len(result.error.stdout)
-                result.error.stdout = (
-                    result.error.stdout[:keep] + 
-                    f"\n... [stdout truncated: {orig_len} total characters] ...\n" + 
-                    result.error.stdout[-keep:]
+            # We already consolidated ErrorEnvelope in models.py, 
+            # but let's ensure any large details are also capped.
+            if result.error and result.error.details and len(result.error.details) > limit:
+                orig_len = len(result.error.details)
+                result.error.details = (
+                    f"\n... [details truncated: {orig_len} total characters, showing tail only. Use stata_read_log for full output] ...\n" + 
+                    result.error.details[-limit:]
                 )
 
-        return result.model_dump_json()
+        return result.model_dump_json(exclude_none=True)
+
     return result.model_dump_json()
 
 
@@ -821,9 +815,13 @@ async def stata_run(
         exclude_pattern: Optional regex to omit matching lines from the output.
         
     Returns:
-        For sync calls: The execution output (JSON or raw text).
+        For sync calls: The execution output (JSON or raw text). Note: the return 
+            value is truncated to the tail (max 5,000 chars) for token efficiency. 
+            Agents should follow real-time `logMessage` notifications or use 
+            `stata_read_log` on the provided `log_path` for full execution details.
         For background calls: A JSON string containing the `task_id` and initial status.
     """
+
     session = getattr(getattr(ctx, "request_context", None), "session", None) if ctx is not None else None
     request_id = ctx.request_id if ctx is not None else None
     task_id = uuid.uuid4().hex

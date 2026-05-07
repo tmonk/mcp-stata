@@ -1271,8 +1271,13 @@ class StataClient:
         notify_log: Callable[[str], Awaitable[None]],
         task_id: Optional[str],
         export_format: str,
-        graph_ready_initial: Optional[dict[str, str]],
+        graph_ready_initial: Optional[dict[str, str]] = None,
     ) -> int:
+        code = getattr(self, "_current_command_code", "")
+        named_graphs = set(self._extract_named_graphs(code))
+        sys.stderr.write(f"[mcp-stata DEBUG] _emit_graph_ready_for_graphs: graphs={graph_names}, code={code!r}, named={named_graphs}\n")
+        sys.stderr.flush()
+
         if not graph_names:
             return 0
         # Deduplicate requested names while preserving order
@@ -1335,6 +1340,8 @@ class StataClient:
                     },
                 }
                 await notify_log(json.dumps(payload))
+                sys.stderr.write(f"[mcp-stata DEBUG] Emitted graph_ready for {graph_name}\n")
+                sys.stderr.flush()
                 emitted += 1
                 self._last_emitted_graph_signatures[graph_name] = emit_key
                 if graph_ready_initial is not None:
@@ -1372,9 +1379,11 @@ class StataClient:
         if not graph_cache or not graph_cache.auto_cache:
             return 0
         if self._is_executing and not force:
-            # Skip polling if Stata is busy; it will block on _exec_lock anyway.
-            # During final check (force=True), we know it's safe because _run_streaming_blocking has finished.
+            sys.stderr.write("[mcp-stata DEBUG] Skipping graph poll: Stata is busy\n")
+            sys.stderr.flush()
             return 0
+        sys.stderr.write(f"[mcp-stata DEBUG] Polling graphs: force={force}, _is_executing={self._is_executing}\n")
+        sys.stderr.flush()
         now = time.monotonic()
         if not force and last_check and now - last_check[0] < 0.75:
             return 0
@@ -3199,7 +3208,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             else:
                 msg, context = self._extract_error_and_context(stdout + stderr, rc)
             snippet = context or stdout or stderr or msg
-            error = ErrorEnvelope(message=msg, context=context, rc=rc, command=code, stdout=stdout, stderr=stderr, snippet=snippet)
+            error = ErrorEnvelope(message=msg, details=context, rc=rc, command=code)
             # In error case, we often want to isolate the error msg in stderr
             # but keep stdout for context if provided.
             stdout = "" 
@@ -3316,7 +3325,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                 message=msg,
                 rc=rc,
                 command=code,
-                stdout=ret_text,
+                details=ret_text,
             )
 
         return CommandResponse(
@@ -3763,12 +3772,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
             error = ErrorEnvelope(
                 message=msg,
-                context=context,
+                details=context,
                 rc=rc,
                 command=command,
                 log_path=log_path,
-                snippet=smcl_content[-800:] if smcl_content else combined[-800:],
-                smcl_output=smcl_content,
             )
             # Put summary in stderr
             stderr_final = context
@@ -3797,7 +3804,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             stdout=stdout_final,
             stderr=stderr_final,
             smcl_output=smcl_content,
-            artifacts=artifacts if artifacts else None,
+            artifacts=artifacts,
         )
 
         if notify_progress is not None:
@@ -4126,12 +4133,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
             error = ErrorEnvelope(
                 message=msg,
-                context=context,
+                details=context,
                 rc=rc,
                 command=command,
                 log_path=log_path,
-                snippet=smcl_content[-800:] if smcl_content else combined[-800:],
-                smcl_output=smcl_content,
             )
             # Put summary in stderr
             stderr_final = context
@@ -4159,6 +4164,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
             stdout=stdout_final,
             stderr=stderr_final,
             smcl_output=smcl_content,
+            artifacts=[],
         )
 
         if notify_progress is not None:
@@ -4918,12 +4924,12 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         if self._is_executing:
             with self._list_graphs_cache_lock:
                 if self._list_graphs_cache is not None:
-                    logger.debug("Recursive list_graphs call prevented, returning cached value")
+                    logger.debug("Recursive list_graphs call prevented (_is_executing=True), returning cached value")
                     if self._list_graphs_cache and hasattr(self._list_graphs_cache[0], "name"):
                         return [g.name for g in self._list_graphs_cache]
                     return self._list_graphs_cache
                 else:
-                    logger.debug("Recursive list_graphs call prevented, returning empty list")
+                    logger.debug("Recursive list_graphs call prevented (_is_executing=True), returning empty list")
                     return []
 
         # Check if cache is valid
@@ -4965,6 +4971,9 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
                         "}"
                     )
                     self.stata.run(bundle, echo=False)
+                    from sfi import Macro  # type: ignore[import-not-found]
+                    graph_list_str = Macro.getGlobal("mcp_graph_list")
+                    logger.debug("Stata graph list: %r", graph_list_str)
                     from sfi import Macro  # type: ignore[import-not-found]
                     graph_list_str = Macro.getGlobal("mcp_graph_list")
                     details_str = Macro.getGlobal("mcp_graph_details")
@@ -6070,11 +6079,10 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
 
             error = ErrorEnvelope(
                 message=msg,
+                details=context,
                 rc=rc,
-                snippet=context,
                 command=command,
                 log_path=log_path,
-                smcl_output=smcl_content,
             )
 
         duration = time.time() - start_time

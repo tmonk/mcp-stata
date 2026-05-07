@@ -69,7 +69,7 @@ class TestDiagnosticErrorCapture:
             
             if result.error:
                 print(f"\nError message: {result.error.message}")
-                print(f"Error context: {result.error.context}")
+                print(f"Error details: {result.error.details}")
                 
                 if hasattr(result.error, 'log_path') and result.error.log_path:
                     log_path = Path(result.error.log_path)
@@ -227,7 +227,7 @@ display "After error (should not appear)"
         
         if result.error:
             print(f"\nError message: {result.error.message}")
-            print(f"Error context: {result.error.context}")
+            print(f"Error details: {result.error.details}")
 
     def test_diagnostic_compare_methods(self, client):
         """

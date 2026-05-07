@@ -188,9 +188,9 @@ def test_streaming_graph_ready_dedup_no_log_pollution(client):
                     auto_cache_graphs=True,
                 )
                 assert resp.rc == 0
-                smcl_output = resp.smcl_output or ""
-                if "mcp_" in smcl_output and ("saved" in smcl_output or "found" in smcl_output or "opened" in smcl_output):
-                    log_pollution.append(smcl_output)
+                stdout = resp.stdout or ""
+                if "mcp_" in stdout and ("saved" in stdout or "found" in stdout or "opened" in stdout):
+                    log_pollution.append(stdout)
         finally:
             client._run_internal("capture log close _mcp_session", echo=False)
             client._persistent_log_path = prev_log_path

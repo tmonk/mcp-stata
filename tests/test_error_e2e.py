@@ -70,14 +70,14 @@ reghdfe price i.nonexistent_var
         
         # Critical assertions
         error_message = result.error.message.lower()
-        error_context = result.error.context.lower() if result.error.context else ""
+        error_details = result.error.details.lower() if result.error.details else ""
         
-        # The error message OR context should mention the variable
+        # The error message OR details should mention the variable
         found_error = (
             'nonexistent_var' in error_message or
             'not found' in error_message or
-            'nonexistent_var' in error_context or
-            'not found' in error_context
+            'nonexistent_var' in error_details or
+            'not found' in error_details
         )
         assert found_error, f"Error message missing variable name. Got: {result.error.message}"
 
@@ -354,19 +354,19 @@ display "ERROR: Should have stopped after reghdfe error"
         
         # The KEY test: error message should mention the missing variable
         error_message = result.error.message.lower()
-        error_context = (result.error.context or "").lower()
+        error_details = (result.error.details or "").lower()
         stderr = (result.stderr or "").lower()
         
         # Check all possible locations for the error
         found_variable = (
             'compl_gloves' in error_message or
-            'compl_gloves' in error_context or
+            'compl_gloves' in error_details or
             'compl_gloves' in stderr
         )
         
         found_not_found = (
             'not found' in error_message or
-            'not found' in error_context or
+            'not found' in error_details or
             'not found' in stderr
         )
         
@@ -374,9 +374,8 @@ display "ERROR: Should have stopped after reghdfe error"
         if not (found_variable and found_not_found):
             print("\n=== DEBUG INFO ===")
             print(f"Error message: {result.error.message}")
-            print(f"Error context: {result.error.context}")
+            print(f"Error details: {result.error.details}")
             print(f"Stderr: {result.stderr}")
-            print(f"Error snippet: {result.error.snippet if hasattr(result.error, 'snippet') else 'N/A'}")
             
             # Inspect log file if available
             if hasattr(result.error, 'log_path') and result.error.log_path:

@@ -16,16 +16,17 @@ async def test_stdout_truncation_e2e():
     """
     res_json = await stata_run(code=code, as_json=True)
     res = json.loads(res_json)
-    assert res["success"] is True, f"Command failed: {res.get('error_message')}"
+    assert res["success"] is True, f"Command failed: {res.get('error', {}).get('message')}"
     assert "stdout" in res
     stdout = res["stdout"]
     # Check for truncation marker
     assert "truncated" in stdout and "total characters" in stdout
     # Ensure it's not excessively large (limit is 100KB + markers)
     assert len(stdout) < 110000
-    # Ensure we have the head and tail
-    assert "Line 1:" in stdout
+    # Ensure we have the tail
     assert "Line 4000:" in stdout
+    # Line 1 should be truncated away in tail-only mode
+    assert "Line 1:" not in stdout
 
 @pytest.mark.asyncio
 async def test_error_visibility_sync_e2e():
@@ -40,7 +41,7 @@ async def test_error_visibility_sync_e2e():
     assert res["success"] is False
     assert res["rc"] == 110
     # The message might contain slightly different text depending on Stata version
-    assert "already defined" in res["error_message"]
+    assert "already defined" in res["error"]["message"]
     assert res["error"] is not None
     assert res["error"]["rc"] == 110
     assert "already defined" in res["error"]["message"]
