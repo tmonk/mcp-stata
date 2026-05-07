@@ -1,6 +1,11 @@
 from __future__ import annotations
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, model_validator
+
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, Field
+
+
+SCHEMA_VERSION = "2026-05-07"
 
 
 class ErrorEnvelope(BaseModel):
@@ -10,6 +15,34 @@ class ErrorEnvelope(BaseModel):
     command: Optional[str] = None
     log_path: Optional[str] = None
     details: Optional[str] = None
+
+
+class ArtifactRef(BaseModel):
+    kind: str
+    path: str
+    title: Optional[str] = None
+    mime_type: Optional[str] = None
+    format: Optional[str] = None
+
+
+class LogRef(BaseModel):
+    path: Optional[str] = None
+    offset: Optional[int] = None
+    next_offset: Optional[int] = None
+    tail: Optional[str] = None
+
+
+class ToolEnvelope(BaseModel):
+    schema_version: str = SCHEMA_VERSION
+    tool: str
+    success: bool
+    session_id: Optional[str] = None
+    data: Optional[Dict[str, Any] | List[Any] | str] = None
+    error: Optional[ErrorEnvelope] = None
+    artifacts: List[ArtifactRef] = Field(default_factory=list)
+    log: Optional[LogRef] = None
+    warnings: List[str] = Field(default_factory=list)
+    next_actions: List[str] = Field(default_factory=list)
 
 
 class CommandResponse(BaseModel):
@@ -26,7 +59,6 @@ class CommandResponse(BaseModel):
     @property
     def error_message(self) -> Optional[str]:
         return self.error.message if self.error else None
-
 
 
 class DataResponse(BaseModel):
@@ -58,6 +90,8 @@ class GraphListResponse(BaseModel):
 class GraphExport(BaseModel):
     name: str
     file_path: Optional[str] = None
+    format: Optional[str] = None
+    mime_type: Optional[str] = None
 
 
 class GraphExportResponse(BaseModel):
@@ -73,3 +107,30 @@ class SessionInfo(BaseModel):
 
 class SessionListResponse(BaseModel):
     sessions: List[SessionInfo]
+
+
+class TaskResult(BaseModel):
+    task_id: str
+    status: Literal["started", "running", "done", "failed", "timeout", "not_found", "cancelling"]
+    kind: Optional[str] = None
+    created_at: Optional[str] = None
+    result: Any = None
+    error: Optional[str] = None
+    error_details: Optional[ErrorEnvelope] = None
+
+
+class LogMatch(BaseModel):
+    line: int
+    content: str
+    context: List[str]
+
+
+class LogReadResult(BaseModel):
+    path: str
+    offset: Optional[int] = None
+    next_offset: Optional[int] = None
+    data: Optional[str] = None
+    query: Optional[str] = None
+    truncated: Optional[bool] = None
+    matches: List[LogMatch] = Field(default_factory=list)
+    error: Optional[str] = None

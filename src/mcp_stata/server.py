@@ -21,6 +21,13 @@ from .models import (
     GraphExportResponse,
     SessionInfo,
     SessionListResponse,
+    ToolEnvelope,
+    ArtifactRef,
+    LogRef,
+    LogReadResult,
+    LogMatch,
+    TaskResult,
+    SCHEMA_VERSION,
 )
 from .sessions import SessionManager
 from .linter import StataLinter
@@ -28,12 +35,13 @@ import logging
 import sys
 import json
 import os
+import mimetypes
 import multiprocessing
 import re
 import traceback
 import uuid
 from functools import wraps
-from typing import Optional, Dict
+from typing import Any, Optional, Dict
 import threading
 import time
 
@@ -252,7 +260,7 @@ def log_call(func):
         return sync_inner
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @log_call
 async def stata_manage_session(
     action: str,
@@ -260,7 +268,8 @@ async def stata_manage_session(
     code: Optional[str] = None,
     since_command: Optional[int] = None,
     include_packages: bool = False,
-) -> str:
+    as_json: bool = False,
+) -> ToolEnvelope | str:
     """Manage Stata sessions (create, stop, list, profile, UI channel, detect).
     
     This tool allows for orchestration of multiple Stata sessions, including their
@@ -287,40 +296,88 @@ async def stata_manage_session(
     """
     _log_tool_call("stata_manage_session")
     if action == "create":
-        await session_manager.get_or_create_session(session_id)
-        return json.dumps({"status": "created", "session_id": session_id})
+        envelope = _build_envelope(
+            tool="stata_manage_session",
+            success=True,
+            session_id=session_id,
+            data={"action": action, "status": "created", "session_id": session_id},
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "stop":
         await session_manager.stop_session(session_id)
-        return json.dumps({"status": "stopped", "session_id": session_id})
+        envelope = _build_envelope(
+            tool="stata_manage_session",
+            success=True,
+            session_id=session_id,
+            data={"action": action, "status": "stopped", "session_id": session_id},
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "list":
         sessions = session_manager.list_sessions()
-        return SessionListResponse(sessions=sessions).model_dump_json()
+        envelope = _build_envelope(
+            tool="stata_manage_session",
+            success=True,
+            session_id=session_id,
+            data=SessionListResponse(sessions=sessions).model_dump(),
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "set_profile":
         stata_session = await session_manager.get_or_create_session(session_id)
         await stata_session.set_profile(code)
-        return json.dumps({"status": "profile_set", "session_id": session_id})
+        envelope = _build_envelope(
+            tool="stata_manage_session",
+            success=True,
+            session_id=session_id,
+            data={"action": action, "status": "profile_set", "session_id": session_id},
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "history_diff":
         stata_session = await session_manager.get_or_create_session(session_id)
         payload = await stata_session.get_session_diff(since_command=since_command)
         payload["session_id"] = session_id
-        return json.dumps(payload)
+        envelope = _build_envelope(
+            tool="stata_manage_session",
+            success=True,
+            session_id=session_id,
+            data=payload,
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "history_stats":
         stata_session = await session_manager.get_or_create_session(session_id)
         payload = stata_session.get_history_stats()
         payload["session_id"] = session_id
-        return json.dumps(payload)
+        envelope = _build_envelope(
+            tool="stata_manage_session",
+            success=True,
+            session_id=session_id,
+            data=payload,
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "get_ui_channel":
         _ensure_ui_channel()
         if ui_channel is None:
-            return json.dumps({"error": "UI channel not initialized"})
+            envelope = _build_envelope(
+                tool="stata_manage_session",
+                success=False,
+                session_id=session_id,
+                error=ErrorEnvelope(message="UI channel not initialized"),
+            )
+            return _envelope_legacy_json(envelope) if as_json else envelope
         info = ui_channel.get_channel()
-        return json.dumps({
-            "baseUrl": info.base_url,
-            "token": info.token,
-            "expiresAt": info.expires_at,
-            "capabilities": ui_channel.capabilities(),
-            "sessionId": session_id,
-        })
+        envelope = _build_envelope(
+            tool="stata_manage_session",
+            success=True,
+            session_id=session_id,
+            data={
+                "action": action,
+                "baseUrl": info.base_url,
+                "token": info.token,
+                "expiresAt": info.expires_at,
+                "capabilities": ui_channel.capabilities(),
+                "sessionId": session_id,
+            },
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "detect":
         stata_session = await session_manager.get_or_create_session(session_id)
         vars_to_get = ["stata_version", "version", "flavor", "os", "osdtl", "machine_type"]
@@ -340,22 +397,34 @@ async def stata_manage_session(
             )
             pkg_result = CommandResponse.model_validate(pkg_result_dict)
             info["packages"] = pkg_result.stdout
-        return json.dumps(info)
+        envelope = _build_envelope(
+            tool="stata_manage_session",
+            success=True,
+            session_id=session_id,
+            data=info,
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     else:
-        return json.dumps({"error": f"Invalid action: {action}"})
+        envelope = _build_envelope(
+            tool="stata_manage_session",
+            success=False,
+            session_id=session_id,
+            error=ErrorEnvelope(message=f"Invalid action: {action}"),
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @log_call
 async def stata_load_data(
     source: str,
     clear: bool = True,
-    as_json: bool = True,
+    as_json: bool = False,
     raw: bool = False,
     strip_smcl: bool = True,
     max_output_lines: int | None = None,
     session_id: str = "default",
-) -> str:
+) -> ToolEnvelope | str:
     """Loads a dataset into a Stata session.
     
     Supports loading local .dta files or using Stata's built-in 'sysuse' and 'webuse' 
@@ -387,7 +456,15 @@ async def stata_load_data(
     result = CommandResponse.model_validate(result_dict)
     if raw:
         return result.stdout if result.success else (result.error.message if result.error else result.stdout)
-    return result.model_dump_json()
+    envelope = _command_result_envelope("stata_load_data", session_id, result)
+    envelope.data = {
+        **(envelope.data if isinstance(envelope.data, dict) else {}),
+        "source": source,
+        "clear": clear,
+    }
+    if as_json:
+        return _envelope_legacy_json(envelope)
+    return envelope
 
 
 async def _noop_log(_text: str) -> None:
@@ -400,7 +477,7 @@ class BackgroundTask:
     task: asyncio.Task
     created_at: datetime
     log_path: Optional[str] = None
-    result: Optional[str] = None
+    result: Any = None
     error: Optional[str] = None
     error_details: Optional[ErrorEnvelope] = None
     done: bool = False
@@ -540,7 +617,130 @@ def _register_task(task_info: BackgroundTask, max_tasks: int = 100) -> None:
         _background_tasks.pop(task.task_id, None)
 
 
-def _format_command_result(result, raw: bool, as_json: bool) -> str:
+def _infer_mime_type(path: str | None, format_hint: str | None = None) -> str | None:
+    if format_hint:
+        guessed, _ = mimetypes.guess_type(f"artifact.{format_hint}")
+        if guessed:
+            return guessed
+    if path:
+        guessed, _ = mimetypes.guess_type(path)
+        if guessed:
+            return guessed
+    return None
+
+
+def _artifact_from_path(
+    path: str | None,
+    *,
+    kind: str,
+    title: str | None = None,
+    format_hint: str | None = None,
+) -> ArtifactRef | None:
+    if not path:
+        return None
+    return ArtifactRef(
+        kind=kind,
+        path=path,
+        title=title,
+        format=format_hint,
+        mime_type=_infer_mime_type(path, format_hint),
+    )
+
+
+def _artifact_refs_from_result(result: CommandResponse) -> list[ArtifactRef]:
+    refs: list[ArtifactRef] = []
+    for item in result.artifacts or []:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path") or item.get("file_path")
+        if not path:
+            continue
+        refs.append(
+            ArtifactRef(
+                kind=str(item.get("kind", "artifact")),
+                path=str(path),
+                title=item.get("title") or item.get("name"),
+                format=item.get("format"),
+                mime_type=item.get("mime_type") or _infer_mime_type(str(path), item.get("format")),
+            )
+        )
+    return refs
+
+
+def _truncate_text(text: str | None, limit: int = 5000) -> str | None:
+    if not text or len(text) <= limit:
+        return text
+    return (
+        f"\n... [truncated: {len(text)} total characters, showing tail only. "
+        "Use stata_read_log for full output] ...\n"
+        + text[-limit:]
+    )
+
+
+def _command_data(result: CommandResponse) -> dict[str, Any]:
+    return {
+        "command": result.command,
+        "rc": result.rc,
+        "stdout": _truncate_text(result.stdout),
+        "stderr": _truncate_text(result.stderr),
+        "smcl_output": None,
+    }
+
+
+def _build_envelope(
+    *,
+    tool: str,
+    success: bool,
+    session_id: str | None = None,
+    data: dict[str, Any] | list[Any] | str | None = None,
+    error: ErrorEnvelope | None = None,
+    artifacts: list[ArtifactRef] | None = None,
+    log_path: str | None = None,
+    log_offset: int | None = None,
+    log_next_offset: int | None = None,
+    log_tail: str | None = None,
+    warnings: list[str] | None = None,
+    next_actions: list[str] | None = None,
+) -> ToolEnvelope:
+    return ToolEnvelope(
+        schema_version=SCHEMA_VERSION,
+        tool=tool,
+        success=success,
+        session_id=session_id,
+        data=data,
+        error=error,
+        artifacts=artifacts or [],
+        log=LogRef(path=log_path, offset=log_offset, next_offset=log_next_offset, tail=log_tail)
+        if any(x is not None for x in (log_path, log_offset, log_next_offset, log_tail))
+        else None,
+        warnings=warnings or [],
+        next_actions=next_actions or [],
+    )
+
+
+def _envelope_legacy_json(envelope: ToolEnvelope) -> str:
+    return envelope.model_dump_json(exclude_none=True)
+
+
+def _command_result_envelope(tool: str, session_id: str, result: CommandResponse) -> ToolEnvelope:
+    next_actions: list[str] = []
+    if result.log_path:
+        next_actions.append("Use stata_read_log with the returned log path for full output.")
+    if not result.success:
+        next_actions.append("Inspect error_details and log output before retrying.")
+    return _build_envelope(
+        tool=tool,
+        success=result.success,
+        session_id=session_id,
+        data=_command_data(result),
+        error=result.error,
+        artifacts=_artifact_refs_from_result(result),
+        log_path=result.log_path,
+        next_actions=next_actions,
+    )
+
+
+def _format_command_result(result: CommandResponse, raw: bool, as_json: bool, session_id: str) -> ToolEnvelope | str:
     if raw:
         if result.success:
             return result.log_path or ""
@@ -551,40 +751,12 @@ def _format_command_result(result, raw: bool, as_json: bool) -> str:
             return msg
         return result.log_path or ""
     
-    # Note: we used to clear result.stdout here for token efficiency,
-    # but that conflicts with requirements and breaks E2E tests that 
-    # expect results in the return value.
-    
+    envelope = _command_result_envelope("stata_run", session_id, result)
+    if envelope.error and envelope.error.details:
+        envelope.error.details = _truncate_text(envelope.error.details)
     if as_json:
-        # Streamline output: remove SMCL and truncate stdout aggressively (tail only)
-        # The agent should rely on logMessage notifications and the log file.
-        limit = 5000
-        
-        # Always remove smcl_output from tool return to save tokens
-        result.smcl_output = None
-        
-        # Truncate stdout to tail only if it exceeds limit
-        if result.stdout and len(result.stdout) > limit:
-            orig_len = len(result.stdout)
-            result.stdout = (
-                f"\n... [stdout truncated: {orig_len} total characters, showing tail only. Use stata_read_log for full output] ...\n" + 
-                result.stdout[-limit:]
-            )
-        
-        # Ensure error fields are also streamlined
-        if result.error:
-            # We already consolidated ErrorEnvelope in models.py, 
-            # but let's ensure any large details are also capped.
-            if result.error and result.error.details and len(result.error.details) > limit:
-                orig_len = len(result.error.details)
-                result.error.details = (
-                    f"\n... [details truncated: {orig_len} total characters, showing tail only. Use stata_read_log for full output] ...\n" + 
-                    result.error.details[-limit:]
-                )
-
-        return result.model_dump_json(exclude_none=True)
-
-    return result.model_dump_json()
+        return _envelope_legacy_json(envelope)
+    return envelope
 
 
 async def _wait_for_log_path(task_info: BackgroundTask) -> None:
@@ -668,7 +840,7 @@ def _tail_file(path: str, lines: int) -> str | None:
     except Exception:
         return None
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @log_call
 async def stata_task_status(
     task_id: str,
@@ -676,7 +848,8 @@ async def stata_task_status(
     timeout: float = 60.0,
     poll_interval: float = 1.0,
     tail_lines: int = 0,
-) -> str:
+    as_json: bool = False,
+) -> ToolEnvelope | str:
     """Return task status for background executions.
     
     Provides detailed information about the state of a background task initiated 
@@ -699,7 +872,13 @@ async def stata_task_status(
     while True:
         task_info = _background_tasks.get(task_id)
         if task_info is None:
-            return json.dumps({"task_id": task_id, "status": "not_found"})
+            envelope = _build_envelope(
+                tool="stata_task_status",
+                success=False,
+                data=TaskResult(task_id=task_id, status="not_found").model_dump(),
+                error=ErrorEnvelope(message=f"Task {task_id} not found"),
+            )
+            return _envelope_legacy_json(envelope) if as_json else envelope
 
         if task_info.done or not wait or (time.time() - start_time >= timeout):
             status = "running"
@@ -726,17 +905,28 @@ async def stata_task_status(
             if not task_info.done and wait and (time.time() - start_time >= timeout):
                 res["status"] = "timeout"
                 res["error"] = f"Task did not complete within {timeout} seconds."
-            return json.dumps(res)
+            envelope = _build_envelope(
+                tool="stata_task_status",
+                success=status in {"running", "done"},
+                data=res,
+                error=task_info.error_details if task_info.error_details else (
+                    ErrorEnvelope(message=res["error"]) if res.get("error") and status not in {"running", "done"} else None
+                ),
+                log_path=task_info.log_path,
+                log_tail=res.get("tail") or res.get("error_tail"),
+            )
+            return _envelope_legacy_json(envelope) if as_json else envelope
 
         await asyncio.sleep(poll_interval)
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @log_call
 async def stata_control(
     action: str,
     id: str,
-) -> str:
+    as_json: bool = False,
+) -> ToolEnvelope | str:
     """Interrupt a session or cancel a background task.
     
     Allows for immediate control over running operations, either by sending a 
@@ -756,22 +946,57 @@ async def stata_control(
         try:
             session = session_manager.get_session(id)
             await session.send_break()
-            return json.dumps({"status": "break_sent", "session_id": id})
+            envelope = _build_envelope(
+                tool="stata_control",
+                success=True,
+                session_id=id,
+                data={"status": "break_sent", "session_id": id},
+            )
+            return _envelope_legacy_json(envelope) if as_json else envelope
         except Exception as e:
-            return json.dumps({"error": str(e), "session_id": id})
+            envelope = _build_envelope(
+                tool="stata_control",
+                success=False,
+                session_id=id,
+                error=ErrorEnvelope(message=str(e)),
+            )
+            return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "cancel":
         task_info = _background_tasks.get(id)
         if task_info is None:
-            return json.dumps({"task_id": id, "status": "not_found"})
+            envelope = _build_envelope(
+                tool="stata_control",
+                success=False,
+                data={"task_id": id, "status": "not_found"},
+                error=ErrorEnvelope(message=f"Task {id} not found"),
+            )
+            return _envelope_legacy_json(envelope) if as_json else envelope
         if task_info.task and not task_info.task.done():
             task_info.task.cancel()
-            return json.dumps({"task_id": id, "status": "cancelling"})
-        return json.dumps({"task_id": id, "status": "done", "log_path": task_info.log_path})
+            envelope = _build_envelope(
+                tool="stata_control",
+                success=True,
+                data={"task_id": id, "status": "cancelling"},
+                log_path=task_info.log_path,
+            )
+            return _envelope_legacy_json(envelope) if as_json else envelope
+        envelope = _build_envelope(
+            tool="stata_control",
+            success=True,
+            data={"task_id": id, "status": "done", "log_path": task_info.log_path},
+            log_path=task_info.log_path,
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     else:
-        return json.dumps({"error": f"Invalid action: {action}"})
+        envelope = _build_envelope(
+            tool="stata_control",
+            success=False,
+            error=ErrorEnvelope(message=f"Invalid action: {action}"),
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @log_call
 async def stata_run(
     code: str,
@@ -779,7 +1004,7 @@ async def stata_run(
     background: bool = False,
     ctx: Context | None = None,
     echo: bool = True,
-    as_json: bool = True,
+    as_json: bool = False,
     trace: bool = False,
     raw: bool = False,
     max_output_lines: int = None,
@@ -788,7 +1013,7 @@ async def stata_run(
     strip_smcl: bool = True,
     filter_pattern: Optional[str] = None,
     exclude_pattern: Optional[str] = None,
-) -> str:
+) -> ToolEnvelope | str:
     """Executes Stata code or a .do file.
 
     This is the primary tool for interacting with Stata. It supports both 
@@ -925,7 +1150,7 @@ async def stata_run(
             if result.error:
                 task_info.error = result.error.message
                 task_info.error_details = result.error
-            task_info.result = _format_command_result(result, raw=raw, as_json=as_json)
+            task_info.result = _format_command_result(result, raw=raw, as_json=False, session_id=session_id)
             _ensure_ui_channel()
             if ui_channel:
                 ui_channel.notify_potential_dataset_change(session_id)
@@ -949,11 +1174,18 @@ async def stata_run(
             task_info.task = asyncio.create_task(_run_task())
         _register_task(task_info)
         await _wait_for_log_path(task_info)
-        return json.dumps({
-            "task_id": task_id, 
-            "status": "started", 
-            "log_path": task_info.log_path
-        })
+        envelope = _build_envelope(
+            tool="stata_run",
+            success=True,
+            session_id=session_id,
+            data=TaskResult(task_id=task_id, status="started").model_dump() | {"log_path": task_info.log_path},
+            log_path=task_info.log_path,
+            next_actions=[
+                "Poll stata_task_status with the task_id to watch progress.",
+                "Use stata_read_log with the returned log path for incremental output.",
+            ],
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     else:
         # Sync execution
         result = await _run_logic()
@@ -961,7 +1193,7 @@ async def stata_run(
         if ui_channel:
             ui_channel.notify_potential_dataset_change(session_id)
         logger.info("stata_run sync result: %s", result)
-        return _format_command_result(result, raw=raw, as_json=as_json)
+        return _format_command_result(result, raw=raw, as_json=as_json, session_id=session_id)
 
 
 def _read_log_logic(path: str, offset: int = 0, max_bytes: int = 65536) -> str:
@@ -1056,7 +1288,7 @@ def _find_in_log_logic(
         })
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @log_call
 def stata_read_log(
     path: Optional[str] = None,
@@ -1070,7 +1302,8 @@ def stata_read_log(
     case_sensitive: bool = False,
     regex: bool = False,
     max_matches: int = 50,
-) -> str:
+    as_json: bool = False,
+) -> ToolEnvelope | str:
     """Read or search Stata log files.
     
     Provides low-level access to execution logs. Supports reading specific byte 
@@ -1098,18 +1331,71 @@ def stata_read_log(
     if task_id:
         task_info = _background_tasks.get(task_id)
         if not task_info or not task_info.log_path:
-            return json.dumps({"error": f"Task {task_id} not found or has no log path"})
+            envelope = _build_envelope(
+                tool="stata_read_log",
+                success=False,
+                error=ErrorEnvelope(message=f"Task {task_id} not found or has no log path"),
+            )
+            return _envelope_legacy_json(envelope) if as_json else envelope
         path = task_info.log_path
 
     if not path:
-        return json.dumps({"error": "Either path or task_id must be provided"})
+        envelope = _build_envelope(
+            tool="stata_read_log",
+            success=False,
+            error=ErrorEnvelope(message="Either path or task_id must be provided"),
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     if query:
-        return _find_in_log_logic(path, query, offset, max_bytes, before, after, case_sensitive, regex, max_matches)
+        payload = json.loads(_find_in_log_logic(path, query, offset, max_bytes, before, after, case_sensitive, regex, max_matches))
+        model = LogReadResult(
+            path=payload["path"],
+            offset=payload.get("start_offset"),
+            next_offset=payload.get("next_offset"),
+            query=payload.get("query"),
+            truncated=payload.get("truncated"),
+            matches=[LogMatch.model_validate(match) for match in payload.get("matches", [])],
+            error=payload.get("error"),
+        )
+        envelope = _build_envelope(
+            tool="stata_read_log",
+            success=model.error is None,
+            data=model.model_dump(),
+            error=ErrorEnvelope(message=model.error) if model.error else None,
+            log_path=model.path,
+            log_offset=model.offset,
+            log_next_offset=model.next_offset,
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif tail_lines > 0:
         tail = _tail_file(path, tail_lines)
-        return json.dumps({"path": path, "data": tail or ""})
+        model = LogReadResult(path=path, data=tail or "")
+        envelope = _build_envelope(
+            tool="stata_read_log",
+            success=True,
+            data=model.model_dump(),
+            log_path=path,
+            log_tail=model.data,
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     else:
-        return _read_log_logic(path, offset, max_bytes)
+        payload = json.loads(_read_log_logic(path, offset, max_bytes))
+        model = LogReadResult(
+            path=payload["path"],
+            offset=payload.get("offset"),
+            next_offset=payload.get("next_offset"),
+            data=payload.get("data"),
+        )
+        envelope = _build_envelope(
+            tool="stata_read_log",
+            success=not model.data.startswith("ERROR:") if model.data else True,
+            data=model.model_dump(),
+            error=ErrorEnvelope(message=model.data) if model.data and model.data.startswith("ERROR:") else None,
+            log_path=path,
+            log_offset=model.offset,
+            log_next_offset=model.next_offset,
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
 
 
 def _ensure_ui_channel():
@@ -1124,7 +1410,7 @@ def _ensure_ui_channel():
             logger.exception("Failed to initialize UI channel")
 
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @log_call
 async def stata_inspect_data(
     action: str,
@@ -1139,7 +1425,9 @@ async def stata_inspect_data(
     path: Optional[str] = None,
     linemax: int = 80,
     indent: int = 4,
-) -> str:
+    as_json: bool = False,
+    legacy_text: bool = False,
+) -> ToolEnvelope | str:
     """Inspect the active dataset (describe, codebook, summarize, search, get data) or code (lint).
     
     Comprehensive tool for exploring the structure and content of the current 
@@ -1175,25 +1463,61 @@ async def stata_inspect_data(
             {"code": "describe", "strip_smcl": strip_smcl, "options": {"echo": True}},
         )
         result = CommandResponse.model_validate(result_dict)
-        return result.stdout if result.success else (result.error.message if result.error else "")
+        if legacy_text:
+            return result.stdout if result.success else (result.error.message if result.error else "")
+        variables_dict = await session.call("list_variables_structured", {})
+        variables_resp = VariablesResponse.model_validate(variables_dict)
+        envelope = _build_envelope(
+            tool="stata_inspect_data",
+            success=result.success,
+            session_id=session_id,
+            data={
+                "action": action,
+                "rendered": result.stdout,
+                "variables": variables_resp.model_dump()["variables"],
+            },
+            error=result.error,
+            log_path=result.log_path,
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "codebook":
         result_dict = await session.call(
             "codebook",
             {"variable": query, "strip_smcl": strip_smcl, "options": {}},
         )
         result = CommandResponse.model_validate(result_dict)
-        return result.model_dump_json()
+        envelope = _command_result_envelope("stata_inspect_data", session_id, result)
+        envelope.data = {**(envelope.data if isinstance(envelope.data, dict) else {}), "action": action, "query": query}
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "summary":
         summary_data = await session.call("get_data_summary", {"variables": variables})
-        return json.dumps(summary_data)
+        envelope = _build_envelope(
+            tool="stata_inspect_data",
+            success=True,
+            session_id=session_id,
+            data={"action": action, "summary": summary_data},
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "search":
         variables_dict = await session.call("find_variables", {"query": query})
         variables_resp = VariablesResponse.model_validate(variables_dict)
-        return variables_resp.model_dump_json()
+        envelope = _build_envelope(
+            tool="stata_inspect_data",
+            success=True,
+            session_id=session_id,
+            data={"action": action, **variables_resp.model_dump()},
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "list":
         variables_dict = await session.call("list_variables_structured", {})
         variables_resp = VariablesResponse.model_validate(variables_dict)
-        return variables_resp.model_dump_json()
+        envelope = _build_envelope(
+            tool="stata_inspect_data",
+            success=True,
+            session_id=session_id,
+            data={"action": action, **variables_resp.model_dump()},
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "get":
         data = await session.call(
             "get_data",
@@ -1206,31 +1530,63 @@ async def stata_inspect_data(
             },
         )
         resp = DataResponse(start=start, count=count, data=data)
-        return resp.model_dump_json()
+        envelope = _build_envelope(
+            tool="stata_inspect_data",
+            success=True,
+            session_id=session_id,
+            data={"action": action, **resp.model_dump()},
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "lint":
         if not path:
-            return json.dumps({"error": "Path must be provided for lint action"})
+            envelope = _build_envelope(
+                tool="stata_inspect_data",
+                success=False,
+                session_id=session_id,
+                error=ErrorEnvelope(message="Path must be provided for lint action"),
+            )
+            return _envelope_legacy_json(envelope) if as_json else envelope
         linter = StataLinter(linemax=linemax, indent=indent)
         try:
             results = linter.lint_file(path)
-            return json.dumps({
-                "path": path,
-                "violations": results,
-                "count": len(results)
-            })
+            envelope = _build_envelope(
+                tool="stata_inspect_data",
+                success=True,
+                session_id=session_id,
+                data={
+                    "action": action,
+                    "path": path,
+                    "violations": results,
+                    "count": len(results),
+                },
+            )
+            return _envelope_legacy_json(envelope) if as_json else envelope
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            envelope = _build_envelope(
+                tool="stata_inspect_data",
+                success=False,
+                session_id=session_id,
+                error=ErrorEnvelope(message=str(e)),
+            )
+            return _envelope_legacy_json(envelope) if as_json else envelope
     else:
-        return json.dumps({"error": f"Invalid action: {action}"})
+        envelope = _build_envelope(
+            tool="stata_inspect_data",
+            success=False,
+            session_id=session_id,
+            error=ErrorEnvelope(message=f"Invalid action: {action}"),
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @log_call
 async def stata_manage_graphs(
     action: str,
     graph_name: Optional[str] = None,
     format: str = "svg",
     session_id: str = "default",
-) -> str:
+    as_json: bool = False,
+) -> ToolEnvelope | str:
     """Manage Stata graphs (list, export).
     
     Enables interaction with Stata's graph memory, allowing for listing open 
@@ -1253,20 +1609,58 @@ async def stata_manage_graphs(
     if action == "list":
         graphs_dict = await session.call("list_graphs", {})
         graphs = GraphListResponse.model_validate(graphs_dict)
-        return graphs.model_dump_json()
+        envelope = _build_envelope(
+            tool="stata_manage_graphs",
+            success=True,
+            session_id=session_id,
+            data={"action": action, **graphs.model_dump()},
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     elif action == "export":
         try:
-            return await session.call("export_graph", {"graph_name": graph_name, "format": format})
+            export_path = await session.call("export_graph", {"graph_name": graph_name, "format": format})
+            export = GraphExport(
+                name=graph_name or "",
+                file_path=export_path,
+                format=format,
+                mime_type=_infer_mime_type(export_path, format),
+            )
+            artifact = _artifact_from_path(export_path, kind="graph", title=graph_name, format_hint=format)
+            envelope = _build_envelope(
+                tool="stata_manage_graphs",
+                success=True,
+                session_id=session_id,
+                data={"action": action, "graphs": [export.model_dump()]},
+                artifacts=[artifact] if artifact else [],
+            )
+            return _envelope_legacy_json(envelope) if as_json else envelope
         except Exception as e:
             raise RuntimeError(f"[mcp-stata] Failed to export graph: {e}")
     elif action == "export_all":
         exports_dict = await session.call("export_graphs_all", {})
         exports = GraphExportResponse.model_validate(exports_dict)
-        return exports.model_dump_json(exclude_none=False)
+        artifact_refs = [
+            _artifact_from_path(item.file_path, kind="graph", title=item.name, format_hint=item.format)
+            for item in exports.graphs
+        ]
+        envelope = _build_envelope(
+            tool="stata_manage_graphs",
+            success=True,
+            session_id=session_id,
+            data={"action": action, **exports.model_dump(exclude_none=False)},
+            artifacts=[item for item in artifact_refs if item is not None],
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
     else:
-        return json.dumps({"error": f"Invalid action: {action}"})
+        envelope = _build_envelope(
+            tool="stata_manage_graphs",
+            success=False,
+            session_id=session_id,
+            error=ErrorEnvelope(message=f"Invalid action: {action}"),
+        )
+        return _envelope_legacy_json(envelope) if as_json else envelope
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @log_call
 async def stata_get_results(
     session_id: str = "default",
@@ -1275,8 +1669,8 @@ async def stata_get_results(
     matrix_max_rows: int = 200,
     matrix_max_cols: int = 200,
     include_mata: bool = False,
-    as_json: bool = True,
-) -> str:
+    as_json: bool = False,
+) -> ToolEnvelope | str:
     """Returns coherent structured result state across r()/e()/s(), with optional MATA snapshot."""
     _log_tool_call("stata_get_results")
     session = await session_manager.get_or_create_session(session_id)
@@ -1301,11 +1695,17 @@ async def stata_get_results(
                 "max_functions": 200,
             },
         )
+    envelope = _build_envelope(
+        tool="stata_get_results",
+        success=True,
+        session_id=session_id,
+        data=payload,
+    )
     if as_json:
-        return json.dumps(payload)
-    return str(payload)
+        return _envelope_legacy_json(envelope)
+    return envelope
 
-@mcp.tool()
+@mcp.tool(structured_output=True)
 @log_call
 async def stata_get_help(
     topic: str,
@@ -1313,7 +1713,9 @@ async def stata_get_help(
     merge_paragraphs: bool = True,
     format: str = "full",
     session_id: str = "default",
-) -> str:
+    as_json: bool = False,
+    legacy_text: bool = False,
+) -> ToolEnvelope | str:
     """Returns help for a Stata command.
     
     Args:
@@ -1328,7 +1730,21 @@ async def stata_get_help(
         "get_help",
         {"topic": topic, "plain_text": plain_text, "merge_paragraphs": merge_paragraphs},
     )
-    return _extract_help_format(help_text, format=format)
+    rendered = _extract_help_format(help_text, format=format)
+    if legacy_text:
+        return rendered
+    envelope = _build_envelope(
+        tool="stata_get_help",
+        success=True,
+        session_id=session_id,
+        data={
+            "topic": topic,
+            "format": format,
+            "plain_text": plain_text,
+            "rendered": rendered,
+        },
+    )
+    return _envelope_legacy_json(envelope) if as_json else envelope
 
 
 
@@ -1354,17 +1770,17 @@ async def get_metadata() -> str:
 @log_call
 async def list_graphs_resource() -> str:
     """Resource wrapper for the graph list."""
-    return await stata_manage_graphs(action="list", session_id="default")
+    return await stata_manage_graphs(action="list", session_id="default", as_json=True)
 
 @mcp.resource("stata://variables/list")
 async def get_variable_list_resource() -> str:
     """Resource wrapper for the variable list."""
-    return await stata_inspect_data(action="list", session_id="default")
+    return await stata_inspect_data(action="list", session_id="default", as_json=True)
 
 @mcp.resource("stata://results/stored")
 async def get_stored_results_resource() -> str:
     """Returns stored r() and e() results."""
-    return await stata_get_results(session_id="default")
+    return await stata_get_results(session_id="default", as_json=True)
 
 @mcp.resource("stata://skills/list")
 async def list_skills_resource() -> str:
