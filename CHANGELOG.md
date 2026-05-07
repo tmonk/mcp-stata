@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v2.5.0 (2026-05-07)
+
+### Features
+
+- Consolidate error fields to details, trim output
+  ([`5e8b56f`](https://github.com/tmonk/mcp-stata/commit/5e8b56f4d8e1d6961a03cc1da0752d340bae9259))
+
+
 ## v2.4.0 (2026-05-06)
 
 ### Continuous Integration
