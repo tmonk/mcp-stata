@@ -359,6 +359,48 @@ def configure_codex(
     return upsert_codex_config(config_path, entry=entry)
 
 
+def install_claude_marketplace(
+    *,
+    scope: str = "project",
+    project_root: Path | None = None,
+) -> bool:
+    if not shutil.which("claude"):
+        return False
+
+    root = get_project_root(project_root)
+    marketplace_name = "mcp-stata-marketplace"
+
+    try:
+        subprocess.run(["claude", "plugin", "marketplace", "add", str(root), "--scope", scope], check=True)
+    except Exception as exc:
+        print_warning(f"Claude marketplace add did not complete cleanly: {exc}")
+
+    try:
+        subprocess.run(["claude", "plugin", "install", f"{CANONICAL_SERVER_NAME}@{marketplace_name}", "--scope", scope], check=True)
+        return True
+    except Exception as exc:
+        print_warning(f"Claude marketplace install failed; falling back to direct configuration: {exc}")
+        return False
+
+
+def install_codex_marketplace(
+    *,
+    project_root: Path | None = None,
+) -> bool:
+    if not shutil.which("codex"):
+        return False
+
+    root = get_project_root(project_root)
+    marketplace_root = root / ".agents" / "plugins"
+
+    try:
+        subprocess.run(["codex", "plugin", "marketplace", "add", str(marketplace_root)], check=True)
+        return True
+    except Exception as exc:
+        print_warning(f"Codex marketplace install failed; falling back to direct configuration: {exc}")
+        return False
+
+
 def install_codex_skills(*, project_root: Path | None = None) -> Path | None:
     skills_root = get_codex_home() / "skills"
     skills_root.mkdir(parents=True, exist_ok=True)
@@ -504,27 +546,29 @@ def install_for_agent(
             written.append(path)
 
     if agent == "claude":
-        path = configure_claude_code(
-            scope=scope,
-            version=version,
-            latest=latest,
-            local_source=local_source,
-            project_root=project_root,
-        )
-        if path:
-            written.append(path)
-        return written
-
-    if agent == "codex":
-        _append(
-            configure_codex(
+        if not install_claude_marketplace(scope=scope, project_root=project_root):
+            path = configure_claude_code(
                 scope=scope,
                 version=version,
                 latest=latest,
                 local_source=local_source,
                 project_root=project_root,
             )
-        )
+            if path:
+                written.append(path)
+        return written
+
+    if agent == "codex":
+        if not install_codex_marketplace(project_root=project_root):
+            _append(
+                configure_codex(
+                    scope=scope,
+                    version=version,
+                    latest=latest,
+                    local_source=local_source,
+                    project_root=project_root,
+                )
+            )
         _append(install_codex_skills(project_root=project_root))
         _append(register_generic_skills(project_root=project_root))
         _append(merge_project_agents_hint(project_root=project_root))
@@ -601,13 +645,17 @@ def _print_dry_run(
 ) -> None:
     if agent == "claude":
         if scope == "project":
-            print(f"  [dry-run] would write {project_root / '.mcp.json'}")
+            print(f"  [dry-run] would add marketplace from {project_root}")
+            print(f"  [dry-run] would install {CANONICAL_SERVER_NAME}@mcp-stata-marketplace")
         else:
-            print("  [dry-run] would run claude mcp add or update Claude settings")
+            print("  [dry-run] would add marketplace and install the plugin in Claude")
         return
     if agent == "codex":
-        target_dir = get_codex_home() if scope == "user" else project_root / ".codex"
-        print(f"  [dry-run] would write {target_dir / 'config.toml'}")
+        print(f"  [dry-run] would add marketplace from {project_root / '.agents' / 'plugins'}")
+        if scope == "user":
+            print("  [dry-run] would update Codex user configuration if marketplace install is unavailable")
+        else:
+            print("  [dry-run] would update Codex project configuration if marketplace install is unavailable")
         print(f"  [dry-run] would symlink {PLUGIN_SKILLS_DIR} -> {get_codex_home() / 'skills' / CANONICAL_SERVER_NAME}")
         print(f"  [dry-run] would merge project guidance into {project_root / 'AGENTS.md'}")
         return

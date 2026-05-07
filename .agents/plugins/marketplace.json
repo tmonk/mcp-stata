@@ -1,0 +1,22 @@
+{
+  "name": "mcp-stata-marketplace",
+  "interface": {
+    "displayName": "mcp-stata Marketplace"
+  },
+  "plugins": [
+    {
+      "name": "mcp-stata",
+      "source": {
+        "source": "local",
+        "path": "./plugin"
+      },
+      "description": "Stata MCP tools and skills for AI agents.",
+      "version": "3.0.0",
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Development"
+    }
+  ]
+}

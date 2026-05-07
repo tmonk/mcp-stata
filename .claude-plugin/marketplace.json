@@ -1,0 +1,16 @@
+{
+  "name": "mcp-stata-marketplace",
+  "owner": {
+    "name": "Thomas Monk"
+  },
+  "description": "Local marketplace for the mcp-stata plugin.",
+  "plugins": [
+    {
+      "name": "mcp-stata",
+      "source": "./plugin",
+      "description": "Stata MCP tools and skills for AI agents.",
+      "version": "3.0.0",
+      "category": "Development"
+    }
+  ]
+}

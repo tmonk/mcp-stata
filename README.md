@@ -23,11 +23,29 @@ This server enables LLMs to:
 
 ### 1 · Install
 
-| Client | Command |
-|--------|---------|
-| **Claude Code** | `claude mcp add --scope project mcp-stata -- uvx --refresh --refresh-package mcp-stata --from mcp-stata@latest mcp-stata` |
-| **Codex** | `bash plugin/install.sh --agent codex --scope project` |
-| **Other** | See [IDE Setup](#ide-setup-mcp) below |
+macOS/Linux:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh | bash
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1 | iex
+```
+
+Client-specific examples:
+
+| Client | macOS/Linux | Windows (PowerShell) |
+|--------|-------------|----------------------|
+| **Claude Code** | `bash plugin/install.sh --agent claude` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent claude` |
+| **Codex** | `bash plugin/install.sh --agent codex` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent codex` |
+| **Gemini** | `bash plugin/install.sh --agent gemini` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent gemini` |
+| **Cursor** | `bash plugin/install.sh --agent cursor` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent cursor` |
+| **Windsurf** | `bash plugin/install.sh --agent windsurf` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent windsurf` |
+| **VS Code** | `bash plugin/install.sh --agent vscode` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent vscode` |
+| **Auto-detect / default** | `bash plugin/install.sh` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1` |
 
 ### 2 · Verify
 
@@ -66,19 +84,38 @@ The toolkit is designed for empirical economics research.
 
 ## Installation
 
-For the shared cross-agent installer, run:
+Use the shared cross-agent installer:
 
 ```bash
-bash plugin/install.sh --scope project
+bash plugin/install.sh
+```
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File plugin/install.ps1
+```
+
+If you need a permalink you can share, use the tagged raw script URL:
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/tmonk/mcp-stata/v3.0.1/plugin/install.sh | bash
 ```
 
 Useful variants:
 
 ```bash
+bash plugin/install.sh --agent claude --scope project
 bash plugin/install.sh --scope user
 bash plugin/install.sh --version 2.5.1
 bash plugin/install.sh --local-source /path/to/mcp-stata
 bash plugin/install.sh --verify
+```
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent claude --scope project
+pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --scope user
+pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --version 2.5.1
+pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --local-source C:\path\to\mcp-stata
+pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --verify
 ```
 
 ### Run as a published tool with `uvx`
