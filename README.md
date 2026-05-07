@@ -17,6 +17,32 @@ This server enables LLMs to:
 - **Streaming graph caching**: automatically cache graphs during command execution for instant exports.
 - **Verify results**: programmatically check stored results (`r()`, `e()`) for accurate validation.
 
+## Quickstart
+
+### 1 · Install
+
+| Client | Command |
+|--------|---------|
+| **Claude Code** | `claude mcp add mcp_stata -- uvx --refresh --refresh-package mcp-stata --from mcp-stata@latest mcp-stata` |
+| **Codex** | `codex mcp add mcp_stata -- uvx --refresh --refresh-package mcp-stata --from mcp-stata@latest mcp-stata` |
+| **Other** | See [IDE Setup](#ide-setup-mcp) below |
+
+### 2 · Verify
+
+Ask your agent:
+
+```
+Do you have access to the Stata agentic toolkit? (mcp-stata)
+```
+
+It will confirm the connection and describe all available tools and skills.
+
+### 3 · Try it
+
+```
+Load the auto dataset and run a regression of price on mpg
+```
+
 ## Prerequisites
 
 - **Stata 17+** (Stata MP, SE, or BE). Must be licensed and installed locally.
