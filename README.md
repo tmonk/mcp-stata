@@ -39,13 +39,13 @@ Client-specific examples:
 
 | Client | macOS/Linux | Windows (PowerShell) |
 |--------|-------------|----------------------|
-| **Claude Code** | `bash plugin/install.sh --agent claude` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent claude` |
-| **Codex** | `bash plugin/install.sh --agent codex` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent codex` |
-| **Gemini** | `bash plugin/install.sh --agent gemini` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent gemini` |
-| **Cursor** | `bash plugin/install.sh --agent cursor` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent cursor` |
-| **Windsurf** | `bash plugin/install.sh --agent windsurf` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent windsurf` |
-| **VS Code** | `bash plugin/install.sh --agent vscode` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1 --agent vscode` |
-| **Auto-detect / default** | `bash plugin/install.sh` | `pwsh -ExecutionPolicy Bypass -File plugin/install.ps1` |
+| **Claude Code** | `bash plugin/install.sh --agent claude` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent claude` |
+| **Codex** | `bash plugin/install.sh --agent codex` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent codex` |
+| **Gemini** | `bash plugin/install.sh --agent gemini` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent gemini` |
+| **Cursor** | `bash plugin/install.sh --agent cursor` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent cursor` |
+| **Windsurf** | `bash plugin/install.sh --agent windsurf` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent windsurf` |
+| **VS Code** | `bash plugin/install.sh --agent vscode` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent vscode` |
+| **Auto-detect / default** | `bash plugin/install.sh` | `irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1 | iex` |
 
 ### 2 · Verify
 
