@@ -39,13 +39,13 @@ Client-specific examples:
 
 | Client | macOS/Linux | Windows (PowerShell) |
 |--------|-------------|----------------------|
-| **Claude Code** | `bash plugin/install.sh --agent claude` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent claude` |
-| **Codex** | `bash plugin/install.sh --agent codex` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent codex` |
-| **Gemini** | `bash plugin/install.sh --agent gemini` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent gemini` |
-| **Cursor** | `bash plugin/install.sh --agent cursor` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent cursor` |
-| **Windsurf** | `bash plugin/install.sh --agent windsurf` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent windsurf` |
-| **VS Code** | `bash plugin/install.sh --agent vscode` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent vscode` |
-| **Auto-detect / default** | `bash plugin/install.sh` | `irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1 | iex` |
+| **Claude Code** | `curl -LsSf https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh | bash -s -- --agent claude` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent claude` |
+| **Codex** | `curl -LsSf https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh | bash -s -- --agent codex` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent codex` |
+| **Gemini** | `curl -LsSf https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh | bash -s -- --agent gemini` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent gemini` |
+| **Cursor** | `curl -LsSf https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh | bash -s -- --agent cursor` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent cursor` |
+| **Windsurf** | `curl -LsSf https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh | bash -s -- --agent windsurf` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent windsurf` |
+| **VS Code** | `curl -LsSf https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh | bash -s -- --agent vscode` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1))) --agent vscode` |
+| **Auto-detect / default** | `curl -LsSf https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh | bash` | `irm https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1 | iex` |
 
 ### 2 · Verify
 
