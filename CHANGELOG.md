@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v2.6.0 (2026-05-07)
+
+### Bug Fixes
+
+- Resolve merge conflict in server.json and update version to 2.5.1
+  ([`a50b259`](https://github.com/tmonk/mcp-stata/commit/a50b25923a59a4a27e110ff412c9018633d4b3f3))
+
+
 ## v2.5.1 (2026-05-07)
 
 ### Bug Fixes
