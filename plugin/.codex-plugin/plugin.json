@@ -1,18 +1,26 @@
 {
   "name": "mcp-stata",
-  "version": "2.5.1",
-  "description": "mcp-stata — execute commands, inspect data, retrieve r()/e() results, and view graphs.",
+  "version": "2.6.0",
+  "description": "mcp-stata - an agentic toolkit for empirical researchers. Gives AI agents native control over a local Stata installation, allowing agents to run do-files, inspect data, check stored results, and export graphs.",
   "author": {
     "name": "Thomas Monk",
     "email": "t.d.monk@lse.ac.uk"
   },
   "license": "AGPL-3.0-or-later",
   "homepage": "https://github.com/tmonk/mcp-stata",
-  "keywords": ["stata", "statistics", "econometrics", "data-analysis", "mcp", "regression", "do-files"],
+  "keywords": [
+    "stata",
+    "statistics",
+    "econometrics",
+    "data-analysis",
+    "mcp",
+    "regression",
+    "do-files"
+  ],
   "skills": "./skills/",
   "interface": {
     "displayName": "mcp-stata",
-    "shortDescription": "Stata MCP tools and skills for AI coding agents. Run commands, inspect data, retrieve results, export graphs.",
+    "shortDescription": "Stata MCP tools and skills for AI agents.",
     "category": "Development"
   }
 }

@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 
 from mcp_stata.server import stata_read_log
+from mcp_stata.models import ToolEnvelope
 
 
 def _write_temp_log(content: str) -> Path:
@@ -14,11 +15,25 @@ def _write_temp_log(content: str) -> Path:
         temp.close()
     return Path(temp.name)
 
+def _payload(result) -> dict:
+    """Backward/forward-compatible tool result unwrapping.
+
+    - Older backend: tool returns JSON string.
+    - Current backend: tool returns ToolEnvelope with structured `data`.
+    """
+    if isinstance(result, ToolEnvelope):
+        assert result.success is True
+        assert isinstance(result.data, dict)
+        return result.data
+    if isinstance(result, str):
+        return json.loads(result)
+    raise TypeError(f"Unexpected tool return type: {type(result)!r}")
+
 
 def test_read_log_basic():
     log_path = _write_temp_log("line1\nline2\nline3\n")
     try:
-        payload = json.loads(stata_read_log(str(log_path)))
+        payload = _payload(stata_read_log(str(log_path)))
         assert payload["path"] == str(log_path)
         assert payload["offset"] == 0
         assert "line2" in payload["data"]
@@ -31,10 +46,10 @@ def test_read_log_offset_and_max_bytes():
     content = "header\nalpha\nbeta\ngamma\n"
     log_path = _write_temp_log(content)
     try:
-        first = json.loads(stata_read_log(str(log_path), offset=0, max_bytes=8))
+        first = _payload(stata_read_log(str(log_path), offset=0, max_bytes=8))
         assert first["data"]
         next_offset = first["next_offset"]
-        second = json.loads(stata_read_log(str(log_path), offset=next_offset, max_bytes=1024))
+        second = _payload(stata_read_log(str(log_path), offset=next_offset, max_bytes=1024))
         assert second["offset"] == next_offset
         assert "gamma" in second["data"]
     finally:
@@ -42,7 +57,7 @@ def test_read_log_offset_and_max_bytes():
 
 
 def test_read_log_missing_file():
-    payload = json.loads(stata_read_log("/tmp/mcp_stata_missing.log"))
+    payload = _payload(stata_read_log("/tmp/mcp_stata_missing.log"))
     assert payload["data"] == ""
     assert payload["next_offset"] == payload["offset"]
 
@@ -50,7 +65,7 @@ def test_read_log_missing_file():
 def test_find_in_log_literal_and_context():
     log_path = _write_temp_log("one\ntwo\nthree\nfour\n")
     try:
-        payload = json.loads(stata_read_log(str(log_path), query="three", before=1, after=1))
+        payload = _payload(stata_read_log(str(log_path), query="three", before=1, after=1))
         assert payload["matches"]
         context = payload["matches"][0]["context"]
         assert context == ["two", "three", "four"]
@@ -61,9 +76,9 @@ def test_find_in_log_literal_and_context():
 def test_find_in_log_regex_case_sensitive():
     log_path = _write_temp_log("Alpha\nbeta\nALPHA\n")
     try:
-        insensitive = json.loads(stata_read_log(str(log_path), query="alpha", case_sensitive=False))
+        insensitive = _payload(stata_read_log(str(log_path), query="alpha", case_sensitive=False))
         assert len(insensitive["matches"]) == 2
-        sensitive = json.loads(stata_read_log(str(log_path), query=r"^Alpha$", regex=True, case_sensitive=True))
+        sensitive = _payload(stata_read_log(str(log_path), query=r"^Alpha$", regex=True, case_sensitive=True))
         assert len(sensitive["matches"]) == 1
     finally:
         log_path.unlink(missing_ok=True)
@@ -72,10 +87,10 @@ def test_find_in_log_regex_case_sensitive():
 def test_find_in_log_start_offset_and_max_matches():
     log_path = _write_temp_log("hit\nmiss\nhit\nmiss\nhit\n")
     try:
-        first_pass = json.loads(stata_read_log(str(log_path), query="hit", max_matches=1, max_bytes=8))
+        first_pass = _payload(stata_read_log(str(log_path), query="hit", max_matches=1, max_bytes=8))
         assert len(first_pass["matches"]) == 1
         next_offset = first_pass["next_offset"]
-        second_pass = json.loads(stata_read_log(str(log_path), query="hit", offset=next_offset, max_matches=2))
+        second_pass = _payload(stata_read_log(str(log_path), query="hit", offset=next_offset, max_matches=2))
         assert len(second_pass["matches"]) >= 1
     finally:
         log_path.unlink(missing_ok=True)
@@ -93,7 +108,7 @@ def test_read_log_by_task_id():
         created_at=datetime.datetime.now()
     )
     try:
-        payload = json.loads(stata_read_log(task_id=task_id))
+        payload = _payload(stata_read_log(task_id=task_id))
         assert payload["path"] == str(log_path)
         assert "task log content" in payload["data"]
     finally:

@@ -33,9 +33,6 @@ PLUGIN_MANIFEST_GLOB = [
     PLUGIN_DIR / "agents" / "*.manifest.json",
 ]
 
-_FRONTMATTER_VERSION_RE = re.compile(r"^(version:\s*)\S+", re.MULTILINE)
-
-
 def get_version() -> str:
     """Return the canonical version as reported by Hatch."""
     try:
@@ -83,17 +80,40 @@ def sync_json_nested(path: Path, version: str) -> bool:
 
 
 def sync_markdown_frontmatter(path: Path, version: str) -> bool:
-    """Replace 'version: X.Y.Z' in YAML frontmatter."""
+    """Replace `version:` in YAML frontmatter only.
+
+    Requirements (enforced by tests):
+    - Only touch the first `version:` inside the YAML frontmatter block.
+    - Do not change body content (even if it contains `version:`).
+    - If no `version:` exists in frontmatter, return False.
+    """
     if not path.exists():
         sys.stderr.write(f"Warning: {path} not found, skipping.\n")
         return False
     text = path.read_text()
-    new_text, count = _FRONTMATTER_VERSION_RE.subn(
-        lambda m: m.group(1) + version, text, count=1
-    )
-    if count == 0 or new_text == text:
+    if not text.startswith("---\n"):
         return False
-    path.write_text(new_text)
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        return False
+
+    front = text[4:end]
+    body = text[end + len("\n---\n") :]
+
+    m = re.search(r"^version:\s*(.+?)\s*$", front, flags=re.MULTILINE)
+    if not m:
+        return False
+    if m.group(1) == version:
+        return False
+
+    new_front = re.sub(
+        r"^version:\s*.+?\s*$",
+        f"version: {version}",
+        front,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    path.write_text(f"---\n{new_front}\n---\n{body}")
     return True
 
 

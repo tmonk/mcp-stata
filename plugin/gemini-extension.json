@@ -1,7 +1,7 @@
 {
   "name": "mcp-stata",
-  "version": "2.5.1",
-  "description": "mcp-stata — a research-grade Stata MCP toolkit with structured outputs, paper workflows, prompts, diagnostics, and safety guardrails for local AI agents.",
+  "version": "2.6.0",
+  "description": "mcp-stata - an agentic toolkit for empirical researchers. Gives AI agents native control over a local Stata installation, allowing agents to run do-files, inspect data, check stored results, and export graphs.",
   "contextFileName": "AGENTS.md",
   "mcpServers": {
     "mcp-stata": {

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from mcp_stata.server import stata_get_results
+from mcp_stata.models import ToolEnvelope
 from mcp_stata.stata_client import StataClient
 
 
@@ -44,7 +45,12 @@ async def test_stata_get_results_includes_structured_mata_payload():
     )
     with patch("mcp_stata.server.session_manager.get_or_create_session", new=AsyncMock(return_value=mock_session)):
         out = await stata_get_results(session_id="t1", include_mata=True)
-    payload = json.loads(out)
+    if isinstance(out, ToolEnvelope):
+        assert out.success is True
+        assert isinstance(out.data, dict)
+        payload = out.data
+    else:
+        payload = json.loads(out)
     assert payload["r"]["N"] == 10
     assert payload["mata"]["success"] is True
     assert payload["mata"]["objects"][0]["name"] == "a"
