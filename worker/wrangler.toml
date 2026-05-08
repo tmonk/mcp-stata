@@ -1,4 +1,5 @@
-name = "mcp-stata-install"
+# worker/wrangler.toml
+name = "mcp-stata"
 main = "src/index.js"
 compatibility_date = "2026-05-08"
 
