@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v3.1.2 (2026-05-08)
+
+### Documentation
+
+- Fix PowerShell command in README for installation
+  ([`fb5afbc`](https://github.com/tmonk/mcp-stata/commit/fb5afbcaf743bbecf8ef98379a423f231ec6f0b9))
+
+
 ## v3.1.1 (2026-05-08)
 
 ### Bug Fixes
