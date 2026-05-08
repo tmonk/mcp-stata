@@ -22,6 +22,7 @@ INSTALL_ARGS=("$@")
 AUTHOR_NAME="Thomas Monk"
 AUTHOR_AFFILIATION="London School of Economics"
 AUTHOR_EMAIL="t.d.monk@lse.ac.uk"
+# Note: VERSION is derived dynamically in main() after bootstrap
 VERBOSE_MODE=0
 
 for arg in "$@"; do
@@ -97,6 +98,7 @@ EOF
   printf "%b%s%b %s\n" "${DIM}" "host   " "${RESET}" "$(uname -srm 2>/dev/null || echo unknown)"
   printf "%b%s%b %s\n" "${DIM}" "shell  " "${RESET}" "bash ${BASH_VERSION:-?}"
   printf "%b%s%b %s\n" "${DIM}" "user   " "${RESET}" "$(id -un 2>/dev/null) (uid=$(id -u))"
+  printf "%b%s%b %s\n" "${DIM}" "version" "${RESET}" "$(get_version)"
   if [ "$#" -gt 0 ]; then
     printf "%b%s%b %s\n" "${DIM}" "args   " "${RESET}" "$*"
   else
@@ -210,6 +212,52 @@ run_toolkit_installer() {
   set -e
   return "$status"
 }
+
+get_machine_id() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    ioreg -rd1 -c IOPlatformExpertDevice | awk '/IOPlatformUUID/ { print $3 }' | tr -d '"' 2>/dev/null || echo unknown
+  else
+    cat /etc/machine-id 2>/dev/null || cat /var/lib/dbus/machine-id 2>/dev/null || echo unknown
+  fi
+}
+
+get_version() {
+  if [ -n "${MCP_STATA_SCRIPT_VERSION:-}" ]; then
+    echo "$MCP_STATA_SCRIPT_VERSION"
+    return
+  fi
+
+  # 1. Try git if in a checkout
+  if command -v git >/dev/null 2>&1 && git -C "${INSTALL_REPO_ROOT:-$REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "${INSTALL_REPO_ROOT:-$REPO_ROOT}" describe --tags --always --dirty 2>/dev/null
+    return
+  fi
+
+  # 2. Try pyproject.toml if source is available
+  if [ -f "${INSTALL_REPO_ROOT:-$REPO_ROOT}/pyproject.toml" ]; then
+    grep -m 1 'version = "' "${INSTALL_REPO_ROOT:-$REPO_ROOT}/pyproject.toml" | cut -d'"' -f2 2>/dev/null
+    return
+  fi
+
+  echo "3.1.2-direct"
+}
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+# Handle local file execution vs piped/remote execution
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+else
+  # Piped or source-less execution
+  REPO_ROOT="$PWD"
+fi
+
+REPO_URL="${MCP_STATA_REPO_URL:-https://github.com/tmonk/mcp-stata}"
+REF="${MCP_STATA_REF:-main}"
+TARBALL_URL="${REPO_URL}/archive/${REF}.tar.gz"
+
+INSTALL_REPO_ROOT="${REPO_ROOT}"
+TEMP_DIR=""
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_FILE="${TMPDIR:-/tmp}/mcp-stata-install-$(date +%Y%m%d-%H%M%S)-$$.log"
@@ -380,10 +428,11 @@ PY
   fi
 
   local payload
-  payload="$(printf '{"event":"%s","action":"%s","stage":"%s","client":"%s","install_source":"%s","scope":"%s","user_id":"%s","install_repo":"%s","install_ref":"%s","script_version":"%s","error_code":"%s","os":"%s","distro":"%s","arch":"%s","duration_ms":%d,"install_id":"%s","file":"install.sh","log_tail":"%s"}' \
+  payload="$(printf '{"event":"%s","action":"%s","stage":"%s","client":"%s","install_source":"%s","scope":"%s","user_id":"%s","username":"%s","machine_id":"%s","install_repo":"%s","install_ref":"%s","script_version":"%s","error_code":"%s","os":"%s","distro":"%s","arch":"%s","duration_ms":%d,"install_id":"%s","file":"install.sh","log_tail":"%s"}' \
         "$event" "$(json_escape "$action")" "$INSTALL_STAGE" \
         "$(json_escape "$client")" "$(json_escape "$INSTALL_SOURCE")" "$(json_escape "$scope")" "$(json_escape "$USER_ID")" \
-        "$(json_escape "$install_repo")" "$(json_escape "$install_ref")" "$(json_escape "$script_version")" \
+        "$(json_escape "$(id -un 2>/dev/null || echo unknown)")" "$(json_escape "$(get_machine_id)")" \
+        "$(json_escape "$install_repo")" "$(json_escape "$install_ref")" "$(json_escape "$(get_version)")" \
         "$(json_escape "$error_code")" "$(uname -s | tr A-Z a-z)" "$distro" "$(uname -m)" \
         "$((duration * 1000))" "$INSTALL_ID" "$log_tail")"
 
@@ -466,23 +515,6 @@ err() {
   show_failure "$message"
   exit 1
 }
-
-# ── Paths ─────────────────────────────────────────────────────────────────────
-# Handle local file execution vs piped/remote execution
-if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-else
-  # Piped or source-less execution
-  REPO_ROOT="$PWD"
-fi
-
-REPO_URL="${MCP_STATA_REPO_URL:-https://github.com/tmonk/mcp-stata}"
-REF="${MCP_STATA_REF:-main}"
-TARBALL_URL="${REPO_URL}/archive/${REF}.tar.gz"
-
-INSTALL_REPO_ROOT="${REPO_ROOT}"
-TEMP_DIR=""
 
 cleanup() {
   if [ -n "${TEMP_DIR}" ] && [ -d "${TEMP_DIR}" ]; then

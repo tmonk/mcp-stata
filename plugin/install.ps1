@@ -19,7 +19,49 @@ $ActionLabel = if ($PassthroughArgs -contains '--uninstall') { 'Uninstall' } els
 $AuthorName = 'Thomas Monk'
 $AuthorAffiliation = 'London School of Economics'
 $AuthorEmail = 't.d.monk@lse.ac.uk'
+# Note: Version is derived dynamically in Get-Version after bootstrap
 $VerboseMode = $PassthroughArgs -contains '--verbose'
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+# Handle execution context (local file vs piped iex)
+if ($MyInvocation.MyCommand.Path) {
+    $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $RepoRoot  = Split-Path -Parent $ScriptDir
+} else {
+    $RepoRoot = (Get-Location).Path
+}
+
+$InstallRepoRoot = $RepoRoot
+$TempDir = $null
+
+function Get-MachineId {
+    try {
+        $id = (Get-CimInstance Win32_ComputerSystemProduct -ErrorAction SilentlyContinue).UUID
+        if ($id) { return $id }
+    } catch {}
+    return 'unknown'
+}
+
+function Get-Version {
+    if ($env:MCP_STATA_SCRIPT_VERSION) { return $env:MCP_STATA_SCRIPT_VERSION }
+
+    $root = if ($script:InstallRepoRoot) { $script:InstallRepoRoot } else { $RepoRoot }
+
+    # 1. Try git if in a checkout
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $v = (git -C $root describe --tags --always --dirty 2>$null) -join ''
+        if ($v) { return $v }
+    }
+
+    # 2. Try pyproject.toml if source is available
+    $toml = Join-Path $root 'pyproject.toml'
+    if (Test-Path $toml) {
+        $v = (Select-String -Path $toml -Pattern '^version = "([^"]+)"' | ForEach-Object { $_.Matches.Groups[1].Value })
+        if ($v) { return $v }
+    }
+
+    return '3.1.2-direct'
+}
 
 # ── Logging ────────────────────────────────────────────────────────────────
 $LogFile = Join-Path $env:TEMP ("mcp-stata-install-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".log")
@@ -106,6 +148,8 @@ function Show-Header {
     Write-Host "PowerShell $($PSVersionTable.PSVersion)"
     Write-Host ('user'.PadRight(8)) -ForegroundColor DarkGray -NoNewline
     Write-Host ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
+    Write-Host ('version'.PadRight(8)) -ForegroundColor DarkGray -NoNewline
+    Write-Host (Get-Version)
     Write-Host ('args'.PadRight(8)) -ForegroundColor DarkGray -NoNewline
     if ($PassthroughArgs.Count -gt 0) {
         Write-Host ($PassthroughArgs -join ' ')
@@ -368,9 +412,11 @@ function Send-Telemetry {
             install_source = $InstallSource
             scope = $scope
             user_id = $UserId
+            username = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+            machine_id = Get-MachineId
             install_ref = $install_ref
             install_repo = $install_repo
-            script_version = $script_version
+            script_version = Get-Version
             stage = $InstallStage
             error_code = $ErrorCode
             os = 'windows'
@@ -401,17 +447,6 @@ function Send-Telemetry {
     } catch {}
 }
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-# Handle execution context (local file vs piped iex)
-if ($MyInvocation.MyCommand.Path) {
-    $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-    $RepoRoot  = Split-Path -Parent $ScriptDir
-} else {
-    $RepoRoot = (Get-Location).Path
-}
-
-$InstallRepoRoot = $RepoRoot
-$TempDir = $null
 
 function Remove-TempDir {
     if ($TempDir -and (Test-Path $TempDir)) {
