@@ -101,7 +101,7 @@ function Remove-TempDir {
 }
 
 function Initialize-RepoRoot {
-    if (Test-Path (Join-Path $RepoRoot 'scripts\setup_toolkit.py')) { return }
+    if (Test-Path (Join-Path $RepoRoot 'scripts\install\setup_toolkit.py')) { return }
 
     Write-Step "Fetching mcp-stata source..."
     $script:TempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("mcp-stata-install-" + [guid]::NewGuid().ToString('N'))
@@ -121,8 +121,14 @@ function Initialize-RepoRoot {
 
 # ── Bootstrap uv ──────────────────────────────────────────────────────────────
 function Initialize-Uv {
-    # Call the official installer. It is idempotent.
     Write-Step "Ensuring uv is installed..."
+
+    # Fast path: uv already on PATH — nothing to do.
+    if (Get-Command uv -ErrorAction SilentlyContinue) {
+        $uvVer = (uv --version 2>$null) -join ''
+        Write-Ok "uv already installed ($uvVer)"
+        return
+    }
 
     # Ensure scripts can run for the current user (if not managed by GPO)
     try {
@@ -175,9 +181,11 @@ try {
     Initialize-Uv
     Write-Step "Launching mcp-stata installer..."
     $InstallStage = 'setup_toolkit'
-    & uv run --python 3.11 (Join-Path $InstallRepoRoot "scripts\setup_toolkit.py") @PassthroughArgs
+    & uv run --python 3.11 (Join-Path $InstallRepoRoot "scripts\install\setup_toolkit.py") @PassthroughArgs
     if ($LASTEXITCODE -ne 0) { throw "Python installer failed with exit code $LASTEXITCODE" }
-    Send-Telemetry 'install_success'
+    
+    $event = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_success' } else { 'install_success' }
+    Send-Telemetry $event
     exit $LASTEXITCODE
 } catch {
     Send-Telemetry 'install_failure' $_.Exception.Message

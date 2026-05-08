@@ -16,12 +16,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+from agents import Agent, all_supported_agent_names, discover_agents
+
 CANONICAL_SERVER_NAME = "mcp-stata"
 LEGACY_SERVER_NAMES = ("mcp_stata",)
 PACKAGE_NAME = "mcp-stata"
 DEFAULT_SCOPE = "project"
-SUPPORTED_AGENTS = ("claude", "codex", "gemini", "cursor", "windsurf", "vscode")
-REPO_ROOT = Path(__file__).resolve().parents[1]
+SUPPORTED_AGENTS = ("claude", "codex", "gemini", "cursor", "windsurf", "vscode", "zed", "continue")
+REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_ROOT = REPO_ROOT / "plugin"
 PLUGIN_SKILLS_DIR = PLUGIN_ROOT / "skills"
 AGENTS_BLOCK_START = "<!-- BEGIN MCP-STATA MANAGED BLOCK -->"
@@ -239,21 +241,6 @@ def detect_stata(stata_path_override: str | None = None) -> tuple[str | None, st
         return None, None
 
 
-def detect_agents() -> list[str]:
-    agents: list[str] = []
-    if shutil.which("claude"):
-        agents.append("claude")
-    if shutil.which("codex"):
-        agents.append("codex")
-    if shutil.which("gemini") or (Path.home() / ".gemini").exists():
-        agents.append("gemini")
-    if (Path.home() / ".cursor").exists():
-        agents.append("cursor")
-    if (Path.home() / ".codeium" / "windsurf").exists():
-        agents.append("windsurf")
-    if shutil.which("code"):
-        agents.append("vscode")
-    return agents
 
 
 def configure_editor_mcp(
@@ -432,6 +419,197 @@ def _ensure_symlink(link: Path, target: Path) -> bool:
         return False
     link.symlink_to(target)
     return True
+
+
+def _remove_symlink(link: Path) -> bool:
+    if link.is_symlink():
+        link.unlink()
+        return True
+    return False
+
+
+def remove_json_server_config(path: Path, *, top_key: str) -> tuple[Path, bool]:
+    """Remove mcp-stata entry (canonical + legacy names) from a JSON config file."""
+    data = _load_json(path)
+    if not data:
+        return path, False
+    section = data.get(top_key, {})
+    if not isinstance(section, dict):
+        return path, False
+    changed = False
+    for name in (CANONICAL_SERVER_NAME,) + LEGACY_SERVER_NAMES:
+        if name in section:
+            del section[name]
+            changed = True
+    if changed:
+        data[top_key] = section
+        _write_json(path, data)
+    return path, changed
+
+
+def remove_codex_config(path: Path) -> tuple[Path, bool]:
+    """Remove the mcp-stata TOML block from a Codex config.toml."""
+    if not path.exists():
+        return path, False
+    content = path.read_text()
+    pattern = re.compile(
+        r'(?ms)^\[mcp_servers\.(?:"?mcp-stata"?|"?mcp_stata"?)\](?:\.env)?\n.*?(?=^\[|\Z)'
+    )
+    new_content = pattern.sub("", content).strip()
+    if new_content == content.strip():
+        return path, False
+    path.write_text((new_content + "\n") if new_content else "")
+    return path, True
+
+
+def remove_project_agents_hint(project_root: Path | None = None) -> tuple[Path, bool]:
+    """Remove the managed block from AGENTS.md."""
+    root = get_project_root(project_root)
+    target = root / "AGENTS.md"
+    if not target.exists():
+        return target, False
+    content = target.read_text()
+    pattern = re.compile(
+        rf"{re.escape(AGENTS_BLOCK_START)}.*?{re.escape(AGENTS_BLOCK_END)}\n?",
+        re.DOTALL,
+    )
+    new_content = pattern.sub("", content).strip()
+    if new_content == content.strip():
+        return target, False
+    if new_content:
+        target.write_text(new_content + "\n")
+    else:
+        target.unlink()
+    return target, True
+
+
+def uninstall_for_agent(
+    agent: str,
+    *,
+    scope: str,
+    project_root: Path | None = None,
+) -> list[Path]:
+    removed: list[Path] = []
+
+    def _append(path: Path | None, changed: bool) -> None:
+        if path is not None and changed:
+            removed.append(path)
+
+    if agent == "claude":
+        if shutil.which("claude"):
+            try:
+                subprocess.run(
+                    ["claude", "mcp", "remove", CANONICAL_SERVER_NAME, "--scope", scope],
+                    check=True,
+                )
+            except Exception:
+                pass
+        for s in ("user", "project"):
+            config_path = get_mcp_config_path("claude_desktop", scope=s, project_root=project_root)
+            if config_path:
+                _append(*remove_json_server_config(config_path, top_key="mcpServers"))
+        return removed
+
+    if agent == "codex":
+        target_dir = get_codex_home() if scope == "user" else get_project_root(project_root) / ".codex"
+        _append(*remove_codex_config(target_dir / "config.toml"))
+        link = get_codex_home() / "skills" / CANONICAL_SERVER_NAME
+        if _remove_symlink(link):
+            removed.append(link)
+        _append(*remove_project_agents_hint(project_root=project_root))
+        return removed
+
+    if agent == "gemini":
+        link = Path.home() / ".gemini" / "extensions" / CANONICAL_SERVER_NAME
+        if _remove_symlink(link):
+            removed.append(link)
+        return removed
+
+    if agent == "cursor":
+        config_path = get_mcp_config_path("cursor", scope=scope, project_root=project_root)
+        if config_path:
+            _append(*remove_json_server_config(config_path, top_key="mcpServers"))
+        return removed
+
+    if agent == "windsurf":
+        config_path = Path.home() / ".codeium" / "windsurf" / "mcp_config.json"
+        _append(*remove_json_server_config(config_path, top_key="mcpServers"))
+        return removed
+
+    if agent == "vscode":
+        config_path = get_mcp_config_path("vscode", scope=scope, project_root=project_root)
+        if config_path:
+            _append(*remove_json_server_config(config_path, top_key="servers"))
+        return removed
+
+    if agent == "zed":
+        config_path = Path.home() / ".config" / "zed" / "settings.json"
+        _append(*remove_json_server_config(config_path, top_key="context_servers"))
+        return removed
+
+    if agent == "continue":
+        config_path = Path.home() / ".continue" / "config.json"
+        _append(*remove_json_server_config(config_path, top_key="mcpServers"))
+        return removed
+
+    return removed
+
+
+def _run_uninstall(args: argparse.Namespace) -> int:
+    print("=== mcp-stata Toolkit Uninstall ===")
+    project_root = get_project_root()
+    targets = discover_agents()
+
+    if args.agent:
+        wanted = {a.strip().lower() for a in args.agent.split(",")}
+        if "claude" in wanted:
+            wanted.update({"claude-desktop", "claude-code"})
+        targets = [a for a in targets if a.name in wanted]
+
+    if not targets:
+        print_warning("No supported agents detected. Nothing to uninstall.")
+        return 0
+
+    # Remove the generic skills symlink once, regardless of agent.
+    generic_link = Path.home() / ".agents" / "skills" / CANONICAL_SERVER_NAME
+    if not args.dry_run:
+        if _remove_symlink(generic_link):
+            print_success(f"Removed {generic_link}")
+    else:
+        print(f"  [dry-run] would remove {generic_link}")
+
+    seen_internal: set[str] = set()
+    for agent in targets:
+        internal_name = agent.name
+        if internal_name.startswith("claude-"):
+            internal_name = "claude"
+        if internal_name in seen_internal:
+            continue
+        seen_internal.add(internal_name)
+
+        print_step(f"Uninstalling from {agent.display_name}")
+        if args.dry_run:
+            print(f"  [dry-run] would remove {CANONICAL_SERVER_NAME} from {agent.display_name} ({args.scope} scope)")
+            continue
+
+        if internal_name in SUPPORTED_AGENTS:
+            removed = uninstall_for_agent(internal_name, scope=args.scope, project_root=project_root)
+            if removed:
+                for path in removed:
+                    print_success(f"Cleaned {path}")
+            else:
+                print_warning(f"Nothing to remove for {agent.display_name}")
+        else:
+            config_path = getattr(agent, "config_path", None)
+            if config_path:
+                path, changed = remove_json_server_config(Path(config_path), top_key="mcpServers")
+                if changed:
+                    print_success(f"Cleaned {path}")
+                else:
+                    print_warning(f"Nothing to remove for {agent.display_name}")
+
+    print("\n=== Uninstall Complete ===")
+    return 0
 
 
 def _managed_agents_block() -> str:
@@ -635,7 +813,18 @@ def install_for_agent(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Install and verify the mcp-stata toolkit.")
-    parser.add_argument("--agent", choices=[*SUPPORTED_AGENTS, "all"], default="")
+    parser.add_argument(
+        "--agent",
+        help=f"Comma-separated list of agents to configure. "
+             f"Supported: {', '.join(all_supported_agent_names())}. "
+             f"Default: configure every detected agent.",
+        default="",
+    )
+    parser.add_argument(
+        "--no-fail-on-empty",
+        action="store_true",
+        help="Don't exit with error if no agents are found (useful for CI).",
+    )
     parser.add_argument("--scope", choices=["project", "user"], default=DEFAULT_SCOPE)
     parser.add_argument("--stata-path", default="")
     parser.add_argument("--version", default="")
@@ -647,6 +836,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verify", action="store_true")
+    parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="Remove mcp-stata from all detected (or specified) agent configurations.",
+    )
     return parser
 
 
@@ -686,11 +880,20 @@ def _print_dry_run(
         return
     if agent == "vscode":
         print(f"  [dry-run] would write {get_mcp_config_path('vscode', scope=scope, project_root=project_root)}")
+        return
+    if agent == "zed":
+        print(f"  [dry-run] would write {Path.home() / '.config' / 'zed' / 'settings.json'}")
+        return
+    if agent == "continue":
+        print(f"  [dry-run] would write {Path.home() / '.continue' / 'config.json'}")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.uninstall:
+        return _run_uninstall(args)
 
     latest = True
     if args.version:
@@ -710,21 +913,28 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     project_root = get_project_root()
-    agents = detect_agents() if not args.agent else ([] if args.agent == "all" else [args.agent])
-    if args.agent == "all":
-        agents = detect_agents()
-    if args.agent and args.agent not in ("", "all"):
-        agents = [args.agent]
-    if not agents:
-        if args.agent == "all":
+    targets = discover_agents()
+
+    if args.agent:
+        wanted = {a.strip().lower() for a in args.agent.split(",")}
+        # Handle aliases used in setup_toolkit
+        if "claude" in wanted:
+            wanted.update({"claude-desktop", "claude-code"})
+        if "codex" in wanted:
+            wanted.add("codex") # codex is handled specially
+        targets = [a for a in targets if a.name in wanted]
+
+    if not targets:
+        if args.no_fail_on_empty:
             print_warning("No supported agents were detected. Nothing to configure.")
             return 0
-        print_error("Nothing to configure. Please specify an agent with --agent (e.g. claude, cursor) or ensure your editor is installed.")
+        print_error("No supported MCP host detected. Install Claude Desktop, Claude Code, Cursor, Windsurf, Continue, or Zed and re-run.")
         return 1
 
+    agent_names = [a.display_name for a in targets]
     print_step("Configuration summary")
     print_success(f"Scope: {args.scope}")
-    print_success(f"Agents: {', '.join(agents)}")
+    print_success(f"Agents: {', '.join(agent_names)}")
     if args.local_source:
         print_success(f"Install source: local ({args.local_source})")
     elif args.version:
@@ -736,11 +946,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print_warning("Stata not found. Set STATA_PATH before verification.")
 
-    for agent in agents:
-        print_step(f"Configuring {agent}")
+    for agent in targets:
+        print_step(f"Configuring {agent.display_name}")
         if args.dry_run:
+            # We use the old display logic for dry-run if possible
+            internal_name = agent.name
+            if internal_name.startswith("claude-"): internal_name = "claude"
             _print_dry_run(
-                agent,
+                internal_name,
                 scope=args.scope,
                 version=args.version or None,
                 latest=latest,
@@ -748,16 +961,32 @@ def main(argv: list[str] | None = None) -> int:
                 project_root=project_root,
             )
             continue
-        written = install_for_agent(
-            agent,
-            scope=args.scope,
-            version=args.version or None,
-            latest=latest,
-            local_source=args.local_source or None,
-            project_root=project_root,
-        )
-        for path in written:
-            print_success(f"Updated {path}")
+
+        # If it's an agent we have specialized logic for, use it.
+        # Otherwise, use the generic JSON merge.
+        internal_name = agent.name
+        if internal_name.startswith("claude-"): internal_name = "claude"
+
+        if internal_name in SUPPORTED_AGENTS:
+            written = install_for_agent(
+                internal_name,
+                scope=args.scope,
+                version=args.version or None,
+                latest=latest,
+                local_source=args.local_source or None,
+                project_root=project_root,
+            )
+            for path in written:
+                print_success(f"Updated {path}")
+        else:
+            # Generic JSON merge
+            server_config = build_server_entry(
+                version=args.version or None,
+                latest=latest,
+                local_source=args.local_source or None,
+            )
+            agent.install_mcp_entry(CANONICAL_SERVER_NAME, server_config)
+            print_success(f"Updated {agent.config_path}")
 
     if args.verify and not args.dry_run:
         test_stata_connection()

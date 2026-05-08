@@ -146,7 +146,7 @@ ensure_dependencies() {
 
 ensure_repo_root() {
   # If we're already in a checkout, use it.
-  if [ -f "${REPO_ROOT}/scripts/setup_toolkit.py" ]; then
+  if [ -f "${REPO_ROOT}/scripts/install/setup_toolkit.py" ]; then
     return
   fi
 
@@ -167,8 +167,13 @@ ensure_uv() {
   # Always ensure extraction tools and downloader are present
   ensure_dependencies "curl" "tar" "gzip"
 
-  # We invoke the official installer. It's idempotent.
-  say "Ensuring uv is installed..."
+  # Fast path: uv already on PATH — nothing to do.
+  if command -v uv &>/dev/null; then
+    ok "uv already installed ($(uv --version 2>/dev/null || echo unknown))"
+    return
+  fi
+
+  say "Installing uv..."
   curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused https://astral.sh/uv/install.sh | sh
 
   # Search for uv in common locations to refresh the current PATH
@@ -200,8 +205,17 @@ main() {
   
   say "Launching mcp-stata installer..."
   INSTALL_STAGE="setup_toolkit"
-  uv run --python 3.11 "${INSTALL_REPO_ROOT}/scripts/setup_toolkit.py" "$@" || err "Python installer failed"
-  send_telemetry "install_success"
+  uv run --python 3.11 "${INSTALL_REPO_ROOT}/scripts/install/setup_toolkit.py" "$@" || err "Python installer failed"
+  
+  local event="install_success"
+  # Check if --uninstall is in the arguments
+  for arg in "$@"; do
+    if [ "$arg" = "--uninstall" ]; then
+      event="uninstall_success"
+      break
+    fi
+  done
+  send_telemetry "$event"
 }
 
 main "$@"
