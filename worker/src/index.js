@@ -41,6 +41,9 @@ const ALLOWED_EVENTS = new Set([
   'install_start',
   'install_success',
   'install_failure',
+  'uninstall_start',
+  'uninstall_success',
+  'uninstall_failure',
 ]);
 
 const SECURITY_HEADERS = {
@@ -169,7 +172,14 @@ async function handleTelemetry(request, env) {
     return new Response('Invalid JSON\n', { status: 400 });
   }
 
-  const event = sanitizeEvent(body);
+  let rawJson = '';
+  try {
+    rawJson = JSON.stringify(body);
+  } catch {
+    rawJson = '';
+  }
+
+  const event = sanitizeEvent(body, rawJson);
   if (!event) {
     return new Response('Invalid payload\n', { status: 400 });
   }
@@ -184,7 +194,7 @@ async function handleTelemetry(request, env) {
   });
 }
 
-function sanitizeEvent(body) {
+function sanitizeEvent(body, rawJson) {
   if (!body || typeof body !== 'object') return null;
   if (!ALLOWED_EVENTS.has(body.event)) return null;
 
@@ -196,8 +206,14 @@ function sanitizeEvent(body) {
 
   return {
     event: cap(body.event, 32),
+    action: cap(body.action, 16), // install | uninstall (preferred over inferring from event)
     stage: cap(body.stage, 64),
     file: cap(body.file, 32),
+    client: cap(body.client, 32), // claude|codex|cursor|...
+    install_source: cap(body.install_source, 32), // workbench|direct|unknown
+    scope: cap(body.scope, 16), // user|project|unknown
+    install_ref: cap(body.install_ref, 64), // installer-selected ref (if known)
+    install_repo: cap(body.install_repo, 128), // installer-selected repo (if known)
     os: cap(body.os, 32),
     distro: cap(body.distro, 64),
     arch: cap(body.arch, 16),
@@ -205,38 +221,73 @@ function sanitizeEvent(body) {
     duration_ms: num(body.duration_ms),
     install_id: cap(body.install_id, 64),
     script_version: cap(body.script_version, 32),
+    // Capped JSON for lossless debugging; still queryable as a blob field.
+    raw_json: cap(rawJson || '', 3500),
   };
 }
 
-async function recordEvent(env, request, event) {
+export function buildAnalyticsDataPoint(env, request, event) {
   const country = request.cf?.country || 'XX';
   const tool = detectClientTool(request.headers.get('user-agent') || '');
+  const repo = env.GITHUB_REPO || DEFAULTS.GITHUB_REPO;
+  const ref = env.INSTALL_REF || DEFAULTS.INSTALL_REF;
+  const installId = event.install_id || (globalThis.crypto?.randomUUID?.() ?? '');
+
+  const ua = request.headers.get('user-agent') || '';
+  const botScore = request.cf?.botManagement?.score || 0;
+  const payloadBytes = event.raw_json ? event.raw_json.length : 0;
+
+  const action =
+    event.action ||
+    (event.event.startsWith('uninstall_') ? 'uninstall' : 'install');
+
+  return {
+    blobs: [
+      event.event, // 1: install_* | uninstall_*
+      action, // 2: install | uninstall
+      event.stage || '', // 3
+      event.client || '', // 4: target MCP host (claude|codex|cursor|...)
+      event.install_source || '', // 5: workbench|direct|unknown
+      event.scope || '', // 6: user|project|unknown
+      event.file || '', // 7: install.sh | install.ps1
+      event.os || '', // 8
+      event.distro || '', // 9
+      event.arch || '', // 10
+      event.error_code || '', // 11
+      tool, // 12: curl|wget|powershell|browser|other
+      country, // 13
+      event.script_version || '', // 14
+      event.install_repo || '', // 15 (from installer env/flags if available)
+      event.install_ref || '', // 16
+      repo, // 17 worker upstream repo
+      ref, // 18 worker upstream ref
+      ua.slice(0, 256), // 19
+      event.raw_json || '', // 20
+    ],
+    doubles: [
+      1, // double1: row count
+      event.duration_ms || 0, // double2: duration_ms
+      payloadBytes || 0, // double3: payload_bytes (capped-json length)
+      botScore || 0, // double4: bot score (0 if unavailable)
+    ],
+    indexes: [installId || event.event],
+  };
+}
+
+export function sanitizeTelemetryPayload(body, rawJson) {
+  return sanitizeEvent(body, rawJson);
+}
+
+async function recordEvent(env, request, event) {
+  const dataPoint = buildAnalyticsDataPoint(env, request, event);
 
   if (!env.MCP_STATA) {
-    console.log('event', { ...event, country, tool });
+    console.log('event', { ...event, index1: dataPoint.indexes?.[0] || '' });
     return;
   }
 
   try {
-    env.MCP_STATA.writeDataPoint({
-      // blobs are queryable in Analytics Engine SQL via blob1, blob2, ...
-      blobs: [
-        event.event, // 1: install_start | install_success | install_failure
-        event.stage || '', // 2: ensure_uv | ensure_repo_root | setup_toolkit | ...
-        event.file || '', // 3: install.sh | install.ps1
-        event.os || '', // 4: linux | darwin | windows
-        event.distro || '', // 5: ubuntu-22.04 | macos-14 | windows-11
-        event.arch || '', // 6: x86_64 | arm64
-        event.error_code || '', // 7
-        tool, // 8: curl | wget | powershell | iwr | other
-        country, // 9: ISO 3166-1 alpha-2
-        event.script_version || '', // 10
-      ],
-      // doubles are aggregable: SUM(_sample_interval), AVG(double2), ...
-      doubles: [1, event.duration_ms || 0],
-      // single index, used for cheap WHERE filtering in queries
-      indexes: [event.event],
-    });
+    env.MCP_STATA.writeDataPoint(dataPoint);
   } catch (err) {
     console.error('metrics write failed', err.stack || String(err));
   }

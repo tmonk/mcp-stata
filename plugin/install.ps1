@@ -31,12 +31,35 @@ $TelemetryUrl = 'https://mcp-stata-install.tdmonk.com/telemetry'
 $InstallId = [guid]::NewGuid().ToString()
 $InstallStart = Get-Date
 $InstallStage = 'init'
+$InstallSource = if ($env:MCP_STATA_INSTALL_SOURCE) { $env:MCP_STATA_INSTALL_SOURCE } else { 'direct' }  # workbench|direct
 
 function Send-Telemetry {
     param($Event, $ErrorCode = '')
     try {
+        $action = if ($Event -like 'uninstall_*') { 'uninstall' } else { 'install' }
+        $client = ''
+        $scope = ''
+        $install_ref = if ($env:MCP_STATA_REF) { $env:MCP_STATA_REF } else { '' }
+        $install_repo = if ($env:MCP_STATA_REPO_URL) { $env:MCP_STATA_REPO_URL } else { '' }
+        $script_version = if ($env:MCP_STATA_SCRIPT_VERSION) { $env:MCP_STATA_SCRIPT_VERSION } else { '' }
+
+        for ($i = 0; $i -lt $PassthroughArgs.Count; $i++) {
+            $arg = $PassthroughArgs[$i]
+            if ($arg -eq '--agent' -and ($i + 1) -lt $PassthroughArgs.Count) { $client = $PassthroughArgs[$i + 1] }
+            if ($arg -like '--agent=*') { $client = $arg.Substring(8) }
+            if ($arg -eq '--scope' -and ($i + 1) -lt $PassthroughArgs.Count) { $scope = $PassthroughArgs[$i + 1] }
+            if ($arg -like '--scope=*') { $scope = $arg.Substring(8) }
+        }
+
         $payload = @{
             event = $Event
+            action = $action
+            client = $client
+            install_source = $InstallSource
+            scope = $scope
+            install_ref = $install_ref
+            install_repo = $install_repo
+            script_version = $script_version
             stage = $InstallStage
             error_code = $ErrorCode
             os = 'windows'
@@ -188,7 +211,8 @@ try {
     Send-Telemetry $event
     exit $LASTEXITCODE
 } catch {
-    Send-Telemetry 'install_failure' $_.Exception.Message
+    $failEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_failure' } else { 'install_failure' }
+    Send-Telemetry $failEvent $_.Exception.Message
     [Console]::Error.WriteLine("[ERROR] $($_.Exception.Message)")
     [Console]::Error.WriteLine(@"
 

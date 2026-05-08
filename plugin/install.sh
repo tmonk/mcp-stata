@@ -34,6 +34,7 @@ INSTALL_ID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || \
               uuidgen 2>/dev/null || echo "$(date +%s)-$$")"
 INSTALL_STAGE="init"
 INSTALL_START_TIME=$(date +%s)
+INSTALL_SOURCE="${MCP_STATA_INSTALL_SOURCE:-direct}"  # e.g. workbench|direct
 
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -45,18 +46,54 @@ send_telemetry() {
   local distro=""
   [ -f /etc/os-release ] && distro="$(. /etc/os-release && echo "${ID:-unknown}-${VERSION_ID:-}")"
   [ "$(uname -s)" = "Darwin" ] && distro="macos-$(sw_vers -productVersion 2>/dev/null || echo unknown)"
+  local action="install"
+  case "$event" in
+    uninstall_*) action="uninstall" ;;
+  esac
+
+  local client=""
+  local scope=""
+  local install_ref="${MCP_STATA_REF:-}"
+  local install_repo="${MCP_STATA_REPO_URL:-}"
+  local script_version="${MCP_STATA_SCRIPT_VERSION:-}"
+
+  # Best-effort parse of passthrough args.
+  for ((i=1; i<=$#; i++)); do
+    local arg="${!i}"
+    if [ "$arg" = "--agent" ] && [ $((i+1)) -le $# ]; then
+      client="${!((i+1))}"
+    fi
+    if [[ "$arg" == --agent=* ]]; then
+      client="${arg#--agent=}"
+    fi
+    if [ "$arg" = "--scope" ] && [ $((i+1)) -le $# ]; then
+      scope="${!((i+1))}"
+    fi
+    if [[ "$arg" == --scope=* ]]; then
+      scope="${arg#--scope=}"
+    fi
+  done
 
   curl -fsS -m 3 -X POST "$TELEMETRY_URL" \
     -H 'content-type: application/json' \
-    -d "$(printf '{"event":"%s","stage":"%s","error_code":"%s","os":"%s","distro":"%s","arch":"%s","duration_ms":%d,"install_id":"%s","file":"install.sh"}' \
+    -d "$(printf '{"event":"%s","action":"%s","stage":"%s","client":"%s","install_source":"%s","scope":"%s","install_repo":"%s","install_ref":"%s","script_version":"%s","error_code":"%s","os":"%s","distro":"%s","arch":"%s","duration_ms":%d,"install_id":"%s","file":"install.sh"}' \
         "$event" "$INSTALL_STAGE" "$(json_escape "$error_code")" \
+        "$(json_escape "$action")" "$(json_escape "$client")" "$(json_escape "$INSTALL_SOURCE")" "$(json_escape "$scope")" \
+        "$(json_escape "$install_repo")" "$(json_escape "$install_ref")" "$(json_escape "$script_version")" \
         "$(uname -s | tr A-Z a-z)" "$distro" "$(uname -m)" \
         "$((duration * 1000))" "$INSTALL_ID")" \
     >/dev/null 2>&1 || true
 }
 
 err() {
-  send_telemetry "install_failure" "$1"
+  local fail_event="install_failure"
+  for arg in "$@"; do
+    if [ "$arg" = "--uninstall" ]; then
+      fail_event="uninstall_failure"
+      break
+    fi
+  done
+  send_telemetry "$fail_event" "$1" "$@"
   printf "${RED}${BOLD}[ERROR]${RESET} %s\n" "$1" >&2
   cat >&2 <<EOF
 
@@ -215,7 +252,7 @@ main() {
       break
     fi
   done
-  send_telemetry "$event"
+  send_telemetry "$event" "" "$@"
 }
 
 main "$@"
