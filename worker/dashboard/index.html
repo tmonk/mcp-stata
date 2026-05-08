@@ -454,10 +454,10 @@ const FIELD_MAP = {
   error:   { blob: 'blob11', label: 'Error' },
   tool:    { blob: 'blob12', label: 'Tool' },
   country: { blob: 'blob13', label: 'Country' },
-  user:    { blob: 'blob23', label: 'User ID' },
-  username:{ blob: 'blob24', label: 'Username' },
-  machine: { blob: 'blob25', label: 'Machine ID' },
   version: { blob: 'blob14', label: 'Version' },
+  user:    { blob: 'blob15', label: 'User ID' },
+  username:{ blob: 'blob16', label: 'Username' },
+  machine: { blob: 'blob17', label: 'Machine ID' },
 };
 
 // ── state ─────────────────────────────────────────────────────────────────────
@@ -661,11 +661,11 @@ const q = {
       blob5 AS src,
       blob13 AS country,
       blob11 AS error_code,
-      blob23 AS user_id,
-      blob24 AS username,
-      blob25 AS machine_id,
       blob14 AS version,
-      blob20 AS log_tail
+      blob15 AS user_id,
+      blob16 AS username,
+      blob17 AS machine_id,
+      blob18 AS log_tail
     FROM ${DATASET}
     WHERE ${timeWhere()} ${filterSQL()}
     ORDER BY timestamp DESC
@@ -975,7 +975,7 @@ function showLog(i) {
   document.getElementById('log-modal-title').textContent =
     `${r.event || 'event'} · ${r.client || 'unknown client'}`;
   document.getElementById('log-modal-meta').textContent =
-    [r.os, r.country, relTime(r.timestamp), r.username, r.version, r.error_code ? `error: ${r.error_code}` : '']
+    [r.os, r.country, relTime(r.timestamp), r.username, r.version, r.error_code ? `error: ${r.error_code}` : '', `id: ${r.user_id}`, `mach: ${r.machine_id}`]
       .filter(Boolean).join(' · ');
   const lines = (r.log_tail || '').split('\n');
   document.getElementById('log-modal-content').innerHTML = lines.map(line => {

@@ -257,28 +257,23 @@ export function buildAnalyticsDataPoint(env, request, event) {
       event.event, // 1: install_* | uninstall_*
       action, // 2: install | uninstall
       event.stage || '', // 3
-      event.client || '', // 4: target MCP host (claude|codex|cursor|...)
-      event.install_source || '', // 5: workbench|direct|unknown
-      event.scope || '', // 6: user|project|unknown
-      event.file || '', // 7: install.sh | install.ps1
+      event.client || '', // 4
+      event.install_source || '', // 5
+      event.scope || '', // 6
+      event.file || '', // 7
       event.os || '', // 8
       event.distro || '', // 9
       event.arch || '', // 10
       event.error_code || '', // 11
-      tool, // 12: curl|wget|powershell|browser|other
+      tool, // 12
       country, // 13
-      event.script_version || '', // 14
-      event.install_repo || '', // 15
-      event.install_ref || '', // 16
-      repo, // 17 worker upstream repo
-      ref, // 18 worker upstream ref
-      ua.slice(0, 256), // 19
-      event.log_tail || '', // 20: last ~100 lines of install log (failures)
-      asn, // 21: ASN (best-effort)
-      asOrg, // 22: AS organization / ISP-ish label (best-effort)
-      event.user_id || '', // 23: anonymous per-user id (best-effort)
-      event.username || '', // 24
-      event.machine_id || '', // 25
+      event.script_version || '', // 14: version
+      event.user_id || '', // 15
+      event.username || '', // 16
+      event.machine_id || '', // 17
+      event.log_tail || '', // 18: truncated log for failures
+      `${asn} ${asOrg}`.trim().slice(0, 256), // 19: network info
+      `${repo}@${ref}`.slice(0, 256), // 20: worker context
     ],
     doubles: [
       1, // double1: row count
