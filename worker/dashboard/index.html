@@ -70,6 +70,18 @@
   .dt-input.has-value { border-color: #6366f155; }
   .live-badge { font-size: 11px; color: var(--emerald); padding: 3px 7px;
     border-radius: 4px; background: rgba(16,185,129,.12); white-space: nowrap; }
+  .sound-ctl { display:flex; align-items:center; gap:8px; margin-left:auto; }
+  .sound-ctl label { font-size: 11px; font-weight: 600; letter-spacing: .5px;
+    text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+  .sound-select {
+    padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--text); font-size: 12px;
+    font-family: inherit; cursor: pointer; appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%235b637a' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 8px center; padding-right: 28px;
+  }
+  .sound-select:focus { outline: none; border-color: var(--indigo); }
+  .sound-muted { color: var(--muted); font-size: 12px; }
 
   .seg-btn { padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border);
     background: none; color: var(--dim); font-size: 12px; cursor: pointer; transition: all .12s; white-space: nowrap; }
@@ -235,6 +247,21 @@
       <span class="time-label">To</span>
       <input class="dt-input" type="datetime-local" id="dt-to" placeholder="now">
       <span class="live-badge" id="live-badge">● live</span>
+    </div>
+
+    <div class="time-bar-sep"></div>
+
+    <!-- sound -->
+    <div class="time-bar-section sound-ctl" title="Optional sound when a live install succeeds">
+      <label for="sound-select">Sound</label>
+      <select class="sound-select" id="sound-select">
+        <option value="off">Off</option>
+        <option value="beep">Beep</option>
+        <option value="click">Click</option>
+        <option value="pop">Pop</option>
+      </select>
+      <button class="seg-btn" id="sound-test-btn" style="padding:4px 8px">Test</button>
+      <span class="sound-muted" id="sound-status" hidden>Audio blocked</span>
     </div>
 
     <div class="time-bar-sep"></div>
@@ -435,6 +462,12 @@ let activeFilters = [];
 let activeInterval = { n: '1', unit: 'DAY' };
 let recentRows = [];
 
+let stream = null;
+let lastStreamSeen = null;
+let refreshTimer = null;
+
+const SOUND_KEY = 'mcp-stata-dashboard:sound';
+
 // ── datetime helpers ──────────────────────────────────────────────────────────
 
 // datetime-local value → UTC SQL string 'YYYY-MM-DD HH:MM:SS'
@@ -463,6 +496,81 @@ function isLive() { return !document.getElementById('dt-to').value; }
 
 function updateLiveBadge() {
   document.getElementById('live-badge').style.display = isLive() ? '' : 'none';
+}
+
+// ── sound (optional) ──────────────────────────────────────────────────────────
+
+function getSoundChoice() {
+  return localStorage.getItem(SOUND_KEY) || 'off';
+}
+
+function setSoundChoice(v) {
+  localStorage.setItem(SOUND_KEY, v);
+}
+
+async function ensureAudioUnlocked() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return { ok: false, reason: 'no AudioContext' };
+    if (!window.__mcpAudioCtx) window.__mcpAudioCtx = new Ctx();
+    if (window.__mcpAudioCtx.state === 'suspended') await window.__mcpAudioCtx.resume();
+    return { ok: window.__mcpAudioCtx.state === 'running' };
+  } catch (e) {
+    return { ok: false, reason: e?.message || String(e) };
+  }
+}
+
+function playSound(kind) {
+  if (!kind || kind === 'off') return;
+  const ctx = window.__mcpAudioCtx;
+  if (!ctx || ctx.state !== 'running') return;
+
+  const now = ctx.currentTime;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.connect(ctx.destination);
+
+  if (kind === 'click') {
+    const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.02), ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * Math.exp(-i / 200);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(gain);
+    gain.gain.exponentialRampToValueAtTime(0.18, now + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.03);
+    src.start(now);
+    src.stop(now + 0.05);
+    return;
+  }
+
+  const osc = ctx.createOscillator();
+  osc.type = kind === 'pop' ? 'triangle' : 'sine';
+  osc.frequency.setValueAtTime(kind === 'pop' ? 220 : 660, now);
+  if (kind === 'pop') osc.frequency.exponentialRampToValueAtTime(110, now + 0.09);
+  gain.gain.exponentialRampToValueAtTime(kind === 'pop' ? 0.22 : 0.16, now + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + (kind === 'pop' ? 0.12 : 0.07));
+  osc.connect(gain);
+  osc.start(now);
+  osc.stop(now + (kind === 'pop' ? 0.14 : 0.09));
+}
+
+function updateSoundUI() {
+  const sel = document.getElementById('sound-select');
+  if (sel) sel.value = getSoundChoice();
+}
+
+async function soundTest() {
+  const status = document.getElementById('sound-status');
+  const desired = getSoundChoice();
+  const kind = desired === 'off' ? 'beep' : desired;
+  const res = await ensureAudioUnlocked();
+  if (!res.ok) {
+    if (status) { status.hidden = false; status.textContent = 'Audio blocked'; }
+    return;
+  }
+  if (status) status.hidden = true;
+  playSound(kind);
 }
 
 // ── filter SQL ────────────────────────────────────────────────────────────────
@@ -830,6 +938,7 @@ document.querySelectorAll('#preset-btns .seg-btn').forEach(btn => {
     const suggested = autoInterval(hours);
     setIntervalActive(suggested.n, suggested.unit);
     loadAll();
+    startStream();
   });
 });
 
@@ -845,10 +954,12 @@ document.getElementById('dt-to').addEventListener('change', () => {
   updateLiveBadge();
   clearPresetActive();
   loadAll();
+  startStream();
 });
 document.getElementById('dt-from').addEventListener('change', () => {
   clearPresetActive();
   loadAll();
+  startStream();
 });
 
 // ── filter UI ─────────────────────────────────────────────────────────────────
@@ -964,6 +1075,53 @@ async function loadAll() {
 document.getElementById('refresh-btn').addEventListener('click', loadAll);
 setInterval(() => { if (isLive()) loadAll(); }, 5 * 60 * 1000);
 
+// ── live stream (SSE) ─────────────────────────────────────────────────────────
+
+function scheduleRefresh() {
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null;
+    if (isLive()) loadAll();
+  }, 1500);
+}
+
+function stopStream() {
+  if (stream) {
+    try { stream.close(); } catch {}
+    stream = null;
+  }
+}
+
+function startStream() {
+  stopStream();
+  if (!isLive()) return;
+
+  stream = new EventSource('/api/stream');
+
+  stream.addEventListener('hello', () => {
+    setStatus(true, 'Live stream connected');
+  });
+
+  stream.addEventListener('error', () => {
+    // The browser will auto-retry; keep UI honest.
+    setStatus(false, 'Live stream disconnected (retrying…)');
+  });
+
+  stream.addEventListener('event', (ev) => {
+    let row = null;
+    try { row = JSON.parse(ev.data); } catch { return; }
+    if (!row || !row.timestamp) return;
+    if (lastStreamSeen && row.timestamp <= lastStreamSeen) return;
+    lastStreamSeen = row.timestamp;
+
+    if (row.event === 'install_success') {
+      playSound(getSoundChoice());
+    }
+
+    scheduleRefresh();
+  });
+}
+
 // ── init ──────────────────────────────────────────────────────────────────────
 
 async function init() {
@@ -989,10 +1147,17 @@ async function init() {
     document.getElementById('dt-from').value = toDatetimeLocal(new Date(now - 7*24*3600_000));
   }
   updateLiveBadge();
-  // default: hide script-download noise from recent events table
-  activeFilters = [{ field: 'event', op: 'is not', value: 'install_start' }];
+  // Default: hide script-download noise from recent events table *unless* we're live,
+  // where users typically want immediate feedback that installs are happening.
+  activeFilters = isLive() ? [] : [{ field: 'event', op: 'is not', value: 'install_start' }];
   renderChips();
+  updateSoundUI();
+  document.getElementById('sound-select').addEventListener('change', (e) => {
+    setSoundChoice(e.target.value);
+  });
+  document.getElementById('sound-test-btn').addEventListener('click', soundTest);
   loadAll();
+  startStream();
 }
 
 init();

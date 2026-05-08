@@ -184,9 +184,9 @@ async function handleTelemetry(request, env) {
     return new Response('Invalid payload\n', { status: 400 });
   }
 
-  await recordEvent(env, request, event);
+  const result = await recordEvent(env, request, event);
 
-  return new Response(JSON.stringify({ ok: true }), {
+  return new Response(JSON.stringify({ ok: true, ...result }), {
     headers: {
       'content-type': 'application/json',
       ...corsHeaders(),
@@ -287,13 +287,15 @@ async function recordEvent(env, request, event) {
 
   if (!env.MCP_STATA) {
     console.log('event', { ...event, index1: dataPoint.indexes?.[0] || '' });
-    return;
+    return { stored: false, sink: 'console', index1: dataPoint.indexes?.[0] || '' };
   }
 
   try {
     env.MCP_STATA.writeDataPoint(dataPoint);
+    return { stored: true, sink: 'analytics_engine', index1: dataPoint.indexes?.[0] || '' };
   } catch (err) {
     console.error('metrics write failed', err.stack || String(err));
+    return { stored: false, sink: 'analytics_engine', index1: dataPoint.indexes?.[0] || '', error: 'write_failed' };
   }
 }
 

@@ -228,6 +228,8 @@ INSTALL_ID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || \
 INSTALL_STAGE="init"
 INSTALL_START_TIME=$(date +%s)
 INSTALL_SOURCE="${MCP_STATA_INSTALL_SOURCE:-direct}"  # e.g. workbench|direct
+TELEMETRY_RETRIES="${MCP_STATA_TELEMETRY_RETRIES:-3}"
+TELEMETRY_TIMEOUT_SECS="${MCP_STATA_TELEMETRY_TIMEOUT_SECS:-5}"
 
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -289,15 +291,29 @@ send_telemetry() {
       tr '\n' '\001' | sed 's/\001/\\n/g' || true)"
   fi
 
-  curl -fsS -m 5 -X POST "$TELEMETRY_URL" \
-    -H 'content-type: application/json' \
-    -d "$(printf '{"event":"%s","action":"%s","stage":"%s","client":"%s","install_source":"%s","scope":"%s","install_repo":"%s","install_ref":"%s","script_version":"%s","error_code":"%s","os":"%s","distro":"%s","arch":"%s","duration_ms":%d,"install_id":"%s","file":"install.sh","log_tail":"%s"}' \
+  local payload
+  payload="$(printf '{"event":"%s","action":"%s","stage":"%s","client":"%s","install_source":"%s","scope":"%s","install_repo":"%s","install_ref":"%s","script_version":"%s","error_code":"%s","os":"%s","distro":"%s","arch":"%s","duration_ms":%d,"install_id":"%s","file":"install.sh","log_tail":"%s"}' \
         "$event" "$(json_escape "$action")" "$INSTALL_STAGE" \
         "$(json_escape "$client")" "$(json_escape "$INSTALL_SOURCE")" "$(json_escape "$scope")" \
         "$(json_escape "$install_repo")" "$(json_escape "$install_ref")" "$(json_escape "$script_version")" \
         "$(json_escape "$error_code")" "$(uname -s | tr A-Z a-z)" "$distro" "$(uname -m)" \
-        "$((duration * 1000))" "$INSTALL_ID" "$log_tail")" \
-    >/dev/null 2>&1 || true
+        "$((duration * 1000))" "$INSTALL_ID" "$log_tail")"
+
+  local attempt=1
+  while [ "$attempt" -le "$TELEMETRY_RETRIES" ]; do
+    if curl -fsS -m "$TELEMETRY_TIMEOUT_SECS" -X POST "$TELEMETRY_URL" \
+      -H 'content-type: application/json' \
+      -d "$payload" \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.2
+  done
+
+  # Non-fatal: installer should never fail because telemetry couldn't be delivered.
+  warn "Telemetry could not be delivered (event=${event}). Dashboard may not update."
+  return 1
 }
 
 err() {
@@ -470,6 +486,35 @@ main() {
   fi
 
   trap cleanup EXIT
+
+  # Emit a real run-scoped start event (distinct from the worker's script-fetch event).
+  # Best-effort only; never fail install because telemetry isn't reachable.
+  local start_event="install_start"
+  for arg in "$@"; do
+    if [ "$arg" = "--uninstall" ]; then
+      start_event="uninstall_start"
+      break
+    fi
+  done
+  send_telemetry "$start_event" "" "$@" || true
+
+  # Telemetry-only mode: exercise end-to-end telemetry without mutating the machine.
+  # Usage:
+  #   MCP_STATA_TELEMETRY_ONLY=1 bash install.sh
+  if [ "${MCP_STATA_TELEMETRY_ONLY:-}" = "1" ]; then
+    INSTALL_STAGE="telemetry_only"
+    local end_event="install_success"
+    for arg in "$@"; do
+      if [ "$arg" = "--uninstall" ]; then
+        end_event="uninstall_success"
+        break
+      fi
+    done
+    send_telemetry "$end_event" "" "$@" || true
+    ok "Telemetry-only mode complete"
+    detail "install_id=${INSTALL_ID}"
+    return 0
+  fi
 
   stage "BOOTSTRAP SOURCE"
   INSTALL_STAGE="ensure_repo_root"
