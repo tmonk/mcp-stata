@@ -1,0 +1,53 @@
+name: Test Installers
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'plugin/install.sh'
+      - 'plugin/install.ps1'
+      - 'scripts/setup_toolkit.py'
+      - '.github/workflows/test-installers.yml'
+      - 'tests/install_scripts/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'plugin/install.sh'
+      - 'plugin/install.ps1'
+      - 'scripts/setup_toolkit.py'
+      - '.github/workflows/test-installers.yml'
+      - 'tests/install_scripts/**'
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run Linux Installer Tests (Docker)
+        run: python3 tests/install_scripts/test_linux_installers.py
+
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run macOS Installer Test
+        run: |
+          # Test with dry-run to avoid polluting the runner
+          bash plugin/install.sh --dry-run --agent all
+        shell: bash
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Windows Installer Test
+        run: |
+          # PowerShell 7
+          pwsh ./plugin/install.ps1 --dry-run --agent all
+          # PowerShell 5.1
+          powershell -File ./plugin/install.ps1 --dry-run --agent all
+        shell: pwsh

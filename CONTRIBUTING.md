@@ -161,6 +161,34 @@ import sys
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
 ```
 
+### 6. Installation Script Testing
+
+We maintain bootstrap scripts for easy installation across platforms. These are tested for both logic and cross-platform compatibility.
+
+#### Linux Installation Tests (Docker)
+
+To verify the `install.sh` script across various Linux distributions (Ubuntu, Fedora, Alpine, etc.), run the Docker-based test suite:
+
+```bash
+python3 tests/install_scripts/test_linux_installers.py
+```
+
+*Note: Requires Docker to be running locally.*
+
+#### macOS/Windows Dry-Run
+
+You can manually verify the bootstrap scripts on macOS and Windows without modifying your system by using the `--dry-run` flag:
+
+**macOS/Linux**:
+```bash
+bash plugin/install.sh --dry-run --agent all
+```
+
+**Windows (PowerShell)**:
+```powershell
+pwsh ./plugin/install.ps1 --dry-run --agent all
+```
+
 ## Submitting Changes
 
 ### Dependency Management
