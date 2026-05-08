@@ -36,6 +36,9 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
+      - name: Install Hatch (version tooling)
+        run: uv tool install hatch
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -52,6 +55,11 @@ jobs:
         run: |
           uv sync --python ${{ matrix.python-version }} --all-extras --dev
         timeout-minutes: 10
+
+      - name: Sync versions across repo (server + plugin)
+        run: |
+          uv run python scripts/maintenance/sync_server_version.py
+        timeout-minutes: 2
 
       - name: Run Environment Diagnostic Tests
         run: |
