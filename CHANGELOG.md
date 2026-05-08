@@ -2,6 +2,24 @@
 
 <!-- version list -->
 
+## v3.1.3 (2026-05-08)
+
+### Bug Fixes
+
+- Add dynamic script versioning and machine identification to telemetry data
+  ([`7d36ef7`](https://github.com/tmonk/mcp-stata/commit/7d36ef75b115b684102d8ea54d35a3dc78430a83))
+
+- Fix anonymous telemetry, help documentation, and robust retry logic to installation scripts
+  ([`d5dfdc5`](https://github.com/tmonk/mcp-stata/commit/d5dfdc5bbbdc0f06025a9c4b8f908fba81cdd431))
+
+- Remove caching
+  ([`8a273fb`](https://github.com/tmonk/mcp-stata/commit/8a273fb494a80248d6df2e287174cfd11f2141c4))
+
+- Update build pipelines, add progress suppression to installer, and extend dashboard telemetry
+  schema
+  ([`f79c699`](https://github.com/tmonk/mcp-stata/commit/f79c69920ffce690d63123318863b6e22f771461))
+
+
 ## v3.1.2 (2026-05-08)
 
 ### Documentation
