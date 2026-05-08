@@ -26,7 +26,8 @@ CANONICAL_SERVER_NAME = "mcp-stata"
 LEGACY_SERVER_NAMES = ("mcp_stata",)
 PACKAGE_NAME = "mcp-stata"
 DEFAULT_SCOPE = "project"
-SUPPORTED_AGENTS = ("claude", "codex", "gemini", "cursor", "windsurf", "vscode", "zed", "continue")
+# NOTE: Zed and Continue are intentionally NOT supported by mcp-stata at this time.
+SUPPORTED_AGENTS = ("claude", "codex", "gemini", "cursor", "windsurf", "vscode")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_ROOT = REPO_ROOT / "plugin"
 PLUGIN_SKILLS_DIR = PLUGIN_ROOT / "skills"
@@ -181,7 +182,6 @@ def get_mcp_config_path(editor: str, scope: str = "user", project_root: Path | N
     home = Path.home()
     if scope == "project":
         project_paths = {
-            "vscode": project_root / ".vscode" / "mcp.json",
             "cursor": project_root / ".cursor" / "mcp.json",
             "claude_desktop": project_root / ".mcp.json",
         }
@@ -546,16 +546,6 @@ def uninstall_for_agent(
             _append(*remove_json_server_config(config_path, top_key="servers"))
         return removed
 
-    if agent == "zed":
-        config_path = Path.home() / ".config" / "zed" / "settings.json"
-        _append(*remove_json_server_config(config_path, top_key="context_servers"))
-        return removed
-
-    if agent == "continue":
-        config_path = Path.home() / ".continue" / "config.json"
-        _append(*remove_json_server_config(config_path, top_key="mcpServers"))
-        return removed
-
     return removed
 
 
@@ -886,13 +876,6 @@ def _print_dry_run(
     if agent == "vscode":
         print(f"  [dry-run] would write {get_mcp_config_path('vscode', scope=scope, project_root=project_root)}")
         return
-    if agent == "zed":
-        print(f"  [dry-run] would write {Path.home() / '.config' / 'zed' / 'settings.json'}")
-        return
-    if agent == "continue":
-        print(f"  [dry-run] would write {Path.home() / '.continue' / 'config.json'}")
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -933,7 +916,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.no_fail_on_empty:
             print_warning("No supported agents were detected. Nothing to configure.")
             return 0
-        print_error("No supported MCP host detected. Install Claude Desktop, Claude Code, Cursor, Windsurf, Continue, or Zed and re-run.")
+        print_error("No supported MCP host detected. Install Claude Desktop, Claude Code, Cursor, or Windsurf and re-run.")
         return 1
 
     agent_names = [a.display_name for a in targets]

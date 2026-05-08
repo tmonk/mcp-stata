@@ -105,10 +105,6 @@ def _windsurf_path() -> Path:
     return _home() / ".codeium" / "windsurf" / "mcp_config.json"
 
 
-def _continue_path() -> Path:
-    return _home() / ".continue" / "config.json"
-
-
 def _zed_path() -> Path:
     # Zed exposes context servers in its main settings file
     return _home() / ".config" / "zed" / "settings.json"
@@ -178,13 +174,6 @@ def _detect_windsurf() -> Optional[Agent]:
     return None
 
 
-def _detect_continue() -> Optional[Agent]:
-    path = _continue_path()
-    if path.parent.exists():
-        return Agent("continue", "Continue", path, "dir_exists")
-    return None
-
-
 def _detect_zed() -> Optional[Agent]:
     path = _zed_path()
     if _binary_in_path("zed") or path.exists():
@@ -218,8 +207,6 @@ _DETECTORS: list[Callable[[], Optional[Agent]]] = [
     _detect_claude_code,
     _detect_cursor,
     _detect_windsurf,
-    _detect_continue,
-    _detect_zed,
     _detect_vscode,
     _detect_gemini,
 ]
@@ -234,5 +221,5 @@ def all_supported_agent_names() -> list[str]:
     """Names that can be passed to --agent. Useful for help text and validation."""
     return [
         "claude-desktop", "claude-code", "cursor",
-        "windsurf", "continue", "zed", "vscode", "gemini",
+        "windsurf", "vscode", "gemini",
     ]
