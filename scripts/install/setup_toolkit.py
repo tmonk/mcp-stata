@@ -16,6 +16,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Add the script's directory to sys.path to allow importing local modules like 'agents'
+# when run via 'uv run' or from other directories.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from agents import Agent, all_supported_agent_names, discover_agents
 
 CANONICAL_SERVER_NAME = "mcp-stata"
@@ -566,17 +570,18 @@ def _run_uninstall(args: argparse.Namespace) -> int:
             wanted.update({"claude-desktop", "claude-code"})
         targets = [a for a in targets if a.name in wanted]
 
+    # Remove the generic skills symlink once, regardless of agent.
+    generic_link = Path.home() / ".agents" / "skills" / CANONICAL_SERVER_NAME
+    if generic_link.is_symlink() or generic_link.exists():
+        if not args.dry_run:
+            if _remove_symlink(generic_link):
+                print_success(f"Removed {generic_link}")
+        else:
+            print(f"  [dry-run] would remove {generic_link}")
+
     if not targets:
         print_warning("No supported agents detected. Nothing to uninstall.")
         return 0
-
-    # Remove the generic skills symlink once, regardless of agent.
-    generic_link = Path.home() / ".agents" / "skills" / CANONICAL_SERVER_NAME
-    if not args.dry_run:
-        if _remove_symlink(generic_link):
-            print_success(f"Removed {generic_link}")
-    else:
-        print(f"  [dry-run] would remove {generic_link}")
 
     seen_internal: set[str] = set()
     for agent in targets:
