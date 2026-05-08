@@ -37,7 +37,7 @@ jobs:
       - name: Run macOS Installer Test
         run: |
           # Test with dry-run to avoid polluting the runner
-          bash plugin/install.sh --dry-run --agent all
+          bash plugin/install.sh --dry-run --agent claude
         shell: bash
 
   test-windows:
@@ -47,7 +47,7 @@ jobs:
       - name: Run Windows Installer Test
         run: |
           # PowerShell 7
-          pwsh ./plugin/install.ps1 --dry-run --agent all
+          pwsh ./plugin/install.ps1 --dry-run --agent claude
           # PowerShell 5.1
-          powershell -File ./plugin/install.ps1 --dry-run --agent all
+          powershell -File ./plugin/install.ps1 --dry-run --agent claude
         shell: pwsh

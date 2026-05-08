@@ -89,14 +89,25 @@ function Ensure-Uv {
 
     Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
 
-    # Make uv available in this session
-    $env:PATH = "$UvBinDir;$env:PATH"
+    # Make uv available in this session. uv installer defaults to $env:APPDATA\uv\bin 
+    # or $env:USERPROFILE\.local\bin or $env:XDG_BIN_HOME
+    $CandidatePaths = @(
+        (Join-Path $env:APPDATA 'uv\bin'),
+        (Join-Path $env:USERPROFILE '.local\bin'),
+        $env:XDG_BIN_HOME
+    )
 
-    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        Write-Fail "uv installed but not on PATH. Add '$UvBinDir' to your PATH and re-run."
+    foreach ($Path in $CandidatePaths) {
+        if ($Path -and (Test-Path $Path)) {
+            $env:PATH = "$Path;$env:PATH"
+            if (Get-Command uv -ErrorAction SilentlyContinue) {
+                Write-Ok "uv installed and found in $Path"
+                return
+            }
+        }
     }
 
-    Write-Ok "uv installed: $((Get-Command uv).Source)"
+    Write-Fail "uv installed but not found on PATH. Please add it manually and re-run."
 }
 
 # ── Entry point ───────────────────────────────────────────────────────────────

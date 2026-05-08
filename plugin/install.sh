@@ -118,14 +118,19 @@ ensure_uv() {
     err "Neither 'curl' nor 'wget' found. Install one and re-run."
   fi
 
-  # Make uv available in this session (uv installer targets ~/.local/bin)
-  export PATH="${UV_BIN_DIR}:${PATH}"
+  # Make uv available in this session. uv installer defaults to ~/.local/bin or $XDG_BIN_HOME
+  CANDIDATE_PATHS=("${HOME}/.local/bin" "${XDG_BIN_HOME:-}" "${HOME}/.cargo/bin")
+  for path in "${CANDIDATE_PATHS[@]}"; do
+    if [ -n "$path" ] && [ -d "$path" ]; then
+      export PATH="${path}:${PATH}"
+      if command -v uv &>/dev/null; then
+        ok "uv installed and found in ${path}"
+        return
+      fi
+    fi
+  done
 
-  if ! command -v uv &>/dev/null; then
-    err "uv installed but not on PATH. Add '${UV_BIN_DIR}' to your PATH and re-run."
-  fi
-
-  ok "uv installed: $(command -v uv)"
+  err "uv installed but not found on PATH. Please add it manually and re-run."
 }
 
 # ── Entry point ───────────────────────────────────────────────────────────────

@@ -716,7 +716,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.agent and args.agent not in ("", "all"):
         agents = [args.agent]
     if not agents:
-        print_error("Nothing to configure.")
+        if args.agent == "all":
+            print_warning("No supported agents were detected. Nothing to configure.")
+            return 0
+        print_error("Nothing to configure. Please specify an agent with --agent (e.g. claude, cursor) or ensure your editor is installed.")
         return 1
 
     print_step("Configuration summary")
