@@ -35,7 +35,9 @@ const DEFAULTS = {
   INSTALL_REF: 'main',
 };
 
-const SCRIPT_CACHE_TTL = 300; // 5 minutes — short enough to push fixes quickly
+//const SCRIPT_CACHE_TTL = 300; // 5 minutes — short enough to push fixes quickly
+const SCRIPT_CACHE_TTL = 1; // 1 second — effectively disable caching for testing; set to a few minutes for production. The script files themselves are small and GitHub is fast, so caching isn't critical for performance.
+
 const TELEMETRY_MAX_BYTES = 8 * 1024;
 const ALLOWED_EVENTS = new Set([
   'install_start',
