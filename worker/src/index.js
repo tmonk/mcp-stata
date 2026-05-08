@@ -227,6 +227,8 @@ function sanitizeEvent(body, rawJson) {
     duration_ms: num(body.duration_ms),
     install_id: cap(body.install_id, 64),
     user_id: cap(body.user_id, 32),
+    username: cap(body.username, 64),
+    machine_id: cap(body.machine_id, 64),
     script_version: cap(body.script_version, 32),
     // Last ~100 lines of the install log, sent on failure for diagnostics.
     log_tail: capLog(body.log_tail || '', 4000),
@@ -275,6 +277,8 @@ export function buildAnalyticsDataPoint(env, request, event) {
       asn, // 21: ASN (best-effort)
       asOrg, // 22: AS organization / ISP-ish label (best-effort)
       event.user_id || '', // 23: anonymous per-user id (best-effort)
+      event.username || '', // 24
+      event.machine_id || '', // 25
     ],
     doubles: [
       1, // double1: row count

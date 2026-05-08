@@ -409,7 +409,7 @@
     <div class="table-scroll">
       <table>
         <thead>
-          <tr><th>Time</th><th>Event</th><th>Client</th><th>OS</th><th>Source</th><th>Country</th><th>Error</th><th>Log</th></tr>
+          <tr><th>Time</th><th>Event</th><th>Version</th><th>Client</th><th>OS</th><th>User</th><th>Username</th><th>Country</th><th>Error</th><th>Log</th></tr>
         </thead>
         <tbody id="recent-tbody">
           <tr><td colspan="8" style="color:var(--muted);padding:20px 12px;">Loading…</td></tr>
@@ -455,6 +455,9 @@ const FIELD_MAP = {
   tool:    { blob: 'blob12', label: 'Tool' },
   country: { blob: 'blob13', label: 'Country' },
   user:    { blob: 'blob23', label: 'User ID' },
+  username:{ blob: 'blob24', label: 'Username' },
+  machine: { blob: 'blob25', label: 'Machine ID' },
+  version: { blob: 'blob14', label: 'Version' },
 };
 
 // ── state ─────────────────────────────────────────────────────────────────────
@@ -658,6 +661,10 @@ const q = {
       blob5 AS src,
       blob13 AS country,
       blob11 AS error_code,
+      blob23 AS user_id,
+      blob24 AS username,
+      blob25 AS machine_id,
+      blob14 AS version,
       blob20 AS log_tail
     FROM ${DATASET}
     WHERE ${timeWhere()} ${filterSQL()}
@@ -889,6 +896,10 @@ async function loadRecent() {
         sources: new Set(),
         countries: new Set(),
         errors: new Set(),
+        user_ids: new Set(),
+        usernames: new Set(),
+        machine_ids: new Set(),
+        versions: new Set(),
         log_tail: '',
       });
     }
@@ -905,6 +916,10 @@ async function loadRecent() {
     if (r.src)     agg.sources.add(r.src);
     if (r.country) agg.countries.add(r.country);
     if (r.error_code) agg.errors.add(r.error_code);
+    if (r.user_id) agg.user_ids.add(r.user_id);
+    if (r.username) agg.usernames.add(r.username);
+    if (r.machine_id) agg.machine_ids.add(r.machine_id);
+    if (r.version) agg.versions.add(r.version);
 
     // Keep any non-empty log tail (typically only present on failures).
     if (!agg.log_tail && r.log_tail) agg.log_tail = r.log_tail;
@@ -922,6 +937,10 @@ async function loadRecent() {
     src: Array.from(a.sources).join(', '),
     country: Array.from(a.countries).join(', '),
     error_code: Array.from(a.errors).join(', '),
+    user_id: Array.from(a.user_ids).join(', '),
+    username: Array.from(a.usernames).join(', '),
+    machine_id: Array.from(a.machine_ids).join(', '),
+    version: Array.from(a.versions).join(', '),
     log_tail: a.log_tail,
   }));
 
@@ -929,15 +948,17 @@ async function loadRecent() {
   recentRows = rolled;
   const tbody = document.getElementById('recent-tbody');
   if (!rolled.length) {
-    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted);padding:20px 12px;">No events in range.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="color:var(--muted);padding:20px 12px;">No events in range.</td></tr>';
     return;
   }
   tbody.innerHTML = rolled.map((r, i) => `<tr>
     <td style="color:var(--muted);white-space:nowrap;font-size:12px">${relTime(r.timestamp)}</td>
     <td>${eventBadge(r)}</td>
+    <td>${cell('version', r.version)}</td>
     <td>${cell('client', r.client)}</td>
     <td>${cell('os', r.os)}</td>
-    <td>${cell('source', r.src)}</td>
+    <td title="${r.user_id}">${cell('user', r.user_id ? r.user_id.slice(0,8)+'…' : '')}</td>
+    <td>${cell('username', r.username)}</td>
     <td>${cell('country', r.country)}</td>
     <td>${r.error_code
       ? `<span class="filterable" style="color:var(--rose);font-size:12px" onclick="quickFilter('error','${esc(r.error_code)}')">${r.error_code}</span>`
@@ -954,7 +975,7 @@ function showLog(i) {
   document.getElementById('log-modal-title').textContent =
     `${r.event || 'event'} · ${r.client || 'unknown client'}`;
   document.getElementById('log-modal-meta').textContent =
-    [r.os, r.country, relTime(r.timestamp), r.error_code ? `error: ${r.error_code}` : '']
+    [r.os, r.country, relTime(r.timestamp), r.username, r.version, r.error_code ? `error: ${r.error_code}` : '']
       .filter(Boolean).join(' · ');
   const lines = (r.log_tail || '').split('\n');
   document.getElementById('log-modal-content').innerHTML = lines.map(line => {

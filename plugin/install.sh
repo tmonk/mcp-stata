@@ -272,6 +272,9 @@ mcp-stata installer
 Usage:
   install.sh [--agent <name>] [--scope <user|project>] [--dry-run] [--uninstall] [--verbose] ...
 
+Agents:
+  claude, codex, gemini, cursor, windsurf, vscode
+
 Notes:
   - This script delegates the heavy lifting to scripts/install/setup_toolkit.py
   - Telemetry is best-effort and never affects exit status.

@@ -39,12 +39,12 @@ def test_install_ps1_exports_log_path_for_python_installer() -> None:
 def test_install_ps1_verbose_mode_streams_raw_toolkit_output() -> None:
     text = _script_text()
     assert "if ($VerboseMode) {" in text
-    assert "& uv run --python 3.11 $pythonInstaller @Arguments" in text
+    assert "& uv run --no-progress --python 3.11 $pythonInstaller @Arguments" in text
 
 
 def test_install_ps1_non_verbose_mode_formats_toolkit_output() -> None:
     text = _script_text()
-    assert "$output = & uv run --python 3.11 $pythonInstaller @Arguments 2>&1" in text
+    assert "$output = & uv run --no-progress --python 3.11 $pythonInstaller @Arguments 2>&1" in text
     assert "Format-ToolkitLine ([string]$line)" in text
 
 
