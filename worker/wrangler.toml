@@ -1,0 +1,11 @@
+name = "mcp-stata-install"
+main = "src/index.js"
+compatibility_date = "2026-05-08"
+
+[vars]
+GITHUB_REPO = "tmonk/mcp-stata"
+INSTALL_REF = "main"
+
+[[analytics_engine_datasets]]
+binding = "MCP_STATA"
+dataset = "mcp_stata_installs"
