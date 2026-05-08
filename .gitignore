@@ -24,3 +24,4 @@ Cargo.lock
 AGENTS.md
 .codex/config.toml
 mcp-stata-install/
+/worker/.wrangler

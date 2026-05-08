@@ -72,9 +72,42 @@ test('buildAnalyticsDataPoint maps client/source/uninstall fields', () => {
   assert.equal(dp.blobs[5], 'user'); // scope
   assert.equal(dp.blobs[11], 'curl'); // tool
   assert.equal(dp.blobs[12], 'GB'); // country
-  assert.equal(dp.blobs[16], 'x/y'); // worker repo
-  assert.equal(dp.blobs[17], 'v1.2.3'); // worker ref
+  assert.equal(dp.blobs[16], ''); // machine_id
+  assert.equal(dp.blobs[17], ''); // log_tail
+  assert.equal(dp.blobs[18], ''); // network info
+  assert.equal(dp.blobs[19], 'x/y@v1.2.3'); // worker context
   assert.equal(dp.doubles[1], 1234);
   assert.equal(dp.doubles[3], 42);
+});
+
+test('buildAnalyticsDataPoint handles log_tail and network info', () => {
+  const env = {};
+  const request = makeRequest({
+    cf: { asn: 12345, asOrganization: 'Test ASN', country: 'US' },
+  });
+  const event = {
+    event: 'install_failure',
+    machine_id: 'mach-1',
+    log_tail: 'line 1\nline 2',
+    duration_ms: 500,
+  };
+
+  const dp = buildAnalyticsDataPoint(env, request, event);
+  assert.equal(dp.blobs[0], 'install_failure');
+  assert.equal(dp.blobs[1], 'install'); // inferred from start
+  assert.equal(dp.blobs[16], 'mach-1');
+  assert.equal(dp.blobs[17], 'line 1\nline 2');
+  assert.equal(dp.blobs[18], '12345 Test ASN');
+  assert.equal(dp.doubles[1], 500);
+  assert.equal(dp.doubles[2], 13); // 'line 1\nline 2'.length
+});
+
+test('sanitizeTelemetryPayload strips control characters from log_tail', () => {
+  const raw = {
+    event: 'install_failure',
+    log_tail: 'line 1\x07\x00line 2', // bell and null char
+  };
+  const sanitized = sanitizeTelemetryPayload(raw, JSON.stringify(raw));
+  assert.equal(sanitized.log_tail, 'line 1line 2');
 });
 

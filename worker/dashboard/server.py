@@ -163,7 +163,8 @@ class Handler(BaseHTTPRequestHandler):
                 sql = f"""
                     SELECT timestamp, blob1 AS event, blob4 AS client,
                            blob8 AS os, blob5 AS src, blob13 AS country, blob11 AS error_code,
-                           blob20 AS log_tail
+                           blob14 AS version, blob15 AS user_id, blob16 AS username,
+                           blob17 AS machine_id, blob18 AS log_tail, blob19 AS network_info
                     FROM mcp_stata_installs
                     WHERE timestamp > toDateTime('{since}')
                     ORDER BY timestamp ASC

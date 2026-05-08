@@ -25,13 +25,6 @@ AUTHOR_EMAIL="t.d.monk@lse.ac.uk"
 # Note: VERSION is derived dynamically in main() after bootstrap
 VERBOSE_MODE=0
 
-for arg in "$@"; do
-  if [[ "$arg" == "--verbose" ]]; then
-    VERBOSE_MODE=1
-    break
-  fi
-done
-
 paint() {
   local style="$1"
   shift
@@ -259,11 +252,13 @@ TARBALL_URL="${REPO_URL}/archive/${REF}.tar.gz"
 INSTALL_REPO_ROOT="${REPO_ROOT}"
 TEMP_DIR=""
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-LOG_FILE="${TMPDIR:-/tmp}/mcp-stata-install-$(date +%Y%m%d-%H%M%S)-$$.log"
-export MCP_STATA_INSTALL_LOG_FILE="$LOG_FILE"
-exec > >(tee -ai "$LOG_FILE") 2>&1
-show_header "$@"
+# ── Logging Setup ─────────────────────────────────────────────────────────────
+setup_logging() {
+  LOG_FILE="${TMPDIR:-/tmp}/mcp-stata-install-$(date +%Y%m%d-%H%M%S)-$$.log"
+  export MCP_STATA_INSTALL_LOG_FILE="$LOG_FILE"
+  # Note: we use a subshell for tee to avoid leaving it running if main exits early
+  exec > >(tee -ai "$LOG_FILE") 2>&1
+}
 
 show_help() {
   cat <<'EOF'
@@ -365,7 +360,13 @@ get_user_id() {
 }
 
 json_escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+  # We use python3 if available for robust escaping (handles newlines, tabs, etc.)
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$1" | python3 -c 'import json, sys; sys.stdout.write(json.dumps(sys.stdin.read())[1:-1])' 2>/dev/null && return 0
+  fi
+  # Fallback: escape backslashes and quotes; then convert newlines to \n.
+  # (sed processes line-by-line, so we use awk to join with \n)
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s%s", (NR>1?"\\n":""), $0}'
 }
 
 send_telemetry() {
@@ -586,7 +587,7 @@ ensure_repo_root() {
   say "Fetching mcp-stata source"
   detail "${TARBALL_URL}"
 
-  curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused "${TARBALL_URL}" | tar xz -C "${TEMP_DIR}" --strip-components=1
+  curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused "${TARBALL_URL}" | tar xz -C "${TEMP_DIR}" --strip-components=1 || err "Could not download or extract mcp-stata source" "$@"
 
   INSTALL_REPO_ROOT="${TEMP_DIR}"
   ok "Source extracted to ${INSTALL_REPO_ROOT}"
@@ -605,7 +606,7 @@ ensure_uv() {
 
   say "Installing uv"
   detail "Bootstrap via https://astral.sh/uv/install.sh"
-  curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused https://astral.sh/uv/install.sh | sh
+  curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused https://astral.sh/uv/install.sh | sh || err "Could not install uv via astral.sh" "$@"
 
   # Search for uv in common locations to refresh the current PATH
   CANDIDATE_PATHS=("${HOME}/.local/bin" "${XDG_BIN_HOME:-}" "${HOME}/.cargo/bin")
@@ -636,6 +637,16 @@ detect_action_label() {
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 main() {
+  for arg in "$@"; do
+    if [[ "$arg" == "--verbose" ]]; then
+      VERBOSE_MODE=1
+      break
+    fi
+  done
+
+  setup_logging
+  show_header "$@"
+
   detect_action_label "$@"
 
   for arg in "$@"; do
