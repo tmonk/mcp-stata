@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v3.1.1 (2026-05-08)
+
+### Bug Fixes
+
+- Add full install error logging/telemetry
+  ([`bfc55ed`](https://github.com/tmonk/mcp-stata/commit/bfc55ed440bf3e800871aa9bc0306f02eb12b4d0))
+
+- Add local proxy server for Cloudflare Analytics Engine dashboard
+  ([`887355d`](https://github.com/tmonk/mcp-stata/commit/887355d66a345af6515105403364c39c4d3f11dc))
+
+- Enhance setup_toolkit with logging and environment handling improvements
+  ([`37c5c58`](https://github.com/tmonk/mcp-stata/commit/37c5c585d5df133d00036317a61e9a86724cd3a6))
+
+
 ## v3.1.0 (2026-05-08)
 
 ### Bug Fixes
