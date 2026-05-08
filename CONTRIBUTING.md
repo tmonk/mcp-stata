@@ -117,7 +117,7 @@ We verify that the package builds correctly and all binaries are functional:
 pytest tests/test_build_integration.py -v -m slow
 
 # Or use the convenience script
-./scripts/test_build.sh
+./scripts/tests/test_build.sh
 ```
 These tests verify that the package installs in a clean environment and all entry points/extensions function correctly.
 
@@ -215,7 +215,7 @@ When adding dependencies:
 
 3. **Run build integration tests**:
    ```bash
-   ./scripts/test_build.sh
+   ./scripts/tests/test_build.sh
    ```
 
 4. **Commit with clear messages**:
@@ -241,7 +241,7 @@ The CI workflow is defined in `.github/workflows/build-test.yml` and `.github/wo
 - `src/mcp_stata/`: Python source code.
 - `src_rust/`: Rust source code for the high-performance extension.
 - `tests/`: Project integration and unit tests.
-- `scripts/`: Utilities for benchmarks, build testing, and version syncing.
+- `scripts/`: Utilities for benchmarks, build testing, and version syncing (organized into `install/`, `benchmarks/`, `maintenance/`, and `tests/`).
 
 ## Getting Help
 

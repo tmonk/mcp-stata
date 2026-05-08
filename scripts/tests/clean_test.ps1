@@ -22,7 +22,7 @@ function Resolve-Tool {
     return $null
 }
 
-$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+$repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $venvPath = Join-Path $repoRoot ".venv-clean"
 
 $uvCmd = Resolve-Tool @("uv", "uv.exe")

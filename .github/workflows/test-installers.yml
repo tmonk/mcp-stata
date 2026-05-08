@@ -6,7 +6,7 @@ on:
     paths:
       - 'plugin/install.sh'
       - 'plugin/install.ps1'
-      - 'scripts/setup_toolkit.py'
+      - 'scripts/install/setup_toolkit.py'
       - '.github/workflows/test-installers.yml'
       - 'tests/install_scripts/**'
   pull_request:
@@ -14,7 +14,7 @@ on:
     paths:
       - 'plugin/install.sh'
       - 'plugin/install.ps1'
-      - 'scripts/setup_toolkit.py'
+      - 'scripts/install/setup_toolkit.py'
       - '.github/workflows/test-installers.yml'
       - 'tests/install_scripts/**'
 
@@ -37,7 +37,11 @@ jobs:
       - name: Run macOS Installer Test
         run: |
           # Test with dry-run to avoid polluting the runner
-          bash plugin/install.sh --dry-run --agent claude
+          bash plugin/install.sh --dry-run --no-fail-on-empty
+        shell: bash
+      - name: Run macOS Uninstall Dry-run Test
+        run: |
+          bash plugin/install.sh --uninstall --dry-run --no-fail-on-empty
         shell: bash
 
   test-windows:
@@ -47,7 +51,14 @@ jobs:
       - name: Run Windows Installer Test
         run: |
           # PowerShell 7
-          pwsh -File ./plugin/install.ps1 --dry-run --agent claude
+          pwsh -File ./plugin/install.ps1 --dry-run --no-fail-on-empty
           # PowerShell 5.1
-          powershell -ExecutionPolicy Bypass -File ./plugin/install.ps1 --dry-run --agent claude
+          powershell -ExecutionPolicy Bypass -File ./plugin/install.ps1 --dry-run --no-fail-on-empty
+        shell: pwsh
+      - name: Run Windows Uninstall Dry-run Test
+        run: |
+          # PowerShell 7
+          pwsh -File ./plugin/install.ps1 --uninstall --dry-run --no-fail-on-empty
+          # PowerShell 5.1
+          powershell -ExecutionPolicy Bypass -File ./plugin/install.ps1 --uninstall --dry-run --no-fail-on-empty
         shell: pwsh

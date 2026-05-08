@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_SKILLS = ROOT / "plugin" / "skills"
 PLUGIN_AGENTS = ROOT / "plugin" / "agents"
 ROOT_SKILL = ROOT / "skill" / "SKILL.md"

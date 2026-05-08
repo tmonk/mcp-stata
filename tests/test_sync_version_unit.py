@@ -13,7 +13,7 @@ import pytest
 # Load the script as a module without requiring hatch / Stata at import time
 # ---------------------------------------------------------------------------
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "sync_server_version.py"
+_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "maintenance" / "sync_server_version.py"
 
 
 def _load_sync_module():

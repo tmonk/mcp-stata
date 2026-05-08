@@ -100,7 +100,7 @@ markers = [
 
 [tool.semantic_release]
 assets = ["server.json"]
-build_command = "python scripts/sync_server_version.py"
+build_command = "python scripts/maintenance/sync_server_version.py"
 version_toml = [
     "pyproject.toml:project.version",
     "Cargo.toml:package.version"
