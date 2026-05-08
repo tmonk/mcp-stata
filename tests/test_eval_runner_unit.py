@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "run_toolkit_evals.py"
+SCRIPT = ROOT / "plugin" / "evals" / "run_toolkit_evals.py"
 
 
 def _load_module():

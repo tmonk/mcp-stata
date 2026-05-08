@@ -220,6 +220,14 @@ def discover_agents() -> list[Agent]:
 def all_supported_agent_names() -> list[str]:
     """Names that can be passed to --agent. Useful for help text and validation."""
     return [
-        "claude-desktop", "claude-code", "cursor",
-        "windsurf", "vscode", "gemini",
+        # Canonical detected agent ids
+        "claude-desktop",
+        "claude-code",
+        "cursor",
+        "windsurf",
+        "vscode",
+        "gemini",
+        # Aliases / explicit configuration targets (not auto-detected)
+        "claude",
+        "codex",
     ]

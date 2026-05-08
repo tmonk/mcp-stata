@@ -8,7 +8,7 @@ import sys
 
 # Since we're in the repo, we can import directly
 repo_root = Path(__file__).parent.parent
-sys.path.append(str(repo_root / "scripts"))
+sys.path.append(str(repo_root / "scripts" / "install"))
 
 import setup_toolkit
 

@@ -903,23 +903,51 @@ def main(argv: list[str] | None = None) -> int:
     project_root = get_project_root()
     targets = discover_agents()
 
+    requested: list[str] = []
     if args.agent:
-        wanted = {a.strip().lower() for a in args.agent.split(",")}
-        # Handle aliases used in setup_toolkit
-        if "claude" in wanted:
-            wanted.update({"claude-desktop", "claude-code"})
-        if "codex" in wanted:
-            wanted.add("codex") # codex is handled specially
-        targets = [a for a in targets if a.name in wanted]
+        requested = [a.strip().lower() for a in args.agent.split(",") if a.strip()]
 
-    if not targets:
+    if requested:
+        # If the user explicitly requests agents, we should configure them even if
+        # auto-detection fails (e.g. fresh CI HOME with --agent gemini).
+        normalized: list[str] = []
+        for name in requested:
+            if name in ("claude-desktop", "claude-code"):
+                normalized.append("claude")
+            else:
+                normalized.append(name)
+        wanted = list(dict.fromkeys(normalized))  # stable unique
+
+        unknown = [a for a in wanted if a not in SUPPORTED_AGENTS]
+        if unknown:
+            print_error(f"Unsupported agent(s): {', '.join(unknown)}")
+            return 1
+
+        # Filter any detected agents, but don't require detection.
+        detected_internal: set[str] = set()
+        for a in targets:
+            internal = a.name
+            if internal.startswith("claude-"):
+                internal = "claude"
+            detected_internal.add(internal)
+
+        explicit_targets: list[tuple[str, str]] = []
+        for internal in wanted:
+            # Display names in summary output
+            display = internal.capitalize() if internal != "vscode" else "VS Code"
+            explicit_targets.append((internal, display))
+        targets = []  # sentinel: we will use explicit_targets path below
+    else:
+        explicit_targets = []
+
+    if not explicit_targets and not targets:
         if args.no_fail_on_empty:
             print_warning("No supported agents were detected. Nothing to configure.")
             return 0
         print_error("No supported MCP host detected. Install Claude Desktop, Claude Code, Cursor, or Windsurf and re-run.")
         return 1
 
-    agent_names = [a.display_name for a in targets]
+    agent_names = [d for _, d in explicit_targets] if explicit_targets else [a.display_name for a in targets]
     print_step("Configuration summary")
     print_success(f"Scope: {args.scope}")
     print_success(f"Agents: {', '.join(agent_names)}")
@@ -934,28 +962,19 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print_warning("Stata not found. Set STATA_PATH before verification.")
 
-    for agent in targets:
-        print_step(f"Configuring {agent.display_name}")
-        if args.dry_run:
-            # We use the old display logic for dry-run if possible
-            internal_name = agent.name
-            if internal_name.startswith("claude-"): internal_name = "claude"
-            _print_dry_run(
-                internal_name,
-                scope=args.scope,
-                version=args.version or None,
-                latest=latest,
-                local_source=args.local_source or None,
-                project_root=project_root,
-            )
-            continue
-
-        # If it's an agent we have specialized logic for, use it.
-        # Otherwise, use the generic JSON merge.
-        internal_name = agent.name
-        if internal_name.startswith("claude-"): internal_name = "claude"
-
-        if internal_name in SUPPORTED_AGENTS:
+    if explicit_targets:
+        for internal_name, display_name in explicit_targets:
+            print_step(f"Configuring {display_name}")
+            if args.dry_run:
+                _print_dry_run(
+                    internal_name,
+                    scope=args.scope,
+                    version=args.version or None,
+                    latest=latest,
+                    local_source=args.local_source or None,
+                    project_root=project_root,
+                )
+                continue
             written = install_for_agent(
                 internal_name,
                 scope=args.scope,
@@ -966,15 +985,50 @@ def main(argv: list[str] | None = None) -> int:
             )
             for path in written:
                 print_success(f"Updated {path}")
-        else:
-            # Generic JSON merge
-            server_config = build_server_entry(
-                version=args.version or None,
-                latest=latest,
-                local_source=args.local_source or None,
-            )
-            agent.install_mcp_entry(CANONICAL_SERVER_NAME, server_config)
-            print_success(f"Updated {agent.config_path}")
+    else:
+        for agent in targets:
+            print_step(f"Configuring {agent.display_name}")
+            if args.dry_run:
+                # We use the old display logic for dry-run if possible
+                internal_name = agent.name
+                if internal_name.startswith("claude-"):
+                    internal_name = "claude"
+                _print_dry_run(
+                    internal_name,
+                    scope=args.scope,
+                    version=args.version or None,
+                    latest=latest,
+                    local_source=args.local_source or None,
+                    project_root=project_root,
+                )
+                continue
+
+            # If it's an agent we have specialized logic for, use it.
+            # Otherwise, use the generic JSON merge.
+            internal_name = agent.name
+            if internal_name.startswith("claude-"):
+                internal_name = "claude"
+
+            if internal_name in SUPPORTED_AGENTS:
+                written = install_for_agent(
+                    internal_name,
+                    scope=args.scope,
+                    version=args.version or None,
+                    latest=latest,
+                    local_source=args.local_source or None,
+                    project_root=project_root,
+                )
+                for path in written:
+                    print_success(f"Updated {path}")
+            else:
+                # Generic JSON merge
+                server_config = build_server_entry(
+                    version=args.version or None,
+                    latest=latest,
+                    local_source=args.local_source or None,
+                )
+                agent.install_mcp_entry(CANONICAL_SERVER_NAME, server_config)
+                print_success(f"Updated {agent.config_path}")
 
     if args.verify and not args.dry_run:
         test_stata_connection()
