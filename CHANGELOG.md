@@ -2,6 +2,58 @@
 
 <!-- version list -->
 
+## v3.1.0 (2026-05-08)
+
+### Bug Fixes
+
+- Add installation failure issue template and improve install script diagnostics
+  ([`12c9bc1`](https://github.com/tmonk/mcp-stata/commit/12c9bc1b17ae5195104262cb4724b58b83ed2b9c))
+
+- Add uninstall functionality, and move scripts
+  ([`673b74c`](https://github.com/tmonk/mcp-stata/commit/673b74cbf851c278d55a5b22fcae0aba46b5d749))
+
+- Remove zed and continue as supported agents
+  ([`0037da9`](https://github.com/tmonk/mcp-stata/commit/0037da9b33042745c76667a1701ec695cf1d7050))
+
+- Update docker test environment to mount repo and fix uninstall logic for symlinks
+  ([`bc211e9`](https://github.com/tmonk/mcp-stata/commit/bc211e91a287f2c27a21a4a4efd33fabfeb3503d))
+
+- Update locations/agent lists
+  ([`e01d511`](https://github.com/tmonk/mcp-stata/commit/e01d51174d4c79046019236e12da6f07f74dd13c))
+
+### Chores
+
+- Move and sort scripts
+  ([`90d5d05`](https://github.com/tmonk/mcp-stata/commit/90d5d05cb80cfb9cca2bdb8ae522791e00bb0a8b))
+
+### Documentation
+
+- Install readme
+  ([`f614474`](https://github.com/tmonk/mcp-stata/commit/f614474469ca5974bfd590b3fe2ad16087595311))
+
+- Update install URLs
+  ([`7b16d35`](https://github.com/tmonk/mcp-stata/commit/7b16d35f70017507406a07996d3410788e940847))
+
+### Features
+
+- Add Cloudflare Worker for mcp-stata installer service
+  ([`d9b6206`](https://github.com/tmonk/mcp-stata/commit/d9b62064281058a839e35cb648a7b04233f61700))
+
+### Testing
+
+- Add Alpine Linux uninstall dry-run verification to installer tests
+  ([`2444156`](https://github.com/tmonk/mcp-stata/commit/2444156a84d4b5ac0ce2f89b51806be284e1bf0f))
+
+- Add integration test for agent configuration merging and preservation on Ubuntu
+  ([`528ad58`](https://github.com/tmonk/mcp-stata/commit/528ad5864b40012a0d14dac8992978304b2cbb85))
+
+- Remove output verification assertions from linux installer tests
+  ([`c95ceaf`](https://github.com/tmonk/mcp-stata/commit/c95ceafa79b9a275b48982a93eff63b4b58b760e))
+
+- Update linux installer test suite to verify uv installation instead of dependency warnings
+  ([`df2c2ca`](https://github.com/tmonk/mcp-stata/commit/df2c2ca8524f059ef309056dae6a59d0d8121a16))
+
+
 ## v3.0.3 (2026-05-08)
 
 ### Bug Fixes
