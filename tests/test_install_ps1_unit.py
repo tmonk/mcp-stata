@@ -48,7 +48,11 @@ def test_install_ps1_non_verbose_mode_formats_toolkit_output() -> None:
     assert "Format-ToolkitLine ([string]$line)" in text
 
 
-def test_install_ps1_starts_transcript_for_bug_logs() -> None:
+def test_install_ps1_contains_telemetry_endpoint() -> None:
     text = _script_text()
-    assert "Start-Transcript -Path $LogFile -Append -ErrorAction SilentlyContinue | Out-Null" in text
-    assert "Stop-Transcript -ErrorAction SilentlyContinue | Out-Null" in text
+    assert "$TelemetryUrl = 'https://mcp-stata-install.tdmonk.com/telemetry'" in text
+
+def test_install_ps1_implements_send_telemetry() -> None:
+    text = _script_text()
+    assert "function Send-Telemetry" in text
+    assert "Invoke-RestMethod -Uri $TelemetryUrl -Method Post" in text
