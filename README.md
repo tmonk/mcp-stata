@@ -368,6 +368,10 @@ stata_manage_session(action="get_ui_channel", session_id="analysis")
 
 # Interrupt / cancel / background status
 stata_control(action="break", id="analysis")
+
+# Before starting a new long-running do-file, inspect existing sessions/tasks so
+# you can clear stale work or choose a separate session for parallel runs.
+stata_manage_session(action="list")
 stata_run("quietly do /path/to/long_job.do", background=True, session_id="analysis")
 stata_task_status(task_id="...", wait=True, timeout=30)
 stata_control(action="cancel", id="...")
