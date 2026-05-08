@@ -81,5 +81,65 @@ class TestLinuxInstallers(unittest.TestCase):
         self.assertIn("[dry-run] would remove", res.stdout)
         self.assertIn("Uninstall Complete", res.stdout)
 
+    def test_agent_config_integrity(self):
+        print("Testing agent config merging and preservation (Ubuntu)...")
+        # This test creates a dummy Cursor config, runs the installer, 
+        # verifies the merge, runs the uninstaller, and verifies the cleanup.
+        script = """
+set -e
+apt-get update && apt-get install -y curl jq > /dev/null
+mkdir -p /root/.cursor
+cat > /root/.cursor/mcp.json <<EOF
+{
+  "mcpServers": {
+    "existing-server": {
+      "command": "echo",
+      "args": ["hello"]
+    }
+  }
+}
+EOF
+
+echo "[TEST] Running install..."
+# Run installer (real run, skip Stata check by not passing --verify)
+bash /repo/plugin/install.sh --agent cursor --scope user
+
+echo "[TEST] Verifying install integrity..."
+# Use jq to verify JSON structure
+if ! jq -e '.mcpServers["mcp-stata"]' /root/.cursor/mcp.json > /dev/null; then
+    echo "ERROR: mcp-stata not found in config"
+    cat /root/.cursor/mcp.json
+    exit 1
+fi
+if ! jq -e '.mcpServers["existing-server"]' /root/.cursor/mcp.json > /dev/null; then
+    echo "ERROR: existing-server was lost"
+    cat /root/.cursor/mcp.json
+    exit 1
+fi
+
+echo "[TEST] Running uninstall..."
+bash /repo/plugin/install.sh --uninstall --agent cursor --scope user
+
+echo "[TEST] Verifying uninstall integrity..."
+if jq -e '.mcpServers["mcp-stata"]' /root/.cursor/mcp.json > /dev/null; then
+    echo "ERROR: mcp-stata still found in config after uninstall"
+    cat /root/.cursor/mcp.json
+    exit 1
+fi
+if ! jq -e '.mcpServers["existing-server"]' /root/.cursor/mcp.json > /dev/null; then
+    echo "ERROR: existing-server was lost after uninstall"
+    cat /root/.cursor/mcp.json
+    exit 1
+fi
+
+echo "INTEGRITY_CHECK_PASSED"
+"""
+        res = self.run_in_docker("ubuntu:latest", script)
+        print(res.stdout)
+        if res.returncode != 0:
+            print(res.stderr)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("INTEGRITY_CHECK_PASSED", res.stdout)
+
 if __name__ == "__main__":
     unittest.main()
