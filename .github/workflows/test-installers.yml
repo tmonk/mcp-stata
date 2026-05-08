@@ -27,6 +27,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Warm up Docker images
+        run: |
+          for image in ubuntu:latest alpine:latest fedora:latest opensuse/leap:latest archlinux:latest; do
+            echo "Pulling $image..."
+            for i in {1..5}; do
+              docker pull $image && break || sleep 10
+            done
+          done
       - name: Run Linux Installer Tests (Docker)
         run: python3 tests/install_scripts/test_linux_installers.py
 
