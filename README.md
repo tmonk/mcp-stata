@@ -32,20 +32,21 @@ curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh | bash
 Windows (PowerShell):
 
 ```powershell
-irm irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex | iex
+irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex
 ```
 
 Client-specific examples:
 
 | Client | macOS/Linux | Windows (PowerShell) |
 |--------|-------------|----------------------|
-| **Claude Code** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh) --agent claude` | `& ([scriptblock]::Create((irm irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex))) --agent claude` |
-| **Codex** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh) --agent codex` | `& ([scriptblock]::Create((irm irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex))) --agent codex` |
-| **Gemini** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh) --agent gemini` | `& ([scriptblock]::Create((irm irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex))) --agent gemini` |
-| **Cursor** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh) --agent cursor` | `& ([scriptblock]::Create((irm irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex))) --agent cursor` |
-| **Windsurf** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh) --agent windsurf` | `& ([scriptblock]::Create((irm irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex))) --agent windsurf` |
-| **VS Code** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh) --agent vscode` | `& ([scriptblock]::Create((irm irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex))) --agent vscode` |
-| **Auto-detect / default** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh)` | `& ([scriptblock]::Create((irm irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex)))` |
+| **Claude Code** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh) --agent claude` | `& ([scriptblock]::Create((irm https://mcp-stata-install.tdmonk.com/install.ps1 &#124; iex))) --agent claude` |
+| **Codex** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh) --agent codex` | `& ([scriptblock]::Create((irm https://mcp-stata-install.tdmonk.com/install.ps1 &#124; iex))) --agent codex` |
+| **Gemini** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh) --agent gemini` | `& ([scriptblock]::Create((irm https://mcp-stata-install.tdmonk.com/install.ps1 &#124; iex))) --agent gemini` |
+| **Cursor** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh) --agent cursor` | `& ([scriptblock]::Create((irm https://mcp-stata-install.tdmonk.com/install.ps1 &#124; iex))) --agent cursor` |
+| **Windsurf** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh) --agent windsurf` | `& ([scriptblock]::Create((irm https://mcp-stata-install.tdmonk.com/install.ps1 &#124; iex))) --agent windsurf` |
+| **VS Code** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh) --agent vscode` | `& ([scriptblock]::Create((irm https://mcp-stata-install.tdmonk.com/install.ps1 &#124; iex))) --agent vscode` |
+| **Auto-detect / default** | `bash <(curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh)` | `& ([scriptblock]::Create((irm https://mcp-stata-install.tdmonk.com/install.ps1 &#124; iex)))` |
+
 ### 2 · Verify
 
 Ask your agent:
