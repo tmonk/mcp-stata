@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,8 @@ PLUGIN_ROOT = REPO_ROOT / "plugin"
 PLUGIN_SKILLS_DIR = PLUGIN_ROOT / "skills"
 AGENTS_BLOCK_START = "<!-- BEGIN MCP-STATA MANAGED BLOCK -->"
 AGENTS_BLOCK_END = "<!-- END MCP-STATA MANAGED BLOCK -->"
+VERBOSE = False
+INSTALL_LOG_PATH = os.environ.get("MCP_STATA_INSTALL_LOG_FILE", "")
 
 
 def get_codex_home() -> Path:
@@ -55,12 +58,66 @@ def print_error(msg: str) -> None:
     print(f"  [ERROR] {msg}")
 
 
-def _placeholder_env() -> dict[str, str]:
-    return {
-        "STATA_PATH": "${STATA_PATH:-}",
-        "MCP_STATA_STARTUP_DO_FILE": "${MCP_STATA_STARTUP_DO_FILE:-}",
-        "MCP_STATA_TEMP_DIR": "${MCP_STATA_TEMP_DIR:-}",
-    }
+def set_verbose(enabled: bool) -> None:
+    global VERBOSE
+    VERBOSE = enabled
+
+
+def _append_install_log(message: str) -> None:
+    if not INSTALL_LOG_PATH:
+        return
+    try:
+        with open(INSTALL_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(message.rstrip("\n") + "\n")
+    except Exception:
+        pass
+
+
+def print_verbose(msg: str) -> None:
+    line = f"  [VERBOSE] {msg}"
+    _append_install_log(line)
+    if VERBOSE:
+        print(line)
+
+
+def _format_cmd(cmd: list[str]) -> str:
+    return shlex.join(str(part) for part in cmd)
+
+
+def run_logged_subprocess(
+    cmd: list[str],
+    *,
+    check: bool,
+    quiet_console: bool = False,
+) -> subprocess.CompletedProcess:
+    print_verbose(f"Running command: {_format_cmd(cmd)}")
+    result = subprocess.run(
+        cmd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    print_verbose(f"Command exit code: {result.returncode}")
+    if result.stdout:
+        _append_install_log("[VERBOSE] stdout:")
+        for line in result.stdout.rstrip().splitlines():
+            _append_install_log(line)
+            if VERBOSE and not quiet_console:
+                print(line)
+    if result.stderr:
+        _append_install_log("[VERBOSE] stderr:")
+        for line in result.stderr.rstrip().splitlines():
+            _append_install_log(line)
+            if VERBOSE and not quiet_console:
+                print(line)
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            cmd,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    return result
 
 
 def build_uvx_args(
@@ -82,7 +139,6 @@ def build_server_entry(
     version: str | None = None,
     latest: bool = True,
     local_source: str | None = None,
-    placeholder_env: bool = False,
 ) -> dict:
     entry = {
         "command": "uvx",
@@ -91,16 +147,13 @@ def build_server_entry(
     if include_type:
         entry = {"type": "stdio", **entry}
     if include_env:
-        if placeholder_env:
-            entry["env"] = _placeholder_env()
-        else:
-            env = {}
-            for key in ("STATA_PATH", "MCP_STATA_STARTUP_DO_FILE", "MCP_STATA_TEMP_DIR"):
-                value = os.environ.get(key)
-                if value:
-                    env[key] = value
-            if env:
-                entry["env"] = env
+        env = {}
+        for key in ("STATA_PATH", "MCP_STATA_STARTUP_DO_FILE", "MCP_STATA_TEMP_DIR"):
+            value = os.environ.get(key)
+            if value:
+                env[key] = value
+        if env:
+            entry["env"] = env
     return entry
 
 
@@ -148,7 +201,7 @@ def upsert_codex_config(
     path.parent.mkdir(parents=True, exist_ok=True)
     content = path.read_text() if path.exists() else ""
     pattern = re.compile(
-        r'(?ms)^\[mcp_servers\.(?:"?mcp-stata"?|"?mcp_stata"?)\]\n.*?(?=^\[|\Z)'
+        r'(?ms)^\[mcp_servers\.(?:"?mcp-stata"?|"?mcp_stata"?)(?:\.env)?\]\n.*?(?=^\[|\Z)'
     )
     content = pattern.sub("", content).rstrip()
 
@@ -261,14 +314,13 @@ def configure_editor_mcp(
         raise RuntimeError(f"Could not determine config path for {editor}")
     top_key = "servers" if editor == "vscode" else "mcpServers"
     include_type = editor == "vscode"
-    include_env = scope == "project"
+    include_env = False
     entry = build_server_entry(
         include_type=include_type,
         include_env=include_env,
         version=version,
         latest=latest,
         local_source=local_source,
-        placeholder_env=scope == "project",
     )
     return merge_json_server_config(config_path, top_key=top_key, entry=entry)
 
@@ -284,11 +336,10 @@ def configure_claude_code(
     if scope == "project":
         entry = build_server_entry(
             include_type=True,
-            include_env=True,
+            include_env=False,
             version=version,
             latest=latest,
             local_source=local_source,
-            placeholder_env=True,
         )
         return merge_json_server_config(
             get_mcp_config_path("claude_desktop", scope="project", project_root=project_root),
@@ -299,7 +350,7 @@ def configure_claude_code(
     if shutil.which("claude"):
         cmd = ["claude", "mcp", "add", "--scope", scope, CANONICAL_SERVER_NAME, "--", "uvx", *build_uvx_args(version=version, latest=latest, local_source=local_source)]
         try:
-            subprocess.run(cmd, check=True)
+            run_logged_subprocess(cmd, check=True)
             return None
         except Exception:
             print_warning("Claude CLI registration failed; falling back to JSON config.")
@@ -341,11 +392,10 @@ def configure_codex(
     target_dir = get_codex_home() if scope == "user" else get_project_root(project_root) / ".codex"
     config_path = target_dir / "config.toml"
     entry = build_server_entry(
-        include_env=scope == "project",
+        include_env=False,
         version=version,
         latest=latest,
         local_source=local_source,
-        placeholder_env=scope == "project",
     )
     return upsert_codex_config(config_path, entry=entry)
 
@@ -360,14 +410,15 @@ def install_claude_marketplace(
 
     root = get_project_root(project_root)
     marketplace_name = "mcp-stata-marketplace"
+    _cleanup_claude_marketplace(scope=scope, project_root=project_root)
 
     try:
-        subprocess.run(["claude", "plugin", "marketplace", "add", str(root), "--scope", scope], check=True)
+        run_logged_subprocess(["claude", "plugin", "marketplace", "add", str(root), "--scope", scope], check=True)
     except Exception as exc:
         print_warning(f"Claude marketplace add did not complete cleanly: {exc}")
 
     try:
-        subprocess.run(["claude", "plugin", "install", f"{CANONICAL_SERVER_NAME}@{marketplace_name}", "--scope", scope], check=True)
+        run_logged_subprocess(["claude", "plugin", "install", f"{CANONICAL_SERVER_NAME}@{marketplace_name}", "--scope", scope], check=True)
         return True
     except Exception as exc:
         print_warning(f"Claude marketplace install failed; falling back to direct configuration: {exc}")
@@ -383,13 +434,42 @@ def install_codex_marketplace(
 
     root = get_project_root(project_root)
     marketplace_root = root / ".agents" / "plugins"
+    _cleanup_codex_marketplace(project_root=project_root)
 
     try:
-        subprocess.run(["codex", "plugin", "marketplace", "add", str(marketplace_root)], check=True)
+        run_logged_subprocess(["codex", "plugin", "marketplace", "add", str(marketplace_root)], check=True)
         return True
     except Exception as exc:
         print_warning(f"Codex marketplace install failed; falling back to direct configuration: {exc}")
         return False
+
+
+def _best_effort_subprocess(cmd: list[str]) -> None:
+    try:
+        run_logged_subprocess(cmd, check=False, quiet_console=True)
+    except Exception:
+        pass
+
+
+def _cleanup_claude_marketplace(*, scope: str, project_root: Path | None = None) -> None:
+    root = get_project_root(project_root)
+    marketplace_name = "mcp-stata-marketplace"
+    for cmd in (
+        ["claude", "plugin", "uninstall", f"{CANONICAL_SERVER_NAME}@{marketplace_name}", "--scope", scope],
+        ["claude", "plugin", "uninstall", CANONICAL_SERVER_NAME, "--scope", scope],
+        ["claude", "plugin", "marketplace", "remove", str(root)],
+    ):
+        _best_effort_subprocess(cmd)
+
+
+def _cleanup_codex_marketplace(*, project_root: Path | None = None) -> None:
+    root = get_project_root(project_root)
+    marketplace_root = root / ".agents" / "plugins"
+    for cmd in (
+        ["codex", "plugin", "uninstall", CANONICAL_SERVER_NAME],
+        ["codex", "plugin", "marketplace", "remove", str(marketplace_root)],
+    ):
+        _best_effort_subprocess(cmd)
 
 
 def install_codex_skills(*, project_root: Path | None = None) -> Path | None:
@@ -502,7 +582,7 @@ def uninstall_for_agent(
     if agent == "claude":
         if shutil.which("claude"):
             try:
-                subprocess.run(
+                run_logged_subprocess(
                     ["claude", "mcp", "remove", CANONICAL_SERVER_NAME, "--scope", scope],
                     check=True,
                 )
@@ -720,6 +800,9 @@ def install_for_agent(
 
     if agent == "claude":
         marketplace_ok = install_claude_marketplace(scope=scope, project_root=project_root)
+        existing_user_config = None
+        if scope != "project":
+            existing_user_config = get_mcp_config_path("claude_desktop", scope="user", project_root=project_root)
         if scope == "project":
             # Project scope: always materialize `.mcp.json` after marketplace attempts.
             _append(
@@ -731,7 +814,7 @@ def install_for_agent(
                     project_root=project_root,
                 )
             )
-        elif not marketplace_ok:
+        elif (existing_user_config and existing_user_config.exists()) or not marketplace_ok:
             _append(
                 configure_claude_code(
                     scope=scope,
@@ -744,7 +827,10 @@ def install_for_agent(
         return written
 
     if agent == "codex":
-        if not install_codex_marketplace(project_root=project_root):
+        codex_target_dir = get_codex_home() if scope == "user" else get_project_root(project_root) / ".codex"
+        codex_config_path = codex_target_dir / "config.toml"
+        marketplace_ok = install_codex_marketplace(project_root=project_root)
+        if codex_config_path.exists() or not marketplace_ok:
             _append(
                 configure_codex(
                     scope=scope,
@@ -832,6 +918,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verify", action="store_true")
     parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show raw behind-the-scenes installer activity in the terminal.",
+    )
+    parser.add_argument(
         "--uninstall",
         action="store_true",
         help="Remove mcp-stata from all detected (or specified) agent configurations.",
@@ -879,6 +970,9 @@ def _print_dry_run(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    set_verbose(args.verbose)
+    print_verbose(f"Installer argv: {argv if argv is not None else sys.argv[1:]}")
+    print_verbose(f"Resolved project root: {get_project_root()}")
 
     if args.uninstall:
         return _run_uninstall(args)
@@ -939,6 +1033,23 @@ def main(argv: list[str] | None = None) -> int:
         targets = []  # sentinel: we will use explicit_targets path below
     else:
         explicit_targets = []
+    grouped_targets: list[tuple[str, list[str], object | None]] = []
+    if not explicit_targets:
+        grouped_map: dict[str, tuple[list[str], object | None]] = {}
+        grouped_order: list[str] = []
+        for agent in targets:
+            internal_name = agent.name
+            if internal_name.startswith("claude-"):
+                internal_name = "claude"
+            if internal_name not in grouped_map:
+                grouped_map[internal_name] = ([agent.display_name], agent)
+                grouped_order.append(internal_name)
+            else:
+                grouped_map[internal_name][0].append(agent.display_name)
+        grouped_targets = [
+            (internal_name, grouped_map[internal_name][0], grouped_map[internal_name][1])
+            for internal_name in grouped_order
+        ]
 
     if not explicit_targets and not targets:
         if args.no_fail_on_empty:
@@ -947,7 +1058,7 @@ def main(argv: list[str] | None = None) -> int:
         print_error("No supported MCP host detected. Install Claude Desktop, Claude Code, Cursor, or Windsurf and re-run.")
         return 1
 
-    agent_names = [d for _, d in explicit_targets] if explicit_targets else [a.display_name for a in targets]
+    agent_names = [d for _, d in explicit_targets] if explicit_targets else [name for _, names, _ in grouped_targets for name in names]
     print_step("Configuration summary")
     print_success(f"Scope: {args.scope}")
     print_success(f"Agents: {', '.join(agent_names)}")
@@ -986,13 +1097,10 @@ def main(argv: list[str] | None = None) -> int:
             for path in written:
                 print_success(f"Updated {path}")
     else:
-        for agent in targets:
-            print_step(f"Configuring {agent.display_name}")
+        for internal_name, display_names, representative in grouped_targets:
+            joined_display_names = ", ".join(display_names)
+            print_step(f"Configuring {joined_display_names}")
             if args.dry_run:
-                # We use the old display logic for dry-run if possible
-                internal_name = agent.name
-                if internal_name.startswith("claude-"):
-                    internal_name = "claude"
                 _print_dry_run(
                     internal_name,
                     scope=args.scope,
@@ -1003,12 +1111,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 continue
 
-            # If it's an agent we have specialized logic for, use it.
-            # Otherwise, use the generic JSON merge.
-            internal_name = agent.name
-            if internal_name.startswith("claude-"):
-                internal_name = "claude"
-
             if internal_name in SUPPORTED_AGENTS:
                 written = install_for_agent(
                     internal_name,
@@ -1018,6 +1120,8 @@ def main(argv: list[str] | None = None) -> int:
                     local_source=args.local_source or None,
                     project_root=project_root,
                 )
+                if len(display_names) > 1:
+                    print_success(f"Applied shared configuration for: {joined_display_names}")
                 for path in written:
                     print_success(f"Updated {path}")
             else:
@@ -1027,8 +1131,11 @@ def main(argv: list[str] | None = None) -> int:
                     latest=latest,
                     local_source=args.local_source or None,
                 )
-                agent.install_mcp_entry(CANONICAL_SERVER_NAME, server_config)
-                print_success(f"Updated {agent.config_path}")
+                assert representative is not None
+                representative.install_mcp_entry(CANONICAL_SERVER_NAME, server_config)
+                if len(display_names) > 1:
+                    print_success(f"Applied shared configuration for: {joined_display_names}")
+                print_success(f"Updated {representative.config_path}")
 
     if args.verify and not args.dry_run:
         test_stata_connection()

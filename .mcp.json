@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "mcp-stata": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--refresh",
+        "--refresh-package",
+        "mcp-stata",
+        "--from",
+        "mcp-stata@latest",
+        "mcp-stata"
+      ]
+    }
+  }
+}

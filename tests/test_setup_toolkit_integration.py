@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import sys
+from types import SimpleNamespace
 
 # Since we're in the repo, we can import directly
 repo_root = Path(__file__).parent.parent
@@ -85,7 +86,250 @@ def test_configure_project_scope_cursor(mock_home):
     setup_toolkit.configure_editor_mcp("cursor", scope="project", project_root=project_root)
     data = json.loads(cfg.read_text())
     assert "mcp-stata" in data["mcpServers"]
-    assert data["mcpServers"]["mcp-stata"]["env"]["STATA_PATH"] == "${STATA_PATH:-}"
+    assert "env" not in data["mcpServers"]["mcp-stata"]
+
+def test_project_scope_omits_env_when_process_env_is_set(mock_home):
+    project_root = mock_home / "project"
+    with patch.dict(
+        os.environ,
+        {
+            "STATA_PATH": "/very/wrong/stata/path",
+            "MCP_STATA_STARTUP_DO_FILE": "/very/wrong/startup.do",
+            "MCP_STATA_TEMP_DIR": "/very/wrong/temp/dir",
+        },
+        clear=False,
+    ):
+        cursor_cfg = project_root / ".cursor" / "mcp.json"
+        setup_toolkit.configure_editor_mcp("cursor", scope="project", project_root=project_root)
+        cursor_data = json.loads(cursor_cfg.read_text())
+        assert "env" not in cursor_data["mcpServers"]["mcp-stata"]
+
+        setup_toolkit.configure_claude_code(scope="project", project_root=project_root)
+        claude_cfg = project_root / ".mcp.json"
+        claude_data = json.loads(claude_cfg.read_text())
+        assert "env" not in claude_data["mcpServers"]["mcp-stata"]
+
+        setup_toolkit.configure_codex(scope="project", project_root=project_root)
+        codex_cfg = project_root / ".codex" / "config.toml"
+        codex_content = codex_cfg.read_text()
+        assert "/very/wrong/stata/path" not in codex_content
+        assert "/very/wrong/startup.do" not in codex_content
+        assert "/very/wrong/temp/dir" not in codex_content
+        assert "[mcp_servers.mcp-stata.env]" not in codex_content
+
+def test_reinstall_updates_existing_claude_user_config_even_when_marketplace_available(mock_home):
+    claude_cfg = setup_toolkit.get_mcp_config_path("claude_desktop", scope="user")
+    claude_cfg.parent.mkdir(parents=True, exist_ok=True)
+    claude_cfg.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "mcp-stata": {
+                        "command": "uvx",
+                        "args": ["--from", "mcp-stata@1.0.0", "mcp-stata"],
+                        "env": {"STATA_PATH": "/stale/path"},
+                    }
+                }
+            }
+        )
+    )
+
+    with patch.object(setup_toolkit, "install_claude_marketplace", return_value=True), \
+         patch("shutil.which", return_value=None):
+        written = setup_toolkit.install_for_agent(
+            "claude",
+            scope="user",
+            version="9.9.9",
+            latest=False,
+            local_source=None,
+            project_root=mock_home / "project",
+        )
+
+    data = json.loads(claude_cfg.read_text())
+    entry = data["mcpServers"]["mcp-stata"]
+    assert entry["args"] == ["--refresh", "--refresh-package", "mcp-stata", "--from", "mcp-stata@9.9.9", "mcp-stata"]
+    assert "env" not in entry
+    assert claude_cfg in written
+
+def test_reinstall_updates_existing_codex_config_even_when_marketplace_available(mock_home):
+    project_root = mock_home / "project"
+    codex_cfg = project_root / ".codex" / "config.toml"
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    codex_cfg.write_text(
+        "\n".join(
+            [
+                "[mcp_servers.mcp-stata]",
+                'command = "uvx"',
+                'args = ["--from", "mcp-stata@1.0.0", "mcp-stata"]',
+                "[mcp_servers.mcp-stata.env]",
+                'STATA_PATH = "/stale/path"',
+                "",
+            ]
+        )
+    )
+
+    with patch.object(setup_toolkit, "install_codex_marketplace", return_value=True):
+        written = setup_toolkit.install_for_agent(
+            "codex",
+            scope="project",
+            version="9.9.9",
+            latest=False,
+            local_source=None,
+            project_root=project_root,
+        )
+
+    content = codex_cfg.read_text()
+    assert 'args = ["--refresh", "--refresh-package", "mcp-stata", "--from", "mcp-stata@9.9.9", "mcp-stata"]' in content
+    assert 'STATA_PATH = "/stale/path"' not in content
+    assert "[mcp_servers.mcp-stata.env]" not in content
+    assert codex_cfg in written
+
+def test_reinstall_strips_existing_project_placeholder_env_blocks(mock_home):
+    project_root = mock_home / "project"
+    cursor_cfg = project_root / ".cursor" / "mcp.json"
+    cursor_cfg.parent.mkdir(parents=True, exist_ok=True)
+    cursor_cfg.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "mcp-stata": {
+                        "command": "uvx",
+                        "args": ["--from", "mcp-stata@1.0.0", "mcp-stata"],
+                        "env": {
+                            "STATA_PATH": "${STATA_PATH:-}",
+                            "MCP_STATA_STARTUP_DO_FILE": "${MCP_STATA_STARTUP_DO_FILE:-}",
+                            "MCP_STATA_TEMP_DIR": "${MCP_STATA_TEMP_DIR:-}",
+                        },
+                    }
+                }
+            }
+        )
+    )
+
+    setup_toolkit.configure_editor_mcp("cursor", scope="project", project_root=project_root)
+    cursor_data = json.loads(cursor_cfg.read_text())
+    assert "env" not in cursor_data["mcpServers"]["mcp-stata"]
+
+    codex_cfg = project_root / ".codex" / "config.toml"
+    codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+    codex_cfg.write_text(
+        "\n".join(
+            [
+                "[mcp_servers.mcp-stata]",
+                'command = "uvx"',
+                'args = ["--from", "mcp-stata@1.0.0", "mcp-stata"]',
+                "[mcp_servers.mcp-stata.env]",
+                'STATA_PATH = "${STATA_PATH:-}"',
+                'MCP_STATA_STARTUP_DO_FILE = "${MCP_STATA_STARTUP_DO_FILE:-}"',
+                'MCP_STATA_TEMP_DIR = "${MCP_STATA_TEMP_DIR:-}"',
+                "",
+            ]
+        )
+    )
+
+    setup_toolkit.configure_codex(scope="project", project_root=project_root)
+    codex_content = codex_cfg.read_text()
+    assert "[mcp_servers.mcp-stata.env]" not in codex_content
+    assert "${STATA_PATH:-}" not in codex_content
+
+def test_build_parser_accepts_verbose_flag():
+    parser = setup_toolkit.build_parser()
+    args = parser.parse_args(["--verbose"])
+    assert args.verbose is True
+
+def test_run_logged_subprocess_appends_full_trace_to_log(mock_home, tmp_path):
+    log_path = tmp_path / "install.log"
+    with patch.object(setup_toolkit, "INSTALL_LOG_PATH", str(log_path)), \
+         patch.object(setup_toolkit, "VERBOSE", False), \
+         patch("subprocess.run", return_value=subprocess.CompletedProcess(["echo", "hi"], 0, stdout="hello\n", stderr="warn\n")):
+        result = setup_toolkit.run_logged_subprocess(["echo", "hi"], check=True, quiet_console=True)
+
+    assert result.returncode == 0
+    log_text = log_path.read_text()
+    assert "Running command:" in log_text
+    assert "Command exit code: 0" in log_text
+    assert "[VERBOSE] stdout:" in log_text
+    assert "hello" in log_text
+    assert "[VERBOSE] stderr:" in log_text
+    assert "warn" in log_text
+
+def test_main_dedupes_claude_desktop_and_claude_code_targets(mock_home):
+    targets = [
+        SimpleNamespace(name="claude-desktop", display_name="Claude Desktop"),
+        SimpleNamespace(name="claude-code", display_name="Claude Code"),
+    ]
+
+    with patch.object(setup_toolkit, "check_uv", return_value=True), \
+         patch.object(setup_toolkit, "detect_stata", return_value=(None, None)), \
+         patch.object(setup_toolkit, "discover_agents", return_value=targets), \
+         patch.object(setup_toolkit, "install_for_agent", return_value=[] ) as install_mock:
+        rc = setup_toolkit.main([])
+
+    assert rc == 0
+    assert install_mock.call_count == 1
+    assert install_mock.call_args.args[0] == "claude"
+
+def test_main_reports_shared_claude_configuration_for_both_surfaces(mock_home, capsys):
+    targets = [
+        SimpleNamespace(name="claude-desktop", display_name="Claude Desktop"),
+        SimpleNamespace(name="claude-code", display_name="Claude Code"),
+    ]
+
+    with patch.object(setup_toolkit, "check_uv", return_value=True), \
+         patch.object(setup_toolkit, "detect_stata", return_value=(None, None)), \
+         patch.object(setup_toolkit, "discover_agents", return_value=targets), \
+         patch.object(setup_toolkit, "install_for_agent", return_value=[]):
+        rc = setup_toolkit.main([])
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Agents: Claude Desktop, Claude Code" in out
+    assert "Configuring Claude Desktop, Claude Code" in out
+    assert "Applied shared configuration for: Claude Desktop, Claude Code" in out
+
+def test_claude_marketplace_reinstall_cleans_our_old_entries_first(mock_home):
+    project_root = mock_home / "project"
+    calls = []
+
+    def _record(cmd, check=False, **kwargs):
+        calls.append((cmd, check))
+        return MagicMock(returncode=0)
+
+    with patch("shutil.which", return_value="/usr/local/bin/claude"), \
+         patch("subprocess.run", side_effect=_record):
+        ok = setup_toolkit.install_claude_marketplace(scope="project", project_root=project_root)
+
+    assert ok is True
+    expected_prefixes = [
+        ["claude", "plugin", "uninstall", "mcp-stata@mcp-stata-marketplace", "--scope", "project"],
+        ["claude", "plugin", "uninstall", "mcp-stata", "--scope", "project"],
+        ["claude", "plugin", "marketplace", "remove", str(project_root)],
+        ["claude", "plugin", "marketplace", "add", str(project_root), "--scope", "project"],
+        ["claude", "plugin", "install", "mcp-stata@mcp-stata-marketplace", "--scope", "project"],
+    ]
+    assert [cmd for cmd, _ in calls] == expected_prefixes
+    assert [check for _, check in calls] == [False, False, False, False, False]
+
+def test_codex_marketplace_reinstall_cleans_our_old_entries_first(mock_home):
+    project_root = mock_home / "project"
+    calls = []
+
+    def _record(cmd, check=False, **kwargs):
+        calls.append((cmd, check))
+        return MagicMock(returncode=0)
+
+    with patch("shutil.which", return_value="/usr/local/bin/codex"), \
+         patch("subprocess.run", side_effect=_record):
+        ok = setup_toolkit.install_codex_marketplace(project_root=project_root)
+
+    assert ok is True
+    expected = [
+        ["codex", "plugin", "uninstall", "mcp-stata"],
+        ["codex", "plugin", "marketplace", "remove", str(project_root / ".agents" / "plugins")],
+        ["codex", "plugin", "marketplace", "add", str(project_root / ".agents" / "plugins")],
+    ]
+    assert [cmd for cmd, _ in calls] == expected
+    assert [check for _, check in calls] == [False, False, False]
 
 def test_install_gemini_extension(mock_home):
     link = setup_toolkit.install_gemini_extension()

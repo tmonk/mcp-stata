@@ -211,9 +211,7 @@ class TestGeminiConfig:
         manifest = json.loads((Path(__file__).resolve().parents[1] / "plugin" / "gemini-extension.json").read_text())
         entry = manifest["mcpServers"]["mcp-stata"]
         assert entry["cwd"] == "${extensionPath}"
-        assert entry["env"]["STATA_PATH"] == "${STATA_PATH:-}"
-        assert entry["env"]["MCP_STATA_STARTUP_DO_FILE"] == "${MCP_STATA_STARTUP_DO_FILE:-}"
-        assert entry["env"]["MCP_STATA_TEMP_DIR"] == "${MCP_STATA_TEMP_DIR:-}"
+        assert "env" not in entry
 
 
 # ===========================================================================
