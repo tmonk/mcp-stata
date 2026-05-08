@@ -5,7 +5,7 @@ set -euo pipefail
 
 # ── Formatting ────────────────────────────────────────────────────────────────
 BOLD=''; RED=''; GREEN=''; YELLOW=''; CYAN=''; RESET=''
-if [ -t 1 ]; then
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   BOLD='\033[1m'; RED='\033[31m'
   GREEN='\033[32m'; YELLOW='\033[33m'; CYAN='\033[36m'; RESET='\033[0m'
 fi
@@ -16,23 +16,33 @@ warn() { printf "${YELLOW}${BOLD}[WARN]${RESET}  %s\n" "$1" >&2; }
 err()  { printf "${RED}${BOLD}[ERROR]${RESET} %s\n"   "$1" >&2; exit 1; }
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-UV_BIN_DIR="${HOME}/.local/bin"
-REPO_URL="https://github.com/tmonk/mcp-stata.git"
+# Handle local file execution vs piped/remote execution
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+else
+    # Piped or source-less execution
+    REPO_ROOT="$PWD"
+fi
+
+REPO_URL="${MCP_STATA_REPO_URL:-https://github.com/tmonk/mcp-stata}"
+TARBALL_URL="${REPO_URL}/archive/refs/heads/main.tar.gz"
 
 INSTALL_REPO_ROOT="${REPO_ROOT}"
-TEMP_CLONE_DIR=""
+TEMP_DIR=""
 
 cleanup() {
-  if [ -n "${TEMP_CLONE_DIR}" ] && [ -d "${TEMP_CLONE_DIR}" ]; then
-    rm -rf "${TEMP_CLONE_DIR}" || true
+  if [ -n "${TEMP_DIR}" ] && [ -d "${TEMP_DIR}" ]; then
+    rm -rf "${TEMP_DIR}" || true
   fi
 }
 
+# ── Dependency Management ─────────────────────────────────────────────────────
 ensure_dependencies() {
   local missing=()
-  for cmd in git tar gzip; do
+  local targets=("$@")
+  
+  for cmd in "${targets[@]}"; do
     if ! command -v "$cmd" &>/dev/null; then
       missing+=("$cmd")
     fi
@@ -42,46 +52,24 @@ ensure_dependencies() {
     return
   fi
 
-  say "Missing dependencies: ${missing[*]} — attempting to install..."
+  say "Missing system dependencies: ${missing[*]} — attempting to install..."
+
+  SUDO=$(command -v sudo || true)
 
   if command -v brew &>/dev/null; then
     brew install "${missing[@]}"
   elif command -v apt-get &>/dev/null; then
-    if command -v sudo &>/dev/null; then
-      sudo apt-get update && sudo apt-get install -y "${missing[@]}"
-    else
-      apt-get update && apt-get install -y "${missing[@]}"
-    fi
+    $SUDO apt-get update && $SUDO apt-get install -y "${missing[@]}"
   elif command -v dnf &>/dev/null; then
-    if command -v sudo &>/dev/null; then
-      sudo dnf install -y "${missing[@]}"
-    else
-      dnf install -y "${missing[@]}"
-    fi
+    $SUDO dnf install -y "${missing[@]}"
   elif command -v yum &>/dev/null; then
-    if command -v sudo &>/dev/null; then
-      sudo yum install -y "${missing[@]}"
-    else
-      yum install -y "${missing[@]}"
-    fi
+    $SUDO yum install -y "${missing[@]}"
   elif command -v zypper &>/dev/null; then
-    if command -v sudo &>/dev/null; then
-      sudo zypper --non-interactive install "${missing[@]}"
-    else
-      zypper --non-interactive install "${missing[@]}"
-    fi
+    $SUDO zypper --non-interactive install "${missing[@]}"
   elif command -v pacman &>/dev/null; then
-    if command -v sudo &>/dev/null; then
-      sudo pacman -Sy --noconfirm "${missing[@]}"
-    else
-      pacman -Sy --noconfirm "${missing[@]}"
-    fi
+    $SUDO pacman -Sy --needed --noconfirm "${missing[@]}"
   elif command -v apk &>/dev/null; then
-    if command -v sudo &>/dev/null; then
-      sudo apk add --no-cache "${missing[@]}"
-    else
-      apk add --no-cache "${missing[@]}"
-    fi
+    $SUDO apk add --no-cache "${missing[@]}"
   else
     err "The following dependencies are required but no supported package manager was detected: ${missing[*]}. Please install them and re-run."
   fi
@@ -91,61 +79,62 @@ ensure_dependencies() {
       err "Installation of $cmd did not succeed. Please install it manually and re-run."
     fi
   done
-
-  ok "Dependencies satisfied: git, tar, gzip"
 }
 
 ensure_repo_root() {
+  # If we're already in a checkout, use it.
   if [ -f "${REPO_ROOT}/scripts/setup_toolkit.py" ]; then
     return
   fi
 
-  ensure_dependencies
-  TEMP_CLONE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mcp-stata-install.XXXXXX")"
-  say "Cloning mcp-stata into temporary directory..."
-  git clone --depth 1 "${REPO_URL}" "${TEMP_CLONE_DIR}"
-  INSTALL_REPO_ROOT="${TEMP_CLONE_DIR}"
-  ok "Repository cloned"
+  # Otherwise, fetch a shallow tarball to avoid git dependency
+  ensure_dependencies "curl" "tar" "gzip"
+  
+  TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mcp-stata-install.XXXXXX")"
+  say "Fetching mcp-stata source..."
+  
+  curl -LsSf "${TARBALL_URL}" | tar xz -C "${TEMP_DIR}" --strip-components=1
+  
+  INSTALL_REPO_ROOT="${TEMP_DIR}"
+  ok "Source extracted to ${INSTALL_REPO_ROOT}"
 }
 
 # ── Bootstrap uv ──────────────────────────────────────────────────────────────
 ensure_uv() {
-  if command -v uv &>/dev/null; then
-    ok "uv found: $(command -v uv)"
-    return
-  fi
+  # Always ensure extraction tools and downloader are present
+  ensure_dependencies "curl" "tar" "gzip"
 
-  say "uv not found — installing..."
+  # We invoke the official installer. It's idempotent.
+  say "Ensuring uv is installed..."
+  curl -fsSL https://astral.sh/uv/install.sh | sh
 
-  # Prefer curl; fall back to wget
-  if command -v curl &>/dev/null; then
-    curl -fsSL https://astral.sh/uv/install.sh | sh
-  elif command -v wget &>/dev/null; then
-    wget -qO- https://astral.sh/uv/install.sh | sh
-  else
-    err "Neither 'curl' nor 'wget' found. Install one and re-run."
-  fi
-
-  # Make uv available in this session. uv installer defaults to ~/.local/bin or $XDG_BIN_HOME
+  # Search for uv in common locations to refresh the current PATH
   CANDIDATE_PATHS=("${HOME}/.local/bin" "${XDG_BIN_HOME:-}" "${HOME}/.cargo/bin")
   for path in "${CANDIDATE_PATHS[@]}"; do
     if [ -n "$path" ] && [ -d "$path" ]; then
       export PATH="${path}:${PATH}"
       if command -v uv &>/dev/null; then
-        ok "uv installed and found in ${path}"
         return
       fi
     fi
   done
 
-  err "uv installed but not found on PATH. Please add it manually and re-run."
+  if ! command -v uv &>/dev/null; then
+    err "uv is not on PATH. Please add it manually and re-run."
+  fi
 }
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 main() {
+  # Root check
+  if [ "$(id -u)" -eq 0 ]; then
+    warn "Running as root. Installation will be local to the root user."
+  fi
+
   trap cleanup EXIT
   ensure_repo_root
   ensure_uv
+  
   say "Launching mcp-stata installer..."
   uv run --python 3.11 "${INSTALL_REPO_ROOT}/scripts/setup_toolkit.py" "$@"
 }

@@ -47,7 +47,7 @@ jobs:
       - name: Run Windows Installer Test
         run: |
           # PowerShell 7
-          pwsh ./plugin/install.ps1 --dry-run --agent claude
+          pwsh -File ./plugin/install.ps1 --dry-run --agent claude
           # PowerShell 5.1
-          powershell -File ./plugin/install.ps1 --dry-run --agent claude
+          powershell -ExecutionPolicy Bypass -File ./plugin/install.ps1 --dry-run --agent claude
         shell: pwsh
