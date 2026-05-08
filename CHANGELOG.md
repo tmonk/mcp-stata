@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v3.1.5 (2026-05-08)
+
+### Bug Fixes
+
+- Implement standard telemetry username for CI environments and improve dashboard filter interaction
+  controls
+  ([`7c1032d`](https://github.com/tmonk/mcp-stata/commit/7c1032d46308bf8533fbc78b9689c530bceae1a2))
+
+
 ## v3.1.4 (2026-05-08)
 
 ### Bug Fixes
