@@ -21,8 +21,8 @@ class TestLinuxInstallers(unittest.TestCase):
 
     def test_ubuntu_install(self):
         print("Testing on Ubuntu...")
-        # Ubuntu: add curl and tar (for uv)
-        res = self.run_in_docker("ubuntu:latest", "apt-get update && apt-get install -y curl tar && bash /install.sh --dry-run --agent claude")
+        # Ubuntu: add curl, tar, and gzip (for uv)
+        res = self.run_in_docker("ubuntu:latest", "apt-get update && apt-get install -y curl tar gzip && bash /install.sh --dry-run --agent claude")
         print(res.stdout)
         if res.returncode != 0:
             print(res.stderr)
@@ -33,8 +33,8 @@ class TestLinuxInstallers(unittest.TestCase):
 
     def test_alpine_install(self):
         print("Testing on Alpine...")
-        # Alpine uses sh as entrypoint since bash isn't there yet
-        res = self.run_in_docker("alpine:latest", "apk add --no-cache bash curl tar && bash /install.sh --dry-run --agent claude", shell="sh")
+        # Alpine: add bash, curl, tar, gzip
+        res = self.run_in_docker("alpine:latest", "apk add --no-cache bash curl tar gzip && bash /install.sh --dry-run --agent claude", shell="sh")
         print(res.stdout)
         if res.returncode != 0:
             print(res.stderr)
@@ -43,7 +43,7 @@ class TestLinuxInstallers(unittest.TestCase):
 
     def test_fedora_install(self):
         print("Testing on Fedora...")
-        res = self.run_in_docker("fedora:latest", "dnf install -y curl tar && bash /install.sh --dry-run --agent claude")
+        res = self.run_in_docker("fedora:latest", "dnf install -y curl tar gzip && bash /install.sh --dry-run --agent claude")
         print(res.stdout)
         if res.returncode != 0:
             print(res.stderr)
@@ -51,8 +51,8 @@ class TestLinuxInstallers(unittest.TestCase):
 
     def test_opensuse_install(self):
         print("Testing on openSUSE...")
-        # openSUSE needs tar for uv
-        res = self.run_in_docker("opensuse/leap:latest", "zypper --non-interactive install curl bash tar && bash /install.sh --dry-run --agent claude")
+        # openSUSE needs tar and gzip for uv
+        res = self.run_in_docker("opensuse/leap:latest", "zypper --non-interactive install curl bash tar gzip && bash /install.sh --dry-run --agent claude")
         print(res.stdout)
         if res.returncode != 0:
             print(res.stderr)
@@ -60,7 +60,7 @@ class TestLinuxInstallers(unittest.TestCase):
 
     def test_arch_install(self):
         print("Testing on Arch Linux...")
-        res = self.run_in_docker("archlinux:latest", "pacman -Sy --noconfirm curl bash tar && bash /install.sh --dry-run --agent claude")
+        res = self.run_in_docker("archlinux:latest", "pacman -Sy --noconfirm curl bash tar gzip && bash /install.sh --dry-run --agent claude")
         print(res.stdout)
         if res.returncode != 0:
             print(res.stderr)

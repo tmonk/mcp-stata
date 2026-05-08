@@ -30,61 +30,69 @@ cleanup() {
   fi
 }
 
-ensure_git() {
-  if command -v git &>/dev/null; then
-    ok "git found: $(command -v git)"
+ensure_dependencies() {
+  local missing=()
+  for cmd in git tar gzip; do
+    if ! command -v "$cmd" &>/dev/null; then
+      missing+=("$cmd")
+    fi
+  done
+
+  if [ ${#missing[@]} -eq 0 ]; then
     return
   fi
 
-  say "git not found — attempting to install..."
+  say "Missing dependencies: ${missing[*]} — attempting to install..."
 
   if command -v brew &>/dev/null; then
-    brew install git
+    brew install "${missing[@]}"
   elif command -v apt-get &>/dev/null; then
     if command -v sudo &>/dev/null; then
-      sudo apt-get update && sudo apt-get install -y git
+      sudo apt-get update && sudo apt-get install -y "${missing[@]}"
     else
-      apt-get update && apt-get install -y git
+      apt-get update && apt-get install -y "${missing[@]}"
     fi
   elif command -v dnf &>/dev/null; then
     if command -v sudo &>/dev/null; then
-      sudo dnf install -y git
+      sudo dnf install -y "${missing[@]}"
     else
-      dnf install -y git
+      dnf install -y "${missing[@]}"
     fi
   elif command -v yum &>/dev/null; then
     if command -v sudo &>/dev/null; then
-      sudo yum install -y git
+      sudo yum install -y "${missing[@]}"
     else
-      yum install -y git
+      yum install -y "${missing[@]}"
     fi
   elif command -v zypper &>/dev/null; then
     if command -v sudo &>/dev/null; then
-      sudo zypper --non-interactive install git
+      sudo zypper --non-interactive install "${missing[@]}"
     else
-      zypper --non-interactive install git
+      zypper --non-interactive install "${missing[@]}"
     fi
   elif command -v pacman &>/dev/null; then
     if command -v sudo &>/dev/null; then
-      sudo pacman -Sy --noconfirm git
+      sudo pacman -Sy --noconfirm "${missing[@]}"
     else
-      pacman -Sy --noconfirm git
+      pacman -Sy --noconfirm "${missing[@]}"
     fi
   elif command -v apk &>/dev/null; then
     if command -v sudo &>/dev/null; then
-      sudo apk add --no-cache git
+      sudo apk add --no-cache "${missing[@]}"
     else
-      apk add --no-cache git
+      apk add --no-cache "${missing[@]}"
     fi
   else
-    err "git is required but no supported package manager was detected. Install git and re-run."
+    err "The following dependencies are required but no supported package manager was detected: ${missing[*]}. Please install them and re-run."
   fi
 
-  if ! command -v git &>/dev/null; then
-    err "git installation did not succeed. Install git and re-run."
-  fi
+  for cmd in "${missing[@]}"; do
+    if ! command -v "$cmd" &>/dev/null; then
+      err "Installation of $cmd did not succeed. Please install it manually and re-run."
+    fi
+  done
 
-  ok "git installed: $(command -v git)"
+  ok "Dependencies satisfied: git, tar, gzip"
 }
 
 ensure_repo_root() {
@@ -92,7 +100,7 @@ ensure_repo_root() {
     return
   fi
 
-  ensure_git
+  ensure_dependencies
   TEMP_CLONE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mcp-stata-install.XXXXXX")"
   say "Cloning mcp-stata into temporary directory..."
   git clone --depth 1 "${REPO_URL}" "${TEMP_CLONE_DIR}"
