@@ -1,10 +1,13 @@
 ---
 name: stata
-description: Show mcp-stata identity, connected tools, and status. Entry point for mcp-stata, an agentic toolkit for Stata.
+description: Show mcp-stata identity, connected tools, and status. Use when the user asks if mcp-stata is available, asks about access to the toolkit, or asks what Stata tools are connected.
 ---
 
-Call `stata_manage_session(action="detect")` to verify the Stata connection, then respond with:
+ToolSearch query="select:stata_manage_session"
 
+Call `stata_manage_session(action="detect")` to verify the Stata connection. If `stata_manage_session(action="detect")` fails, report the error and suggest the user set `STATA_PATH` to the Stata executable path.
+
+Then respond with:
 ```
                                     __        __       
    ____ ___  _________        _____/ /_____ _/ /_____ _
@@ -41,5 +44,3 @@ Resources (MCP):
   stata://graphs/list         stata://variables/list
   stata://results/stored
 ```
-
-If `stata_manage_session(action="detect")` fails, report the error and suggest the user set `STATA_PATH` to the Stata executable path.

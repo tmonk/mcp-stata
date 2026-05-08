@@ -117,7 +117,7 @@ def test_project_scope_omits_env_when_process_env_is_set(mock_home):
         assert "/very/wrong/temp/dir" not in codex_content
         assert "[mcp_servers.mcp-stata.env]" not in codex_content
 
-def test_reinstall_updates_existing_claude_user_config_even_when_marketplace_available(mock_home):
+def test_reinstall_removes_standalone_claude_config_when_marketplace_available(mock_home):
     claude_cfg = setup_toolkit.get_mcp_config_path("claude_desktop", scope="user")
     claude_cfg.parent.mkdir(parents=True, exist_ok=True)
     claude_cfg.write_text(
@@ -146,12 +146,30 @@ def test_reinstall_updates_existing_claude_user_config_even_when_marketplace_ava
         )
 
     data = json.loads(claude_cfg.read_text())
-    entry = data["mcpServers"]["mcp-stata"]
-    assert entry["args"] == ["--refresh", "--refresh-package", "mcp-stata", "--from", "mcp-stata@9.9.9", "mcp-stata"]
-    assert "env" not in entry
+    assert "mcp-stata" not in data["mcpServers"]
+    assert written == []  # written is for newly created config paths, but here we only modified (cleaned) existing ones
+
+def test_reinstall_falls_back_to_standalone_claude_on_marketplace_failure(mock_home):
+    claude_cfg = setup_toolkit.get_mcp_config_path("claude_desktop", scope="user")
+    claude_cfg.parent.mkdir(parents=True, exist_ok=True)
+    
+    with patch.object(setup_toolkit, "install_claude_marketplace", return_value=False), \
+         patch("shutil.which", return_value=None):
+        written = setup_toolkit.install_for_agent(
+            "claude",
+            scope="user",
+            version="9.9.9",
+            latest=False,
+            local_source=None,
+            project_root=mock_home / "project",
+        )
+
+    data = json.loads(claude_cfg.read_text())
+    assert "mcp-stata" in data["mcpServers"]
+    assert "mcp-stata@9.9.9" in str(data["mcpServers"]["mcp-stata"]["args"])
     assert claude_cfg in written
 
-def test_reinstall_updates_existing_codex_config_even_when_marketplace_available(mock_home):
+def test_reinstall_removes_standalone_codex_config_when_marketplace_available(mock_home):
     project_root = mock_home / "project"
     codex_cfg = project_root / ".codex" / "config.toml"
     codex_cfg.parent.mkdir(parents=True, exist_ok=True)
@@ -179,10 +197,8 @@ def test_reinstall_updates_existing_codex_config_even_when_marketplace_available
         )
 
     content = codex_cfg.read_text()
-    assert 'args = ["--refresh", "--refresh-package", "mcp-stata", "--from", "mcp-stata@9.9.9", "mcp-stata"]' in content
-    assert 'STATA_PATH = "/stale/path"' not in content
-    assert "[mcp_servers.mcp-stata.env]" not in content
-    assert codex_cfg in written
+    assert "[mcp_servers.mcp-stata]" not in content
+    assert codex_cfg not in written
 
 def test_reinstall_strips_existing_project_placeholder_env_blocks(mock_home):
     project_root = mock_home / "project"

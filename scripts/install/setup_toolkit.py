@@ -26,7 +26,7 @@ from agents import Agent, all_supported_agent_names, discover_agents
 CANONICAL_SERVER_NAME = "mcp-stata"
 LEGACY_SERVER_NAMES = ("mcp_stata",)
 PACKAGE_NAME = "mcp-stata"
-DEFAULT_SCOPE = "project"
+DEFAULT_SCOPE = "user"
 # NOTE: Zed and Continue are intentionally NOT supported by mcp-stata at this time.
 SUPPORTED_AGENTS = ("claude", "codex", "gemini", "cursor", "windsurf", "vscode")
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -800,49 +800,45 @@ def install_for_agent(
 
     if agent == "claude":
         marketplace_ok = install_claude_marketplace(scope=scope, project_root=project_root)
-        existing_user_config = None
-        if scope != "project":
-            existing_user_config = get_mcp_config_path("claude_desktop", scope="user", project_root=project_root)
-        if scope == "project":
-            # Project scope: always materialize `.mcp.json` after marketplace attempts.
-            _append(
-                configure_claude_code(
-                    scope=scope,
-                    version=version,
-                    latest=latest,
-                    local_source=local_source,
-                    project_root=project_root,
-                )
+        if marketplace_ok:
+            uninstall_for_agent("claude", scope=scope, project_root=project_root)
+            print_success("Plugin installed — MCP server registered by plugin")
+            print_success("Removed any conflicting standalone MCP registration")
+        else:
+            print_warning(
+                "Plugin install failed. The plugin is the recommended install method — "
+                "it includes skills, agents, and the MCP server in one step.\n"
+                f"  To install manually: claude plugin install {PLUGIN_ROOT} --scope user\n"
+                "  Falling back to MCP-only JSON config (skills and agents will not be available)."
             )
-        elif (existing_user_config and existing_user_config.exists()) or not marketplace_ok:
-            _append(
-                configure_claude_code(
-                    scope=scope,
-                    version=version,
-                    latest=latest,
-                    local_source=local_source,
-                    project_root=project_root,
-                )
-            )
+            _append(configure_claude_code(
+                scope=scope,
+                version=version,
+                latest=latest,
+                local_source=local_source,
+                project_root=project_root,
+            ))
         return written
 
     if agent == "codex":
-        codex_target_dir = get_codex_home() if scope == "user" else get_project_root(project_root) / ".codex"
-        codex_config_path = codex_target_dir / "config.toml"
         marketplace_ok = install_codex_marketplace(project_root=project_root)
-        if codex_config_path.exists() or not marketplace_ok:
-            _append(
-                configure_codex(
-                    scope=scope,
-                    version=version,
-                    latest=latest,
-                    local_source=local_source,
-                    project_root=project_root,
-                )
+        if marketplace_ok:
+            uninstall_for_agent("codex", scope=scope, project_root=project_root)
+            print_success("Plugin installed — MCP server registered by plugin")
+            print_success("Removed any conflicting standalone MCP registration")
+        else:
+            print_warning(
+                "Plugin install failed. The plugin is the recommended install method.\n"
+                f"  To install manually: codex plugin install {PLUGIN_ROOT}\n"
+                "  Falling back to MCP-only config (skills and agents will not be available)."
             )
-        _append(install_codex_skills(project_root=project_root))
-        _append(register_generic_skills(project_root=project_root))
-        _append(merge_project_agents_hint(project_root=project_root))
+            _append(configure_codex(
+                scope=scope,
+                version=version,
+                latest=latest,
+                local_source=local_source,
+                project_root=project_root,
+            ))
         return written
 
     if agent == "gemini":

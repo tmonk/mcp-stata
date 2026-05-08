@@ -223,7 +223,7 @@ class TestCursorConfig:
         bin_dir = tmp_path / "bin"
         _stub_uvx(bin_dir)
         (tmp_path / ".cursor").mkdir()
-        result = _run(["--agent", "cursor"], home=tmp_path)
+        result = _run(["--agent", "cursor", "--scope", "project"], home=tmp_path)
         assert result.returncode == 0
         cfg = tmp_path / "project" / ".cursor" / "mcp.json"
         assert cfg.exists()
@@ -236,7 +236,7 @@ class TestCursorConfig:
         cfg = tmp_path / "project" / ".cursor" / "mcp.json"
         cfg.parent.mkdir(parents=True)
         cfg.write_text(json.dumps({"mcpServers": {"existing": {"command": "foo"}}}))
-        _run(["--agent", "cursor"], home=tmp_path)
+        _run(["--agent", "cursor", "--scope", "project"], home=tmp_path)
         data = json.loads(cfg.read_text())
         assert "existing" in data["mcpServers"]
         assert "mcp-stata" in data["mcpServers"]
@@ -268,21 +268,26 @@ class TestClaudeConfig:
         bin_dir = tmp_path / "bin"
         _stub_uvx(bin_dir)
         _stub_agent_cli(bin_dir, "claude", succeeds=False)
-        result = _run(["--agent", "claude"], home=tmp_path)
+        result = _run(["--agent", "claude", "--scope", "project"], home=tmp_path)
         assert result.returncode == 0
         cfg = tmp_path / "project" / ".mcp.json"
         assert cfg.exists()
         data = json.loads(cfg.read_text())
         assert "mcp-stata" in data["mcpServers"]
 
-    def test_uses_claude_cli_when_available(self, tmp_path):
+    def test_marketplace_success_cleans_standalone_config(self, tmp_path):
         bin_dir = tmp_path / "bin"
         _stub_uvx(bin_dir)
         _stub_agent_cli(bin_dir, "claude", succeeds=True)
-        result = _run(["--agent", "claude"], home=tmp_path)
-        assert result.returncode == 0
+        # Pre-create standalone config
         cfg = tmp_path / "project" / ".mcp.json"
-        assert cfg.exists()
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(json.dumps({"mcpServers": {"mcp-stata": {}}}))
+        
+        result = _run(["--agent", "claude", "--scope", "project"], home=tmp_path)
+        assert result.returncode == 0
+        data = json.loads(cfg.read_text())
+        assert "mcp-stata" not in data["mcpServers"]
 
 
 # ===========================================================================
@@ -294,7 +299,7 @@ class TestCodexConfig:
         bin_dir = tmp_path / "bin"
         _stub_uvx(bin_dir)
         _stub_agent_cli(bin_dir, "codex", succeeds=False)
-        result = _run(["--agent", "codex"], home=tmp_path)
+        result = _run(["--agent", "codex", "--scope", "project"], home=tmp_path)
         assert result.returncode == 0
         toml = tmp_path / "project" / ".codex" / "config.toml"
         assert toml.exists()
@@ -307,34 +312,14 @@ class TestCodexConfig:
         bin_dir = tmp_path / "bin"
         _stub_uvx(bin_dir)
         _stub_agent_cli(bin_dir, "codex", succeeds=False)
-        _run(["--agent", "codex"], home=tmp_path)
-        _run(["--agent", "codex"], home=tmp_path)
+        _run(["--agent", "codex", "--scope", "project"], home=tmp_path)
+        _run(["--agent", "codex", "--scope", "project"], home=tmp_path)
         toml = tmp_path / "project" / ".codex" / "config.toml"
         count = toml.read_text().count("[mcp_servers.mcp-stata]")
         assert count == 1, f"mcp-stata entry duplicated: found {count} times"
 
-    def test_codex_install_merges_project_agents_md(self, tmp_path):
-        bin_dir = tmp_path / "bin"
-        _stub_uvx(bin_dir)
-        _stub_agent_cli(bin_dir, "codex", succeeds=False)
-        agents = tmp_path / "project" / "AGENTS.md"
-        agents.parent.mkdir(parents=True, exist_ok=True)
-        agents.write_text("# Existing\n\nKeep this line.\n")
-        result = _run(["--agent", "codex"], home=tmp_path)
-        assert result.returncode == 0
-        content = agents.read_text()
-        assert "BEGIN MCP-STATA MANAGED BLOCK" in content
-        assert "Always use the `mcp-stata` toolkit" in content
-        assert "Keep this line." in content
-
-    def test_codex_agents_merge_is_idempotent(self, tmp_path):
-        bin_dir = tmp_path / "bin"
-        _stub_uvx(bin_dir)
-        _stub_agent_cli(bin_dir, "codex", succeeds=False)
-        _run(["--agent", "codex"], home=tmp_path)
-        _run(["--agent", "codex"], home=tmp_path)
-        agents = (tmp_path / "project" / "AGENTS.md").read_text()
-        assert agents.count("BEGIN MCP-STATA MANAGED BLOCK") == 1
+    # Note: Codex-specific skills and AGENTS.md hint logic was removed 
+    # in favor of plugin-managed resources.
 
 
 # ===========================================================================
@@ -375,7 +360,7 @@ class TestMcpArgs:
         bin_dir = tmp_path / "bin"
         _stub_uvx(bin_dir)
         (tmp_path / ".cursor").mkdir()
-        _run(["--agent", "cursor"], home=tmp_path)
+        _run(["--agent", "cursor", "--scope", "project"], home=tmp_path)
         self._check_args(tmp_path / "project" / ".cursor" / "mcp.json")
 
     def test_windsurf_args(self, tmp_path):
@@ -389,7 +374,7 @@ class TestMcpArgs:
         bin_dir = tmp_path / "bin"
         _stub_uvx(bin_dir)
         _stub_agent_cli(bin_dir, "claude", succeeds=False)
-        _run(["--agent", "claude"], home=tmp_path)
+        _run(["--agent", "claude", "--scope", "project"], home=tmp_path)
         self._check_args(tmp_path / "project" / ".mcp.json")
 
 
@@ -426,9 +411,12 @@ class TestSkillsSymlink:
         bin_dir = tmp_path / "bin"
         _stub_uvx(bin_dir)
         _stub_agent_cli(bin_dir, "codex", succeeds=False)
-        _run(["--agent", "codex"], home=tmp_path)
-        link = tmp_path / ".codex" / "skills" / "mcp-stata"
-        assert link.exists() or link.is_symlink()
+        # Codex standalone fallback still includes skills? 
+        # Wait, the warning says "skills and agents will not be available".
+        # So we expect NO symlink now.
+        _run(["--agent", "codex", "--scope", "project"], home=tmp_path)
+        link = tmp_path / "project" / ".codex" / "skills" / "mcp-stata"
+        assert not link.exists()
 
     def test_existing_real_skills_dir_is_left_in_place(self, tmp_path):
         bin_dir = tmp_path / "bin"
@@ -496,7 +484,7 @@ class TestSummaryOutput:
         bin_dir = tmp_path / "bin"
         _stub_uvx(bin_dir)
         _stub_agent_cli(bin_dir, "codex", succeeds=False)
-        _run(["--agent", "codex", "--version", "9.9.9"], home=tmp_path)
+        _run(["--agent", "codex", "--version", "9.9.9", "--scope", "project"], home=tmp_path)
         toml = tmp_path / "project" / ".codex" / "config.toml"
         assert "mcp-stata@9.9.9" in toml.read_text()
 
