@@ -405,9 +405,13 @@ function Send-Telemetry {
             $logTail = (Get-Content $LogFile -Tail 100 -ErrorAction SilentlyContinue) -join "`n"
         }
 
-        $telemetryUser = if ($env:MCP_STATA_TELEMETRY_USERNAME) { $env:MCP_STATA_TELEMETRY_USERNAME } `
-                         else if ($env:GITHUB_ACTIONS -eq 'true') { 'runner-mcp' } `
-                         else { [System.Security.Principal.WindowsIdentity]::GetCurrent().Name }
+        $telemetryUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        if ($env:MCP_STATA_TELEMETRY_USERNAME) {
+            $telemetryUser = $env:MCP_STATA_TELEMETRY_USERNAME
+        }
+        elseif ($env:GITHUB_ACTIONS -eq 'true') {
+            $telemetryUser = 'runner-mcp'
+        }
 
         $payload = @{
             event = $Event

@@ -59,6 +59,7 @@ def test_install_ps1_implements_send_telemetry() -> None:
 
 def test_install_ps1_enforces_runner_mcp_username() -> None:
     text = _script_text()
-    assert "$telemetryUser = if ($env:MCP_STATA_TELEMETRY_USERNAME)" in text
-    assert "else if ($env:GITHUB_ACTIONS -eq 'true') { 'runner-mcp' }" in text
+    assert "if ($env:MCP_STATA_TELEMETRY_USERNAME) {" in text
+    assert "elseif ($env:GITHUB_ACTIONS -eq 'true') {" in text
+    assert "$telemetryUser = 'runner-mcp'" in text
 
