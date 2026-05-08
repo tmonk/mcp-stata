@@ -217,6 +217,23 @@ export MCP_STATA_INSTALL_LOG_FILE="$LOG_FILE"
 exec > >(tee -ai "$LOG_FILE") 2>&1
 show_header "$@"
 
+show_help() {
+  cat <<'EOF'
+mcp-stata installer
+
+Usage:
+  install.sh [--agent <name>] [--scope <user|project>] [--dry-run] [--uninstall] [--verbose] ...
+
+Notes:
+  - This script delegates the heavy lifting to scripts/install/setup_toolkit.py
+  - Telemetry is best-effort and never affects exit status.
+
+Examples:
+  curl -fsSL https://mcp-stata-install.tdmonk.com/install.sh | bash
+  bash install.sh --agent cursor --dry-run
+EOF
+}
+
 # ── Telemetry ─────────────────────────────────────────────────────────────────
 # What is sent: event type, OS/arch, MCP client name(s), install duration, a
 # unique run ID, and — on failure — the last 100 lines of the install log so
@@ -230,6 +247,71 @@ INSTALL_START_TIME=$(date +%s)
 INSTALL_SOURCE="${MCP_STATA_INSTALL_SOURCE:-direct}"  # e.g. workbench|direct
 TELEMETRY_RETRIES="${MCP_STATA_TELEMETRY_RETRIES:-3}"
 TELEMETRY_TIMEOUT_SECS="${MCP_STATA_TELEMETRY_TIMEOUT_SECS:-5}"
+TELEMETRY_DEBUG="${MCP_STATA_TELEMETRY_DEBUG:-0}"
+TELEMETRY_ENABLED="${MCP_STATA_TELEMETRY_ENABLED:-1}"
+USER_ID=""
+
+make_user_id() {
+  # Bash 3.2-compatible anonymous id. We rely on words (not digits) for entropy.
+  # Example: amber-otter-sprout
+  local adjectives=(
+    amber aqua brisk calm cedar coral dawn dapper dune ember fern frosty glowy
+    hazel ivy jade jolly keen kind lemon lilac lucid lucky lunar maple mellow
+    misty mossy nimble noble ocean olive opal peach pine plum polar quartz quick
+    rosy sage sandy satin silver simple snowy solar spring sunny swift thyme
+    velvet vivid warm windy wisteria zesty
+  )
+  local nouns=(
+    otter panda fox koala penguin capybara gecko puffin kitten badger rabbit
+    sparrow heron falcon dolphin whale turtle lizard yak bison alpaca
+    comet river forest meadow canyon summit harbor pebble lantern compass
+    sprout acorn fernleaf snowflake raindrop starlight moonbeam sunburst
+    gadget widget pixel prisma orbit drift ripple
+  )
+
+  local a="${adjectives[$((RANDOM % ${#adjectives[@]}))]}"
+  local n1="${nouns[$((RANDOM % ${#nouns[@]}))]}"
+  local n2="${nouns[$((RANDOM % ${#nouns[@]}))]}"
+
+  # Avoid awkward repeats like otter-otter.
+  if [ "$n2" = "$n1" ]; then
+    n2="${nouns[$(((RANDOM + 7) % ${#nouns[@]}))]}"
+  fi
+
+  printf '%s-%s-%s' "$a" "$n1" "$n2"
+}
+
+get_user_id() {
+  # Persist across installs, but avoid any filesystem writes for --dry-run / tests.
+  if [ "${MCP_STATA_DRY_RUN:-0}" = "1" ]; then
+    printf 'dryrun'
+    return 0
+  fi
+
+  local base="${XDG_STATE_HOME:-${HOME}/.local/state}"
+  local dir="${base}/mcp-stata"
+  local file="${dir}/telemetry_user_id"
+
+  if [ -n "${MCP_STATA_USER_ID:-}" ]; then
+    printf '%s' "${MCP_STATA_USER_ID}"
+    return 0
+  fi
+
+  if [ -f "$file" ]; then
+    local v
+    v="$(head -n 1 "$file" 2>/dev/null || true)"
+    if [ -n "$v" ]; then
+      printf '%s' "$v"
+      return 0
+    fi
+  fi
+
+  mkdir -p "$dir" 2>/dev/null || true
+  local new
+  new="$(make_user_id)"
+  printf '%s\n' "$new" >"$file" 2>/dev/null || true
+  printf '%s' "$new"
+}
 
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -237,6 +319,9 @@ json_escape() {
 
 send_telemetry() {
   local event="$1" error_code="${2:-}"
+  if [ "$TELEMETRY_ENABLED" -ne 1 ]; then
+    return 0
+  fi
   local duration=$(( $(date +%s) - INSTALL_START_TIME ))
   local distro=""
   [ -f /etc/os-release ] && distro="$(. /etc/os-release && echo "${ID:-unknown}-${VERSION_ID:-}")"
@@ -282,30 +367,67 @@ send_telemetry() {
     esac
   done
 
-  # Capture last 100 lines of log for failure diagnostics.
-  # Newlines → \n, backslashes and quotes escaped for JSON.
+  # Capture last ~100 lines of log ONLY for failure diagnostics.
+  # (This keeps success/start payloads small and avoids JSON escaping pitfalls.)
   local log_tail=""
-  if [ -f "${LOG_FILE:-}" ]; then
+  if [[ "$event" == *"failure"* ]] && [ -f "${LOG_FILE:-}" ]; then
     log_tail="$(tail -n 100 "$LOG_FILE" 2>/dev/null | \
-      sed 's/\\/\\\\/g; s/"/\\"/g' | \
-      tr '\n' '\001' | sed 's/\001/\\n/g' || true)"
+      python3 - <<'PY' 2>/dev/null || true
+import json, sys
+print(json.dumps(sys.stdin.read()) [1:-1])
+PY
+    )"
   fi
 
   local payload
-  payload="$(printf '{"event":"%s","action":"%s","stage":"%s","client":"%s","install_source":"%s","scope":"%s","install_repo":"%s","install_ref":"%s","script_version":"%s","error_code":"%s","os":"%s","distro":"%s","arch":"%s","duration_ms":%d,"install_id":"%s","file":"install.sh","log_tail":"%s"}' \
+  payload="$(printf '{"event":"%s","action":"%s","stage":"%s","client":"%s","install_source":"%s","scope":"%s","user_id":"%s","install_repo":"%s","install_ref":"%s","script_version":"%s","error_code":"%s","os":"%s","distro":"%s","arch":"%s","duration_ms":%d,"install_id":"%s","file":"install.sh","log_tail":"%s"}' \
         "$event" "$(json_escape "$action")" "$INSTALL_STAGE" \
-        "$(json_escape "$client")" "$(json_escape "$INSTALL_SOURCE")" "$(json_escape "$scope")" \
+        "$(json_escape "$client")" "$(json_escape "$INSTALL_SOURCE")" "$(json_escape "$scope")" "$(json_escape "$USER_ID")" \
         "$(json_escape "$install_repo")" "$(json_escape "$install_ref")" "$(json_escape "$script_version")" \
         "$(json_escape "$error_code")" "$(uname -s | tr A-Z a-z)" "$distro" "$(uname -m)" \
         "$((duration * 1000))" "$INSTALL_ID" "$log_tail")"
 
   local attempt=1
   while [ "$attempt" -le "$TELEMETRY_RETRIES" ]; do
-    if curl -fsS -m "$TELEMETRY_TIMEOUT_SECS" -X POST "$TELEMETRY_URL" \
-      -H 'content-type: application/json' \
-      -d "$payload" \
-      >/dev/null 2>&1; then
-      return 0
+    if [ "$TELEMETRY_DEBUG" -eq 1 ]; then
+      local tmp_payload
+      tmp_payload="$(mktemp "${TMPDIR:-/tmp}/mcp-stata-telemetry-payload.XXXXXX")"
+      printf '%s' "$payload" >"$tmp_payload"
+      if command -v python3 >/dev/null 2>&1; then
+        python3 - <<'PY' "$tmp_payload" 2>/dev/null || true
+import json, sys, pathlib
+p = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+try:
+    json.loads(p)
+    print("telemetry payload: valid json")
+except Exception as e:
+    print("telemetry payload: INVALID json:", str(e))
+    print(p[:400])
+PY
+      fi
+      local tmp_resp
+      tmp_resp="$(mktemp "${TMPDIR:-/tmp}/mcp-stata-telemetry.XXXXXX")"
+      local http
+      http="$(curl -sS -m "$TELEMETRY_TIMEOUT_SECS" -X POST "$TELEMETRY_URL" \
+        -H 'content-type: application/json' \
+        -d "$payload" \
+        -o "$tmp_resp" -w '%{http_code}' || echo "curl_error")"
+      if [ "$http" = "200" ]; then
+        rm -f "$tmp_payload" || true
+        rm -f "$tmp_resp" || true
+        return 0
+      fi
+      warn "Telemetry debug: http=${http} event=${event}"
+      detail "$(head -c 200 "$tmp_resp" 2>/dev/null || true)"
+      rm -f "$tmp_payload" || true
+      rm -f "$tmp_resp" || true
+    else
+      if curl -fsS -m "$TELEMETRY_TIMEOUT_SECS" -X POST "$TELEMETRY_URL" \
+        -H 'content-type: application/json' \
+        -d "$payload" \
+        >/dev/null 2>&1; then
+        return 0
+      fi
     fi
     attempt=$((attempt + 1))
     sleep 0.2
@@ -313,7 +435,7 @@ send_telemetry() {
 
   # Non-fatal: installer should never fail because telemetry couldn't be delivered.
   warn "Telemetry could not be delivered (event=${event}). Dashboard may not update."
-  return 1
+  return 0
 }
 
 err() {
@@ -480,6 +602,25 @@ detect_action_label() {
 # ── Entry point ───────────────────────────────────────────────────────────────
 main() {
   detect_action_label "$@"
+
+  for arg in "$@"; do
+    if [ "$arg" = "--help" ] || [ "$arg" = "-h" ]; then
+      show_help
+      return 0
+    fi
+  done
+
+  # Detect dry-run early so we can avoid creating telemetry state files in tests.
+  MCP_STATA_DRY_RUN=0
+  for arg in "$@"; do
+    if [ "$arg" = "--dry-run" ]; then
+      MCP_STATA_DRY_RUN=1
+      break
+    fi
+  done
+  export MCP_STATA_DRY_RUN
+
+  USER_ID="$(get_user_id)"
 
   if [ "$(id -u)" -eq 0 ]; then
     warn "Running as root. ${ACTION_LABEL} will be local to the root user."

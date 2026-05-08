@@ -11,6 +11,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $RepoUrl = if ($env:MCP_STATA_REPO_URL) { $env:MCP_STATA_REPO_URL } else { 'https://github.com/tmonk/mcp-stata' }
 $Ref     = if ($env:MCP_STATA_REF) { $env:MCP_STATA_REF } else { 'main' }
 $ZipUrl  = "${RepoUrl}/archive/${Ref}.zip"
@@ -34,6 +35,12 @@ $InstallId = [guid]::NewGuid().ToString()
 $InstallStart = Get-Date
 $InstallStage = 'init'
 $InstallSource = if ($env:MCP_STATA_INSTALL_SOURCE) { $env:MCP_STATA_INSTALL_SOURCE } else { 'direct' }  # workbench|direct
+$TelemetryEnabled = if ($env:MCP_STATA_TELEMETRY_ENABLED) { [int]$env:MCP_STATA_TELEMETRY_ENABLED } else { 1 }
+$TelemetryRetries = if ($env:MCP_STATA_TELEMETRY_RETRIES) { [int]$env:MCP_STATA_TELEMETRY_RETRIES } else { 3 }
+$TelemetryTimeoutSec = if ($env:MCP_STATA_TELEMETRY_TIMEOUT_SECS) { [int]$env:MCP_STATA_TELEMETRY_TIMEOUT_SECS } else { 5 }
+$TelemetryDebug = if ($env:MCP_STATA_TELEMETRY_DEBUG) { [int]$env:MCP_STATA_TELEMETRY_DEBUG } else { 0 }
+$DryRun = $PassthroughArgs -contains '--dry-run'
+$UserId = ''
 
 # ── Formatting ─────────────────────────────────────────────────────────────
 function Write-Rule {
@@ -105,6 +112,23 @@ function Show-Header {
     } else {
         Write-Host '(none)'
     }
+}
+
+function Show-Help {
+    @"
+mcp-stata installer (PowerShell)
+
+Usage:
+  install.ps1 [--agent <name>] [--scope <user|project>] [--dry-run] [--uninstall] [--verbose] ...
+
+Notes:
+  - This script delegates the heavy lifting to scripts\install\setup_toolkit.py
+  - Telemetry is best-effort and never affects exit status.
+
+Examples:
+  irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex
+  powershell -ExecutionPolicy Bypass -File install.ps1 --agent cursor --dry-run
+"@ | Write-Host
 }
 
 function Show-Success {
@@ -217,15 +241,25 @@ function Invoke-ToolkitInstaller {
     )
 
     $pythonInstaller = Join-Path $InstallRepoRoot 'scripts\install\setup_toolkit.py'
-    if ($VerboseMode) {
-        & uv run --python 3.11 $pythonInstaller @Arguments
-        $exitCode = $LASTEXITCODE
-    } else {
-        $output = & uv run --python 3.11 $pythonInstaller @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
-        foreach ($line in $output) {
-            Format-ToolkitLine ([string]$line)
+    
+    # Temporarily lower ErrorActionPreference to prevent termination when uv 
+    # writes status/progress information to stderr (captured by 2>&1).
+    $oldEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    
+    try {
+        if ($VerboseMode) {
+            & uv run --no-progress --python 3.11 $pythonInstaller @Arguments
+            $exitCode = $LASTEXITCODE
+        } else {
+            $output = & uv run --no-progress --python 3.11 $pythonInstaller @Arguments 2>&1
+            $exitCode = $LASTEXITCODE
+            foreach ($line in $output) {
+                Format-ToolkitLine ([string]$line)
+            }
         }
+    } finally {
+        $ErrorActionPreference = $oldEAP
     }
     return $exitCode
 }
@@ -252,9 +286,55 @@ function Invoke-WithRetry {
     }
 }
 
+function New-UserId {
+    # Anonymous word-only id. Example: amber-otter-sprout
+    $adjectives = @(
+        'amber','aqua','brisk','calm','cedar','coral','dawn','dapper','dune','ember','fern','frosty','glowy',
+        'hazel','ivy','jade','jolly','keen','kind','lemon','lilac','lucid','lucky','lunar','maple','mellow',
+        'misty','mossy','nimble','noble','ocean','olive','opal','peach','pine','plum','polar','quartz','quick',
+        'rosy','sage','sandy','satin','silver','simple','snowy','solar','spring','sunny','swift','thyme',
+        'velvet','vivid','warm','windy','wisteria','zesty'
+    )
+    $nouns = @(
+        'otter','panda','fox','koala','penguin','capybara','gecko','puffin','kitten','badger','rabbit',
+        'sparrow','heron','falcon','dolphin','whale','turtle','lizard','yak','bison','alpaca',
+        'comet','river','forest','meadow','canyon','summit','harbor','pebble','lantern','compass',
+        'sprout','acorn','fernleaf','snowflake','raindrop','starlight','moonbeam','sunburst',
+        'gadget','widget','pixel','prisma','orbit','drift','ripple'
+    )
+    $a = $adjectives | Get-Random
+    $n1 = $nouns | Get-Random
+    $n2 = $nouns | Get-Random
+    if ($n2 -eq $n1) { $n2 = $nouns | Get-Random }
+    return "$a-$n1-$n2"
+}
+
+function Get-UserId {
+    if ($env:MCP_STATA_USER_ID) { return [string]$env:MCP_STATA_USER_ID }
+    if ($DryRun) { return 'dryrun' }
+
+    $base = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } else { Join-Path $env:LOCALAPPDATA 'mcp-stata' }
+    if (-not $base) { $base = Join-Path $env:TEMP 'mcp-stata' }
+    $dir = $base
+    $file = Join-Path $dir 'telemetry_user_id'
+
+    try {
+        if (Test-Path $file) {
+            $v = (Get-Content $file -TotalCount 1 -ErrorAction SilentlyContinue)
+            if ($v) { return [string]$v }
+        }
+    } catch {}
+
+    try { New-Item -ItemType Directory -Path $dir -Force -ErrorAction SilentlyContinue | Out-Null } catch {}
+    $new = New-UserId
+    try { Set-Content -Path $file -Value $new -NoNewline -ErrorAction SilentlyContinue } catch {}
+    return $new
+}
+
 function Send-Telemetry {
     param($Event, $ErrorCode = '')
     try {
+        if ($TelemetryEnabled -ne 1) { return }
         $action = if ($Event -like 'uninstall_*') { 'uninstall' } else { 'install' }
         $client = ''
         $scope = ''
@@ -277,7 +357,7 @@ function Send-Telemetry {
         }
 
         $logTail = ''
-        if ($LogFile -and (Test-Path $LogFile)) {
+        if ($Event -like '*failure*' -and $LogFile -and (Test-Path $LogFile)) {
             $logTail = (Get-Content $LogFile -Tail 100 -ErrorAction SilentlyContinue) -join "`n"
         }
 
@@ -287,6 +367,7 @@ function Send-Telemetry {
             client = $client
             install_source = $InstallSource
             scope = $scope
+            user_id = $UserId
             install_ref = $install_ref
             install_repo = $install_repo
             script_version = $script_version
@@ -300,9 +381,23 @@ function Send-Telemetry {
             file = 'install.ps1'
             log_tail = $logTail
         } | ConvertTo-Json -Compress
-        Invoke-RestMethod -Uri $TelemetryUrl -Method Post -Body $payload `
-            -ContentType 'application/json' -TimeoutSec 5 `
-            -ErrorAction SilentlyContinue | Out-Null
+        for ($attempt = 1; $attempt -le $TelemetryRetries; $attempt++) {
+            try {
+                $resp = Invoke-RestMethod -Uri $TelemetryUrl -Method Post -Body $payload `
+                    -ContentType 'application/json' -TimeoutSec $TelemetryTimeoutSec `
+                    -ErrorAction Stop
+                if ($TelemetryDebug -eq 1) {
+                    Write-Warn ("Telemetry debug: ok event=$Event" )
+                }
+                break
+            } catch {
+                if ($TelemetryDebug -eq 1) {
+                    Write-Warn ("Telemetry debug: failed event=$Event attempt=$attempt/$TelemetryRetries")
+                    Write-Warn ($_.Exception.Message)
+                }
+                if ($attempt -lt $TelemetryRetries) { Start-Sleep -Milliseconds 200 }
+            }
+        }
     } catch {}
 }
 
@@ -366,13 +461,19 @@ function Initialize-Uv {
         $policy = Get-ExecutionPolicy -Scope CurrentUser
         if ($policy -in @('Restricted', 'Undefined')) {
             Write-Step 'Attempting to set execution policy to RemoteSigned'
-            Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+            Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force -ErrorAction SilentlyContinue
         }
     } catch {
         Write-Warn 'Could not set execution policy. If installation fails, run: Set-ExecutionPolicy RemoteSigned -Scope CurrentUser'
     }
 
-    Invoke-WithRetry { Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression }
+    $oldEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        Invoke-WithRetry { Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression }
+    } finally {
+        $ErrorActionPreference = $oldEAP
+    }
 
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -403,9 +504,31 @@ Show-Header
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 try {
+    if ($PassthroughArgs -contains '--help' -or $PassthroughArgs -contains '-h') {
+        Show-Help
+        exit 0
+    }
+
+    $script:UserId = Get-UserId
+
     $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if ($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         Write-Warn "Running as Administrator. $ActionLabel will be local to the admin profile."
+    }
+
+    # Emit start event (best-effort).
+    $startEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_start' } else { 'install_start' }
+    Send-Telemetry $startEvent
+
+    # Telemetry-only mode: test end-to-end telemetry without mutating the machine.
+    if ($env:MCP_STATA_TELEMETRY_ONLY -eq '1') {
+        $InstallStage = 'telemetry_only'
+        $endEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_success' } else { 'install_success' }
+        Send-Telemetry $endEvent
+        Write-Ok 'Telemetry-only mode complete'
+        Write-Host '   •' -ForegroundColor DarkGray -NoNewline
+        Write-Host " install_id=$InstallId" -ForegroundColor DarkGray
+        exit 0
     }
 
     $InstallStage = 'ensure_repo_root'

@@ -311,6 +311,7 @@
           <option value="client">Client</option>
           <option value="os">OS</option>
           <option value="event">Event</option>
+          <option value="user">User ID</option>
           <option value="source">Source</option>
           <option value="tool">Tool</option>
           <option value="error">Error code</option>
@@ -453,6 +454,7 @@ const FIELD_MAP = {
   error:   { blob: 'blob11', label: 'Error' },
   tool:    { blob: 'blob12', label: 'Tool' },
   country: { blob: 'blob13', label: 'Country' },
+  user:    { blob: 'blob23', label: 'User ID' },
 };
 
 // ── state ─────────────────────────────────────────────────────────────────────
@@ -646,12 +648,21 @@ const q = {
     GROUP BY err ORDER BY cnt DESC LIMIT 10
   `,
   recent: () => `
-    SELECT timestamp, blob1 AS event, blob4 AS client,
-           blob8 AS os, blob5 AS src, blob13 AS country, blob11 AS error_code,
-           blob20 AS log_tail
+    /* Pull raw events; roll up client-side (AE SQL lacks array aggs). */
+    SELECT
+      timestamp,
+      index1 AS install_id,
+      blob1 AS event,
+      blob4 AS client,
+      blob8 AS os,
+      blob5 AS src,
+      blob13 AS country,
+      blob11 AS error_code,
+      blob20 AS log_tail
     FROM ${DATASET}
     WHERE ${timeWhere()} ${filterSQL()}
-    ORDER BY timestamp DESC LIMIT 50
+    ORDER BY timestamp DESC
+    LIMIT 200
   `,
   fieldValues: (field) => `
     SELECT ${FIELD_MAP[field].blob} AS v, count() AS cnt
@@ -830,10 +841,15 @@ async function loadErrors() {
 
 // ── recent events ─────────────────────────────────────────────────────────────
 
-function eventBadge(ev) {
-  if (!ev) return '<span class="badge badge-other">—</span>';
-  const cls = ev.includes('success') ? 'success' : ev.includes('failure') ? 'failure' : ev.includes('start') ? 'start' : 'other';
-  const label = ev.replace('install_', '').replace('uninstall_', 'un:');
+function eventBadge(r) {
+  if (!r) return '<span class="badge badge-other">—</span>';
+
+  const sawFailure = !!(+r.saw_failure || r.saw_failure === true);
+  const sawSuccess = !!(+r.saw_success || r.saw_success === true);
+  const sawStart   = !!(+r.saw_start   || r.saw_start   === true);
+
+  const cls = sawFailure ? 'failure' : sawSuccess ? 'success' : sawStart ? 'start' : 'other';
+  const label = sawFailure ? 'failure' : sawSuccess ? 'success' : sawStart ? 'start' : '—';
   return `<span class="badge badge-${cls}">${label}</span>`;
 }
 
@@ -854,15 +870,71 @@ function cell(field, value) {
 
 async function loadRecent() {
   const rows = await query(q.recent());
-  recentRows = rows;
+
+  // Roll up to one row per install attempt (install_id), preserving all details.
+  // AE SQL is limited, so we aggregate in JS.
+  const byId = new Map();
+  for (const r of rows) {
+    const id = r.install_id || '(unknown)';
+    if (!byId.has(id)) {
+      byId.set(id, {
+        install_id: id,
+        first_seen: r.timestamp,
+        timestamp: r.timestamp,
+        saw_start: false,
+        saw_success: false,
+        saw_failure: false,
+        clients: new Set(),
+        oses: new Set(),
+        sources: new Set(),
+        countries: new Set(),
+        errors: new Set(),
+        log_tail: '',
+      });
+    }
+    const agg = byId.get(id);
+    if (r.timestamp && (!agg.first_seen || r.timestamp < agg.first_seen)) agg.first_seen = r.timestamp;
+    if (r.timestamp && (!agg.timestamp  || r.timestamp > agg.timestamp))  agg.timestamp  = r.timestamp;
+
+    if (r.event === 'install_start')   agg.saw_start = true;
+    if (r.event === 'install_success') agg.saw_success = true;
+    if (r.event === 'install_failure') agg.saw_failure = true;
+
+    if (r.client)  agg.clients.add(r.client);
+    if (r.os)      agg.oses.add(r.os);
+    if (r.src)     agg.sources.add(r.src);
+    if (r.country) agg.countries.add(r.country);
+    if (r.error_code) agg.errors.add(r.error_code);
+
+    // Keep any non-empty log tail (typically only present on failures).
+    if (!agg.log_tail && r.log_tail) agg.log_tail = r.log_tail;
+  }
+
+  const rolled = Array.from(byId.values()).map(a => ({
+    install_id: a.install_id,
+    first_seen: a.first_seen,
+    timestamp: a.timestamp,
+    saw_start: a.saw_start,
+    saw_success: a.saw_success,
+    saw_failure: a.saw_failure,
+    client: Array.from(a.clients).join(', '),
+    os: Array.from(a.oses).join(', '),
+    src: Array.from(a.sources).join(', '),
+    country: Array.from(a.countries).join(', '),
+    error_code: Array.from(a.errors).join(', '),
+    log_tail: a.log_tail,
+  }));
+
+  rolled.sort((a, b) => (a.timestamp < b.timestamp ? 1 : a.timestamp > b.timestamp ? -1 : 0));
+  recentRows = rolled;
   const tbody = document.getElementById('recent-tbody');
-  if (!rows.length) {
+  if (!rolled.length) {
     tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted);padding:20px 12px;">No events in range.</td></tr>';
     return;
   }
-  tbody.innerHTML = rows.map((r, i) => `<tr>
+  tbody.innerHTML = rolled.map((r, i) => `<tr>
     <td style="color:var(--muted);white-space:nowrap;font-size:12px">${relTime(r.timestamp)}</td>
-    <td><span class="filterable" onclick="quickFilter('event','${esc(r.event)}')">${eventBadge(r.event)}</span></td>
+    <td>${eventBadge(r)}</td>
     <td>${cell('client', r.client)}</td>
     <td>${cell('os', r.os)}</td>
     <td>${cell('source', r.src)}</td>
@@ -996,6 +1068,8 @@ function quickFilter(field, value) {
   renderChips();
   loadAll();
 }
+
+// Event is now aggregated per install attempt; quick-filter by a single event no longer applies.
 
 const fpPopover = document.getElementById('filter-popover');
 const fpField   = document.getElementById('fp-field');

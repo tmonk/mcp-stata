@@ -226,6 +226,7 @@ function sanitizeEvent(body, rawJson) {
     error_code: cap(body.error_code, 128),
     duration_ms: num(body.duration_ms),
     install_id: cap(body.install_id, 64),
+    user_id: cap(body.user_id, 32),
     script_version: cap(body.script_version, 32),
     // Last ~100 lines of the install log, sent on failure for diagnostics.
     log_tail: capLog(body.log_tail || '', 4000),
@@ -234,6 +235,8 @@ function sanitizeEvent(body, rawJson) {
 
 export function buildAnalyticsDataPoint(env, request, event) {
   const country = request.cf?.country || 'XX';
+  const asn = request.cf?.asn ? String(request.cf.asn) : '';
+  const asOrg = request.cf?.asOrganization || request.cf?.as_organization || '';
   const tool = detectClientTool(request.headers.get('user-agent') || '');
   const repo = env.GITHUB_REPO || DEFAULTS.GITHUB_REPO;
   const ref = env.INSTALL_REF || DEFAULTS.INSTALL_REF;
@@ -269,6 +272,9 @@ export function buildAnalyticsDataPoint(env, request, event) {
       ref, // 18 worker upstream ref
       ua.slice(0, 256), // 19
       event.log_tail || '', // 20: last ~100 lines of install log (failures)
+      asn, // 21: ASN (best-effort)
+      asOrg, // 22: AS organization / ISP-ish label (best-effort)
+      event.user_id || '', // 23: anonymous per-user id (best-effort)
     ],
     doubles: [
       1, // double1: row count
