@@ -26,6 +26,9 @@ $env:MCP_STATA_INSTALL_LOG_FILE = $LogFile
 Start-Transcript -Path $LogFile -Append -ErrorAction SilentlyContinue | Out-Null
 
 # ── Telemetry ──────────────────────────────────────────────────────────────
+# What is sent: event type, OS/arch, MCP client name(s), install duration, a
+# unique run ID, and — on failure — the last 100 lines of the install log so
+# errors can be diagnosed. No file contents, credentials, or paths are included.
 $TelemetryUrl = 'https://mcp-stata-install.tdmonk.com/telemetry'
 $InstallId = [guid]::NewGuid().ToString()
 $InstallStart = Get-Date
@@ -261,10 +264,21 @@ function Send-Telemetry {
 
         for ($i = 0; $i -lt $PassthroughArgs.Count; $i++) {
             $arg = $PassthroughArgs[$i]
-            if ($arg -eq '--agent' -and ($i + 1) -lt $PassthroughArgs.Count) { $client = $PassthroughArgs[$i + 1] }
-            if ($arg -like '--agent=*') { $client = $arg.Substring(8) }
+            if ($arg -eq '--agent' -and ($i + 1) -lt $PassthroughArgs.Count) {
+                $newAgent = $PassthroughArgs[$i + 1]
+                $client = if ($client) { "$client,$newAgent" } else { $newAgent }
+            }
+            if ($arg -like '--agent=*') {
+                $newAgent = $arg.Substring(8)
+                $client = if ($client) { "$client,$newAgent" } else { $newAgent }
+            }
             if ($arg -eq '--scope' -and ($i + 1) -lt $PassthroughArgs.Count) { $scope = $PassthroughArgs[$i + 1] }
             if ($arg -like '--scope=*') { $scope = $arg.Substring(8) }
+        }
+
+        $logTail = ''
+        if ($LogFile -and (Test-Path $LogFile)) {
+            $logTail = (Get-Content $LogFile -Tail 100 -ErrorAction SilentlyContinue) -join "`n"
         }
 
         $payload = @{
@@ -284,9 +298,10 @@ function Send-Telemetry {
             duration_ms = [int]((Get-Date) - $InstallStart).TotalMilliseconds
             install_id = $InstallId
             file = 'install.ps1'
+            log_tail = $logTail
         } | ConvertTo-Json -Compress
         Invoke-RestMethod -Uri $TelemetryUrl -Method Post -Body $payload `
-            -ContentType 'application/json' -TimeoutSec 3 `
+            -ContentType 'application/json' -TimeoutSec 5 `
             -ErrorAction SilentlyContinue | Out-Null
     } catch {}
 }

@@ -1,6 +1,7 @@
 import subprocess
 import unittest
 import os
+import shutil
 from pathlib import Path
 
 # Path to the install script to test
@@ -8,6 +9,24 @@ INSTALL_SH = Path(__file__).resolve().parents[2] / "plugin" / "install.sh"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 class TestLinuxInstallers(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # These tests require docker to be available on the host running the test suite.
+        if shutil.which("docker") is None:
+            raise unittest.SkipTest("docker not available; skipping Linux installer integration tests")
+        # Also require the daemon to be reachable (common CI limitation on macOS runners).
+        try:
+            probe = subprocess.run(
+                ["docker", "info"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            raise unittest.SkipTest("docker daemon not reachable; skipping Linux installer integration tests")
+        if probe.returncode != 0:
+            raise unittest.SkipTest("docker daemon not reachable; skipping Linux installer integration tests")
+
     def run_in_docker(self, image, command, shell="bash", env=None):
         """Runs a command in a fresh docker container."""
         # We mount the entire repo so we can test the local version including sub-modules

@@ -1,0 +1,15 @@
+# Activate uv-managed virtualenv
+source .venv/bin/activate
+
+# Cloudflare Analytics Engine — mcp-stata telemetry dashboard
+# Account ID: dash.cloudflare.com → right sidebar
+# API token:  dash.cloudflare.com/profile/api-tokens → Account Analytics Read
+export CF_ACCOUNT_ID=
+export CF_API_TOKEN=
+
+# Dashboard default date range (ISO local time, leave blank for live/all-time)
+# export DASHBOARD_FROM=2026-01-01T00:00
+# export DASHBOARD_TO=
+
+# Dashboard port (default 4242)
+# export PORT=4242

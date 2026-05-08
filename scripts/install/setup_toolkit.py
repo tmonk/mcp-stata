@@ -993,6 +993,11 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as exc:
         print_error(str(exc))
         return 1
+    if stata_path:
+        # Tests and users rely on seeing where Stata came from.
+        print_success(f"STATA_PATH={stata_path} ({stata_edition})")
+    else:
+        print_warning("Stata not found. You can set STATA_PATH or pass --stata-path to enable verification.")
 
     project_root = get_project_root()
     targets = discover_agents()

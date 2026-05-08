@@ -204,25 +204,29 @@ function sanitizeEvent(body, rawJson) {
     typeof s === 'string' ? s.slice(0, n).replace(/[\x00-\x1f]/g, '') : '';
   const num = (n) => (typeof n === 'number' && Number.isFinite(n) ? n : 0);
 
+  // Allow newlines/tabs in log_tail; strip other control chars.
+  const capLog = (s, n) =>
+    typeof s === 'string' ? s.slice(0, n).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '') : '';
+
   return {
     event: cap(body.event, 32),
-    action: cap(body.action, 16), // install | uninstall (preferred over inferring from event)
+    action: cap(body.action, 16),
     stage: cap(body.stage, 64),
     file: cap(body.file, 32),
-    client: cap(body.client, 32), // claude|codex|cursor|...
-    install_source: cap(body.install_source, 32), // workbench|direct|unknown
-    scope: cap(body.scope, 16), // user|project|unknown
-    install_ref: cap(body.install_ref, 64), // installer-selected ref (if known)
-    install_repo: cap(body.install_repo, 128), // installer-selected repo (if known)
+    client: cap(body.client, 64), // comma-separated when multiple agents in one run
+    install_source: cap(body.install_source, 32),
+    scope: cap(body.scope, 16),
+    install_ref: cap(body.install_ref, 64),
+    install_repo: cap(body.install_repo, 128),
     os: cap(body.os, 32),
     distro: cap(body.distro, 64),
     arch: cap(body.arch, 16),
-    error_code: cap(body.error_code, 64),
+    error_code: cap(body.error_code, 128),
     duration_ms: num(body.duration_ms),
     install_id: cap(body.install_id, 64),
     script_version: cap(body.script_version, 32),
-    // Capped JSON for lossless debugging; still queryable as a blob field.
-    raw_json: cap(rawJson || '', 3500),
+    // Last ~100 lines of the install log, sent on failure for diagnostics.
+    log_tail: capLog(body.log_tail || '', 4000),
   };
 }
 
@@ -235,7 +239,7 @@ export function buildAnalyticsDataPoint(env, request, event) {
 
   const ua = request.headers.get('user-agent') || '';
   const botScore = request.cf?.botManagement?.score || 0;
-  const payloadBytes = event.raw_json ? event.raw_json.length : 0;
+  const logBytes = event.log_tail ? event.log_tail.length : 0;
 
   const action =
     event.action ||
@@ -257,17 +261,17 @@ export function buildAnalyticsDataPoint(env, request, event) {
       tool, // 12: curl|wget|powershell|browser|other
       country, // 13
       event.script_version || '', // 14
-      event.install_repo || '', // 15 (from installer env/flags if available)
+      event.install_repo || '', // 15
       event.install_ref || '', // 16
       repo, // 17 worker upstream repo
       ref, // 18 worker upstream ref
       ua.slice(0, 256), // 19
-      event.raw_json || '', // 20
+      event.log_tail || '', // 20: last ~100 lines of install log (failures)
     ],
     doubles: [
       1, // double1: row count
       event.duration_ms || 0, // double2: duration_ms
-      payloadBytes || 0, // double3: payload_bytes (capped-json length)
+      logBytes || 0, // double3: log_tail bytes
       botScore || 0, // double4: bot score (0 if unavailable)
     ],
     indexes: [installId || event.event],

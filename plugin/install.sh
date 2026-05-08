@@ -218,6 +218,10 @@ exec > >(tee -ai "$LOG_FILE") 2>&1
 show_header "$@"
 
 # ── Telemetry ─────────────────────────────────────────────────────────────────
+# What is sent: event type, OS/arch, MCP client name(s), install duration, a
+# unique run ID, and — on failure — the last 100 lines of the install log so
+# errors can be diagnosed. No file contents, credentials, or paths are included.
+# Log: $TMPDIR/mcp-stata-install-<date>-<pid>.log  (also printed on failure)
 TELEMETRY_URL="https://mcp-stata-install.tdmonk.com/telemetry"
 INSTALL_ID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || \
               uuidgen 2>/dev/null || echo "$(date +%s)-$$")"
@@ -246,42 +250,71 @@ send_telemetry() {
   local install_repo="${MCP_STATA_REPO_URL:-}"
   local script_version="${MCP_STATA_SCRIPT_VERSION:-}"
 
-  # Best-effort parse of passthrough args.
-  for ((i=1; i<=$#; i++)); do
-    local arg="${!i}"
-    if [ "$arg" = "--agent" ] && [ $((i+1)) -le $# ]; then
-      client="${!((i+1))}"
-    fi
-    if [[ "$arg" == --agent=* ]]; then
-      client="${arg#--agent=}"
-    fi
-    if [ "$arg" = "--scope" ] && [ $((i+1)) -le $# ]; then
-      scope="${!((i+1))}"
-    fi
-    if [[ "$arg" == --scope=* ]]; then
-      scope="${arg#--scope=}"
-    fi
+  # Best-effort parse of passthrough args (Bash 3.2 compatible; avoid indirect expansion).
+  # Accumulate all --agent values as comma-separated so one event captures the full run.
+  shift 2 || true
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --agent)
+        if [ -n "${2:-}" ]; then
+          client="${client:+${client},}${2}"
+        fi
+        shift 2
+        ;;
+      --agent=*)
+        local _ag="${1#--agent=}"
+        client="${client:+${client},}${_ag}"
+        shift
+        ;;
+      --scope)
+        scope="${2:-}"
+        shift 2
+        ;;
+      --scope=*)
+        scope="${1#--scope=}"
+        shift
+        ;;
+      *)
+        shift
+        ;;
+    esac
   done
 
-  curl -fsS -m 3 -X POST "$TELEMETRY_URL" \
+  # Capture last 100 lines of log for failure diagnostics.
+  # Newlines → \n, backslashes and quotes escaped for JSON.
+  local log_tail=""
+  if [ -f "${LOG_FILE:-}" ]; then
+    log_tail="$(tail -n 100 "$LOG_FILE" 2>/dev/null | \
+      sed 's/\\/\\\\/g; s/"/\\"/g' | \
+      tr '\n' '\001' | sed 's/\001/\\n/g' || true)"
+  fi
+
+  curl -fsS -m 5 -X POST "$TELEMETRY_URL" \
     -H 'content-type: application/json' \
-    -d "$(printf '{"event":"%s","action":"%s","stage":"%s","client":"%s","install_source":"%s","scope":"%s","install_repo":"%s","install_ref":"%s","script_version":"%s","error_code":"%s","os":"%s","distro":"%s","arch":"%s","duration_ms":%d,"install_id":"%s","file":"install.sh"}' \
+    -d "$(printf '{"event":"%s","action":"%s","stage":"%s","client":"%s","install_source":"%s","scope":"%s","install_repo":"%s","install_ref":"%s","script_version":"%s","error_code":"%s","os":"%s","distro":"%s","arch":"%s","duration_ms":%d,"install_id":"%s","file":"install.sh","log_tail":"%s"}' \
         "$event" "$(json_escape "$action")" "$INSTALL_STAGE" \
         "$(json_escape "$client")" "$(json_escape "$INSTALL_SOURCE")" "$(json_escape "$scope")" \
         "$(json_escape "$install_repo")" "$(json_escape "$install_ref")" "$(json_escape "$script_version")" \
         "$(json_escape "$error_code")" "$(uname -s | tr A-Z a-z)" "$distro" "$(uname -m)" \
-        "$((duration * 1000))" "$INSTALL_ID")" \
+        "$((duration * 1000))" "$INSTALL_ID" "$log_tail")" \
     >/dev/null 2>&1 || true
 }
 
 err() {
+  # We want failures to be informative, not masked by nounset edge-cases
+  # (notably: iterating over empty arrays in Bash 3.2).
+  set +u
+
   local message="$1"
   shift || true
 
   local fail_event="install_failure"
   local args=("$@")
   if [ ${#args[@]} -eq 0 ]; then
-    args=("${INSTALL_ARGS[@]}")
+    # Avoid nounset issues if INSTALL_ARGS is unexpectedly unset.
+    if [ "${INSTALL_ARGS+set}" = "set" ] && [ "${#INSTALL_ARGS[@]}" -gt 0 ]; then
+      args=("${INSTALL_ARGS[@]}")
+    fi
   fi
 
   for arg in "${args[@]}"; do
@@ -446,7 +479,10 @@ main() {
   INSTALL_STAGE="ensure_uv"
   ensure_uv
 
-  stage "${ACTION_LABEL^^} TOOLKIT"
+  # Bash 3.2 (macOS default) doesn't support `${var^^}`.
+  local action_upper
+  action_upper="$(printf '%s' "$ACTION_LABEL" | tr '[:lower:]' '[:upper:]')"
+  stage "${action_upper} TOOLKIT"
   detail "Delegating to setup_toolkit.py"
   INSTALL_STAGE="setup_toolkit"
   run_toolkit_installer "$@" || err "Python installer failed" "$@"

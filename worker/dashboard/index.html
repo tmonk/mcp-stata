@@ -1,0 +1,1001 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mcp-stata · telemetry</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:       #0b0d12;
+    --surface:  #13151e;
+    --surface2: #1a1d28;
+    --border:   #252836;
+    --text:     #e2e8f0;
+    --muted:    #5b637a;
+    --dim:      #8892a4;
+    --indigo:   #6366f1;
+    --emerald:  #10b981;
+    --amber:    #f59e0b;
+    --rose:     #f43f5e;
+    --sky:      #38bdf8;
+    --purple:   #a855f7;
+    --teal:     #14b8a6;
+    --radius: 10px;
+    --gap:    16px;
+  }
+
+  html, body { height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-size: 14px; line-height: 1.5; }
+
+  .app { max-width: 1380px; margin: 0 auto; padding: 24px var(--gap); }
+
+  /* ── header ── */
+  header { display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px; flex-wrap: wrap; gap: 12px; }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--indigo);
+    box-shadow: 0 0 8px var(--indigo); }
+  .brand h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.2px; }
+  .brand span { color: var(--muted); font-size: 13px; margin-left: 4px; }
+  .refresh-btn { display: flex; align-items: center; gap: 6px; padding: 5px 14px;
+    border-radius: 6px; border: 1px solid var(--border); background: var(--surface);
+    color: var(--text); font-size: 13px; cursor: pointer; transition: all .15s; }
+  .refresh-btn:hover { border-color: var(--indigo); }
+  .refresh-btn svg { width: 13px; height: 13px; }
+  .refresh-btn.spinning svg { animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── time controls bar ── */
+  .time-bar {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+    padding: 10px 14px; margin-bottom: 12px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  }
+  .time-bar-section { display: flex; align-items: center; gap: 6px; }
+  .time-bar-sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+  .time-label { font-size: 11px; font-weight: 600; letter-spacing: .5px;
+    text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+
+  .dt-input {
+    padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--text); font-size: 12px;
+    font-family: inherit; cursor: pointer;
+    color-scheme: dark;
+  }
+  .dt-input:focus { outline: none; border-color: var(--indigo); }
+  .dt-input.has-value { border-color: #6366f155; }
+  .live-badge { font-size: 11px; color: var(--emerald); padding: 3px 7px;
+    border-radius: 4px; background: rgba(16,185,129,.12); white-space: nowrap; }
+
+  .seg-btn { padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border);
+    background: none; color: var(--dim); font-size: 12px; cursor: pointer; transition: all .12s; white-space: nowrap; }
+  .seg-btn:hover { border-color: var(--indigo); color: var(--text); }
+  .seg-btn.active { background: var(--indigo); border-color: var(--indigo); color: #fff; font-weight: 600; }
+
+  /* ── filter bar ── */
+  .filter-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+    margin-bottom: var(--gap); position: relative; min-height: 34px; }
+  .filter-bar-label { font-size: 11px; font-weight: 600; letter-spacing: .5px;
+    text-transform: uppercase; color: var(--muted); margin-right: 2px; white-space: nowrap; }
+  .add-filter-btn { display: flex; align-items: center; gap: 5px; padding: 5px 12px;
+    border-radius: 6px; border: 1px dashed var(--border); background: transparent;
+    color: var(--muted); font-size: 12px; cursor: pointer; transition: all .15s; }
+  .add-filter-btn:hover { border-color: var(--indigo); color: var(--indigo); }
+  .add-filter-btn svg { width: 12px; height: 12px; }
+  .clear-all-btn { padding: 5px 12px; border-radius: 6px; border: 1px solid #f43f5e44;
+    background: none; color: var(--rose); font-size: 12px; cursor: pointer;
+    transition: all .15s; white-space: nowrap; }
+  .clear-all-btn:hover { background: rgba(244,63,94,.1); }
+  .filter-chip { display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 4px 4px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); font-size: 12px; }
+  .chip-field { color: var(--dim); }
+  .chip-op { color: var(--muted); font-style: italic; }
+  .chip-val { color: var(--text); font-weight: 600; }
+  .chip-remove { display: flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 4px; border: none; background: none;
+    color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; transition: all .1s; }
+  .chip-remove:hover { background: var(--rose); color: #fff; }
+  .filter-chip.chip-is-not { border-color: #f43f5e44; }
+  .filter-chip.chip-is-not .chip-op { color: var(--rose); }
+  .filter-popover { position: absolute; top: calc(100% + 6px); left: 0; z-index: 100;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 14px; box-shadow: 0 8px 32px #00000060; min-width: 320px; }
+  .fp-row { display: flex; gap: 8px; margin-bottom: 10px; }
+  .fp-select { flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); font-size: 13px; cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%235b637a' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 8px center; padding-right: 28px; }
+  .fp-select:focus { outline: none; border-color: var(--indigo); }
+  .fp-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .fp-btn { padding: 5px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; transition: all .15s; }
+  .fp-btn-cancel { border: 1px solid var(--border); background: none; color: var(--dim); }
+  .fp-btn-cancel:hover { color: var(--text); }
+  .fp-btn-apply { border: none; background: var(--indigo); color: #fff; font-weight: 600; }
+  .fp-btn-apply:hover { background: #7577f3; }
+  .fp-btn-apply:disabled { opacity: .4; cursor: default; }
+
+  /* ── cards ── */
+  .card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px; }
+  .card-title { font-size: 11px; font-weight: 600; letter-spacing: .6px;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+
+  /* ── KPIs ── */
+  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--gap); margin-bottom: var(--gap); }
+  .kpi { padding: 18px 20px; }
+  .kpi-label { font-size: 11px; font-weight: 600; letter-spacing: .6px;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+  .kpi-value { font-size: 32px; font-weight: 700; letter-spacing: -1px; line-height: 1; }
+  .kpi-sub { font-size: 12px; color: var(--dim); margin-top: 6px; }
+  .kpi-good   { color: var(--emerald); }
+  .kpi-warn   { color: var(--amber); }
+  .kpi-bad    { color: var(--rose); }
+  .kpi-blue   { color: var(--sky); }
+  .kpi-indigo { color: var(--indigo); }
+
+  /* ── charts ── */
+  .charts-row { display: grid; gap: var(--gap); margin-bottom: var(--gap); }
+  .charts-row-2 { grid-template-columns: 1fr 1fr; }
+  .charts-row-3 { grid-template-columns: 1fr 1fr 1fr; }
+  @media (max-width: 860px) { .charts-row-2, .charts-row-3 { grid-template-columns: 1fr; } }
+  .chart-wrap canvas { max-height: 240px; }
+  .chart-wrap.tall canvas { max-height: 300px; }
+
+  /* ── table ── */
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th { text-align: left; padding: 8px 12px; font-size: 11px; font-weight: 600;
+    letter-spacing: .5px; text-transform: uppercase; color: var(--muted);
+    border-bottom: 1px solid var(--border); }
+  tbody tr { transition: background .1s; }
+  tbody tr:hover { background: var(--surface2); }
+  tbody td { padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--dim); }
+  tbody td:first-child { color: var(--text); }
+  .filterable { cursor: pointer; transition: color .1s; }
+  .filterable:hover { color: var(--indigo) !important; text-decoration: underline; text-decoration-style: dotted; }
+  .badge { display: inline-flex; align-items: center; padding: 2px 8px;
+    border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .badge-success { background: rgba(16,185,129,.15); color: var(--emerald); }
+  .badge-start   { background: rgba(99,102,241,.15);  color: var(--indigo); }
+  .badge-failure { background: rgba(244,63,94,.15);   color: var(--rose); }
+  .badge-other   { background: rgba(91,99,122,.15);   color: var(--dim); }
+
+  /* ── status bar ── */
+  #status-bar { font-size: 12px; color: var(--muted); margin-top: 20px;
+    display: flex; align-items: center; justify-content: space-between; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--emerald);
+    display: inline-block; margin-right: 6px; }
+  .dot.error { background: var(--rose); }
+
+  /* ── skeleton ── */
+  .skeleton { animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:.6} 50%{opacity:.2} }
+  .skel-text { height: 32px; width: 80px; background: var(--border); border-radius: 4px; display: inline-block; }
+  .skel-sub  { height: 12px; width: 100px; background: var(--border); border-radius: 3px; display: inline-block; margin-top: 8px; }
+
+  /* ── log modal ── */
+  .log-modal-overlay { position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0,0,0,.7); padding: 32px 20px; display: flex; align-items: flex-start; }
+  .log-modal-box { width: 100%; max-width: 960px; margin: 0 auto; height: calc(100vh - 64px);
+    display: flex; flex-direction: column;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 24px 80px #000a; }
+  .log-modal-header { display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .log-modal-title  { font-size: 13px; font-weight: 600; }
+  .log-modal-meta   { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .log-modal-close  { padding: 5px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: none; color: var(--dim); font-size: 13px; cursor: pointer; transition: all .15s; }
+  .log-modal-close:hover { border-color: var(--rose); color: var(--rose); }
+  .log-modal-body   { flex: 1; overflow: auto; padding: 16px 20px; }
+  .log-pre { margin: 0; font-family: "SF Mono", ui-monospace, monospace; font-size: 12px;
+    line-height: 1.65; color: var(--dim); white-space: pre-wrap; word-break: break-all; }
+  .log-pre .log-line-err { color: var(--rose); }
+  .log-pre .log-line-warn { color: var(--amber); }
+  .log-pre .log-line-ok { color: var(--emerald); }
+  .log-btn { padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border);
+    background: none; color: var(--dim); font-size: 11px; cursor: pointer;
+    transition: all .12s; white-space: nowrap; }
+  .log-btn:hover { border-color: var(--indigo); color: var(--indigo); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- header -->
+  <header>
+    <div class="brand">
+      <div class="brand-dot"></div>
+      <h1>mcp-stata <span>telemetry</span></h1>
+    </div>
+    <button class="refresh-btn" id="refresh-btn">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M1 4v6h6M23 20v-6h-6"/>
+        <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10M23 14l-4.64 4.36A9 9 0 0 1 3.51 15"/>
+      </svg>
+      Refresh
+    </button>
+  </header>
+
+  <!-- time controls -->
+  <div class="time-bar">
+    <!-- from / to -->
+    <div class="time-bar-section">
+      <span class="time-label">From</span>
+      <input class="dt-input" type="datetime-local" id="dt-from">
+    </div>
+    <div class="time-bar-section">
+      <span class="time-label">To</span>
+      <input class="dt-input" type="datetime-local" id="dt-to" placeholder="now">
+      <span class="live-badge" id="live-badge">● live</span>
+    </div>
+
+    <div class="time-bar-sep"></div>
+
+    <!-- range presets -->
+    <div class="time-bar-section" id="preset-btns">
+      <span class="time-label">Last</span>
+      <button class="seg-btn" data-hours="1">1h</button>
+      <button class="seg-btn" data-hours="6">6h</button>
+      <button class="seg-btn" data-hours="24">24h</button>
+      <button class="seg-btn active" data-hours="168">7d</button>
+      <button class="seg-btn" data-hours="720">30d</button>
+      <button class="seg-btn" data-hours="2160">90d</button>
+    </div>
+
+    <div class="time-bar-sep"></div>
+
+    <!-- bucket interval -->
+    <div class="time-bar-section" id="interval-btns">
+      <span class="time-label">Bucket</span>
+      <button class="seg-btn" data-n="1"  data-unit="MINUTE">1m</button>
+      <button class="seg-btn" data-n="5"  data-unit="MINUTE">5m</button>
+      <button class="seg-btn" data-n="15" data-unit="MINUTE">15m</button>
+      <button class="seg-btn" data-n="30" data-unit="MINUTE">30m</button>
+      <button class="seg-btn" data-n="1"  data-unit="HOUR">1h</button>
+      <button class="seg-btn" data-n="6"  data-unit="HOUR">6h</button>
+      <button class="seg-btn" data-n="12" data-unit="HOUR">12h</button>
+      <button class="seg-btn active" data-n="1"  data-unit="DAY">1d</button>
+    </div>
+  </div>
+
+  <!-- filter bar -->
+  <div class="filter-bar" id="filter-bar">
+    <span class="filter-bar-label">Filters</span>
+    <button class="add-filter-btn" id="add-filter-btn">
+      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="7" y1="1" x2="7" y2="13"/><line x1="1" y1="7" x2="13" y2="7"/>
+      </svg>
+      Add
+    </button>
+    <div id="filter-chips"></div>
+    <button class="clear-all-btn" id="clear-all-btn" hidden>Clear all</button>
+    <div class="filter-popover" id="filter-popover" hidden>
+      <div class="fp-row">
+        <select class="fp-select" id="fp-field">
+          <option value="country">Country</option>
+          <option value="client">Client</option>
+          <option value="os">OS</option>
+          <option value="event">Event</option>
+          <option value="source">Source</option>
+          <option value="tool">Tool</option>
+          <option value="error">Error code</option>
+        </select>
+        <select class="fp-select" id="fp-op" style="flex:0 0 80px">
+          <option value="is">is</option>
+          <option value="is not">is not</option>
+        </select>
+        <select class="fp-select" id="fp-value"><option>Loading…</option></select>
+      </div>
+      <div class="fp-actions">
+        <button class="fp-btn fp-btn-cancel" id="fp-cancel">Cancel</button>
+        <button class="fp-btn fp-btn-apply" id="fp-apply">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- KPIs -->
+  <div class="kpi-grid">
+    <div class="card kpi" id="kpi-installs">
+      <div class="kpi-label">Successful Installs</div>
+      <div class="kpi-value skeleton"><span class="skel-text"></span></div>
+      <div class="kpi-sub skeleton"><span class="skel-sub"></span></div>
+    </div>
+    <div class="card kpi" id="kpi-today">
+      <div class="kpi-label">Today</div>
+      <div class="kpi-value skeleton"><span class="skel-text"></span></div>
+      <div class="kpi-sub skeleton"><span class="skel-sub"></span></div>
+    </div>
+    <div class="card kpi" id="kpi-rate">
+      <div class="kpi-label">Completion Rate</div>
+      <div class="kpi-value skeleton"><span class="skel-text"></span></div>
+      <div class="kpi-sub skeleton"><span class="skel-sub"></span></div>
+    </div>
+    <div class="card kpi" id="kpi-failures">
+      <div class="kpi-label">Failures</div>
+      <div class="kpi-value skeleton"><span class="skel-text"></span></div>
+      <div class="kpi-sub skeleton"><span class="skel-sub"></span></div>
+    </div>
+    <div class="card kpi" id="kpi-uninstalls">
+      <div class="kpi-label">Uninstalls</div>
+      <div class="kpi-value skeleton"><span class="skel-text"></span></div>
+      <div class="kpi-sub skeleton"><span class="skel-sub"></span></div>
+    </div>
+  </div>
+
+  <!-- time series -->
+  <div class="card" style="margin-bottom: var(--gap);">
+    <div class="card-title">Installs over time</div>
+    <div class="chart-wrap tall"><canvas id="chart-timeseries"></canvas></div>
+  </div>
+
+  <!-- client + OS -->
+  <div class="charts-row charts-row-2">
+    <div class="card">
+      <div class="card-title">By MCP client</div>
+      <div class="chart-wrap"><canvas id="chart-client"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title">By OS</div>
+      <div class="chart-wrap"><canvas id="chart-os"></canvas></div>
+    </div>
+  </div>
+
+  <!-- country + source + tool -->
+  <div class="charts-row charts-row-3">
+    <div class="card">
+      <div class="card-title">Top countries</div>
+      <div class="chart-wrap"><canvas id="chart-country"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Install source</div>
+      <div class="chart-wrap"><canvas id="chart-source"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Download tool</div>
+      <div class="chart-wrap"><canvas id="chart-tool"></canvas></div>
+    </div>
+  </div>
+
+  <!-- errors -->
+  <div class="card" id="errors-card" style="margin-bottom: var(--gap); display:none;">
+    <div class="card-title">Top errors</div>
+    <div class="chart-wrap"><canvas id="chart-errors"></canvas></div>
+  </div>
+
+  <!-- recent events -->
+  <div class="card">
+    <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+      Recent events
+      <span style="font-size:11px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">
+        Click any value to filter
+      </span>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>Time</th><th>Event</th><th>Client</th><th>OS</th><th>Source</th><th>Country</th><th>Error</th><th>Log</th></tr>
+        </thead>
+        <tbody id="recent-tbody">
+          <tr><td colspan="8" style="color:var(--muted);padding:20px 12px;">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- log modal -->
+  <div class="log-modal-overlay" id="log-modal" style="display:none" onclick="if(event.target===this)closeLog()">
+    <div class="log-modal-box">
+      <div class="log-modal-header">
+        <div>
+          <div class="log-modal-title" id="log-modal-title">Install log</div>
+          <div class="log-modal-meta" id="log-modal-meta"></div>
+        </div>
+        <button class="log-modal-close" onclick="closeLog()">Close</button>
+      </div>
+      <div class="log-modal-body">
+        <pre class="log-pre" id="log-modal-content"></pre>
+      </div>
+    </div>
+  </div>
+
+  <div id="status-bar">
+    <span><span class="dot" id="status-dot"></span><span id="status-text">Loading…</span></span>
+    <span id="last-updated"></span>
+  </div>
+
+</div>
+<script>
+// ── constants ─────────────────────────────────────────────────────────────────
+
+const DATASET = 'mcp_stata_installs';
+const PALETTE = ['#6366f1','#10b981','#f59e0b','#38bdf8','#f43f5e','#a855f7','#14b8a6','#fb923c','#e879f9','#84cc16'];
+
+const FIELD_MAP = {
+  event:   { blob: 'blob1',  label: 'Event' },
+  client:  { blob: 'blob4',  label: 'Client' },
+  source:  { blob: 'blob5',  label: 'Source' },
+  os:      { blob: 'blob8',  label: 'OS' },
+  error:   { blob: 'blob11', label: 'Error' },
+  tool:    { blob: 'blob12', label: 'Tool' },
+  country: { blob: 'blob13', label: 'Country' },
+};
+
+// ── state ─────────────────────────────────────────────────────────────────────
+
+let charts = {};
+let activeFilters = [];
+let activeInterval = { n: '1', unit: 'DAY' };
+let recentRows = [];
+
+// ── datetime helpers ──────────────────────────────────────────────────────────
+
+// datetime-local value → UTC SQL string 'YYYY-MM-DD HH:MM:SS'
+// The input value is treated as local time by the browser's Date constructor.
+function toUtcSql(d) {
+  return d.toISOString().replace('T', ' ').slice(0, 19);
+}
+
+// Date → datetime-local string 'YYYY-MM-DDTHH:MM' in local time
+function toDatetimeLocal(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function getFrom() {
+  const v = document.getElementById('dt-from').value;
+  return v ? toUtcSql(new Date(v)) : toUtcSql(new Date(Date.now() - 7*24*3600*1000));
+}
+
+function getTo() {
+  const v = document.getElementById('dt-to').value;
+  return v ? toUtcSql(new Date(v)) : toUtcSql(new Date());
+}
+
+function isLive() { return !document.getElementById('dt-to').value; }
+
+function updateLiveBadge() {
+  document.getElementById('live-badge').style.display = isLive() ? '' : 'none';
+}
+
+// ── filter SQL ────────────────────────────────────────────────────────────────
+
+function esc(v) { return String(v).replace(/'/g, "''"); }
+
+function filterSQL() {
+  return activeFilters.map(f => {
+    const blob = FIELD_MAP[f.field].blob;
+    const v = esc(f.value);
+    return f.op === 'is not' ? `AND ${blob} != '${v}'` : `AND ${blob} = '${v}'`;
+  }).join(' ');
+}
+
+function timeWhere() {
+  return `timestamp >= toDateTime('${getFrom()}') AND timestamp <= toDateTime('${getTo()}')`;
+}
+
+// ── SQL queries ───────────────────────────────────────────────────────────────
+
+const q = {
+  kpis: () => `
+    SELECT
+      countIf(blob1 = 'install_success')   AS successes,
+      countIf(blob1 = 'install_failure')   AS failures,
+      countIf(blob1 = 'uninstall_success') AS uninstalls,
+      countIf(blob1 = 'install_success' AND toDate(timestamp) = today()) AS today_success
+    FROM ${DATASET}
+    WHERE ${timeWhere()} ${filterSQL()}
+  `,
+  timeSeries: () => `
+    SELECT toStartOfInterval(timestamp, INTERVAL '${activeInterval.n}' ${activeInterval.unit}) AS bucket,
+           countIf(blob1 = 'install_success') AS successes,
+           countIf(blob1 = 'install_failure') AS failures
+    FROM ${DATASET}
+    WHERE ${timeWhere()} ${filterSQL()}
+    GROUP BY bucket ORDER BY bucket
+  `,
+  byClient: () => `
+    SELECT blob4 AS client, count() AS cnt
+    FROM ${DATASET}
+    WHERE blob1 = 'install_success' AND blob4 != '' AND ${timeWhere()} ${filterSQL()}
+    GROUP BY client ORDER BY cnt DESC LIMIT 10
+  `,
+  byOS: () => `
+    SELECT blob8 AS os, count() AS cnt
+    FROM ${DATASET}
+    WHERE blob1 = 'install_success' AND blob8 != '' AND ${timeWhere()} ${filterSQL()}
+    GROUP BY os ORDER BY cnt DESC LIMIT 10
+  `,
+  byCountry: () => `
+    SELECT blob13 AS country, count() AS cnt
+    FROM ${DATASET}
+    WHERE blob1 = 'install_success' AND blob13 != '' AND ${timeWhere()} ${filterSQL()}
+    GROUP BY country ORDER BY cnt DESC LIMIT 10
+  `,
+  bySource: () => `
+    SELECT blob5 AS src, count() AS cnt
+    FROM ${DATASET}
+    WHERE blob1 = 'install_success' AND ${timeWhere()} ${filterSQL()}
+    GROUP BY src ORDER BY cnt DESC
+  `,
+  byTool: () => `
+    SELECT blob12 AS tool, count() AS cnt
+    FROM ${DATASET}
+    WHERE blob1 = 'install_success' AND blob12 != '' AND ${timeWhere()} ${filterSQL()}
+    GROUP BY tool ORDER BY cnt DESC
+  `,
+  errors: () => `
+    SELECT blob11 AS err, count() AS cnt
+    FROM ${DATASET}
+    WHERE blob1 = 'install_failure' AND blob11 != '' AND ${timeWhere()} ${filterSQL()}
+    GROUP BY err ORDER BY cnt DESC LIMIT 10
+  `,
+  recent: () => `
+    SELECT timestamp, blob1 AS event, blob4 AS client,
+           blob8 AS os, blob5 AS src, blob13 AS country, blob11 AS error_code,
+           blob20 AS log_tail
+    FROM ${DATASET}
+    WHERE ${timeWhere()} ${filterSQL()}
+    ORDER BY timestamp DESC LIMIT 50
+  `,
+  fieldValues: (field) => `
+    SELECT ${FIELD_MAP[field].blob} AS v, count() AS cnt
+    FROM ${DATASET}
+    WHERE ${FIELD_MAP[field].blob} != '' AND ${timeWhere()}
+    GROUP BY v ORDER BY cnt DESC LIMIT 50
+  `,
+};
+
+// ── API ───────────────────────────────────────────────────────────────────────
+
+async function query(sql) {
+  const r = await fetch('/api/query', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sql: sql.trim().replace(/\s+/g, ' ') }),
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  return j.data || [];
+}
+
+// ── chart helpers ─────────────────────────────────────────────────────────────
+
+function makeChart(id, type, data, options = {}) {
+  const ctx = document.getElementById(id).getContext('2d');
+  if (charts[id]) charts[id].destroy();
+  const defaults = {
+    plugins: { legend: { display: false } },
+    scales: {},
+    animation: { duration: 300 },
+  };
+  if (type === 'bar' || type === 'line') {
+    defaults.scales = {
+      x: { grid: { color: '#1e2030' }, ticks: { color: '#5b637a', font: { size: 11 } } },
+      y: { grid: { color: '#1e2030' }, ticks: { color: '#5b637a', font: { size: 11 } }, beginAtZero: true },
+    };
+  }
+  charts[id] = new Chart(ctx, { type, data, options: deepMerge(defaults, options) });
+}
+
+function deepMerge(a, b) {
+  const out = { ...a };
+  for (const k of Object.keys(b)) {
+    if (b[k] && typeof b[k] === 'object' && !Array.isArray(b[k]) && a[k])
+      out[k] = deepMerge(a[k], b[k]);
+    else out[k] = b[k];
+  }
+  return out;
+}
+
+function hbar(id, labels, values, color = '#6366f1') {
+  makeChart(id, 'bar', {
+    labels,
+    datasets: [{ data: values, backgroundColor: color + 'cc', borderRadius: 4, barThickness: 18 }],
+  }, {
+    indexAxis: 'y',
+    scales: {
+      x: { grid: { color: '#1e2030' }, ticks: { color: '#5b637a', font: { size: 11 } }, beginAtZero: true },
+      y: { grid: { display: false }, ticks: { color: '#e2e8f0', font: { size: 12 } } },
+    },
+  });
+}
+
+function doughnut(id, labels, values) {
+  makeChart(id, 'doughnut', {
+    labels,
+    datasets: [{ data: values, backgroundColor: PALETTE.slice(0, values.length), borderWidth: 0, hoverOffset: 4 }],
+  }, {
+    plugins: {
+      legend: { display: true, position: 'right',
+        labels: { color: '#8892a4', font: { size: 12 }, padding: 12, boxWidth: 10 } },
+    },
+    cutout: '65%',
+  });
+}
+
+// ── KPIs ──────────────────────────────────────────────────────────────────────
+
+function setKpi(id, value, subHtml, cls = '') {
+  const el = document.getElementById(id);
+  el.querySelector('.kpi-value').classList.remove('skeleton');
+  el.querySelector('.kpi-sub').classList.remove('skeleton');
+  el.querySelector('.kpi-value').innerHTML = `<span class="${cls}">${value}</span>`;
+  el.querySelector('.kpi-sub').innerHTML = subHtml;
+}
+
+function fmt(n) { return n == null ? '—' : Number(n).toLocaleString(); }
+
+async function loadKpis() {
+  const [row] = await query(q.kpis());
+  if (!row) return;
+  const successes = +row.successes || 0;
+  const failures  = +row.failures  || 0;
+  const total     = successes + failures;
+  const rate      = total > 0 ? Math.round(successes / total * 100) : null;
+  const rateClass = rate == null ? '' : rate >= 90 ? 'kpi-good' : rate >= 70 ? 'kpi-warn' : 'kpi-bad';
+
+  setKpi('kpi-installs',  fmt(successes), `${fmt(failures)} failures`, 'kpi-indigo');
+  setKpi('kpi-today',     fmt(row.today_success), 'successful today', 'kpi-blue');
+  setKpi('kpi-rate', rate != null ? rate + '%' : '—',
+    `${fmt(successes)} of ${fmt(total)} attempts`, rateClass);
+  setKpi('kpi-failures',  fmt(failures),
+    total > 0 ? `${Math.round(failures/total*100)}% of attempts` : 'no attempts',
+    failures > 0 ? 'kpi-bad' : 'kpi-good');
+  setKpi('kpi-uninstalls', fmt(row.uninstalls), 'in range', 'kpi-warn');
+}
+
+// ── time series ───────────────────────────────────────────────────────────────
+
+function parseBucket(s) {
+  if (!s) return '';
+  const d = new Date(s.replace(' ', 'T') + (s.includes('T') ? '' : 'Z'));
+  if (isNaN(d)) return s.slice(0, 16);
+  const unit = activeInterval.unit;
+  if (unit === 'MINUTE') return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (unit === 'HOUR')   return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
+                                d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric' });
+}
+
+async function loadTimeSeries() {
+  const rows = await query(q.timeSeries());
+  makeChart('chart-timeseries', 'line', {
+    labels: rows.map(r => parseBucket(r.bucket)),
+    datasets: [
+      { label: 'Successes', data: rows.map(r => +r.successes || 0),
+        borderColor: '#6366f1', backgroundColor: '#6366f120', tension: 0.3, fill: true, pointRadius: rows.length > 60 ? 0 : 3, pointHoverRadius: 5 },
+      { label: 'Failures',  data: rows.map(r => +r.failures  || 0),
+        borderColor: '#f43f5e', backgroundColor: '#f43f5e15', tension: 0.3, fill: true, pointRadius: rows.length > 60 ? 0 : 3, pointHoverRadius: 5 },
+    ],
+  }, {
+    plugins: {
+      legend: { display: true, position: 'top', align: 'end',
+        labels: { color: '#8892a4', font: { size: 12 }, padding: 16, boxWidth: 10 } },
+      tooltip: { backgroundColor: '#1a1d28', borderColor: '#252836', borderWidth: 1,
+        titleColor: '#e2e8f0', bodyColor: '#8892a4' },
+    },
+  });
+}
+
+// ── breakdown charts ──────────────────────────────────────────────────────────
+
+async function loadByClient() {
+  const rows = await query(q.byClient());
+  if (!rows.length) return hbar('chart-client', ['(no data)'], [0]);
+  hbar('chart-client', rows.map(r => r.client || 'unknown'), rows.map(r => +r.cnt), '#6366f1');
+}
+async function loadByOS() {
+  const rows = await query(q.byOS());
+  if (!rows.length) return hbar('chart-os', ['(no data)'], [0], '#10b981');
+  hbar('chart-os', rows.map(r => r.os || 'unknown'), rows.map(r => +r.cnt), '#10b981');
+}
+async function loadByCountry() {
+  const rows = await query(q.byCountry());
+  if (!rows.length) return hbar('chart-country', ['(no data)'], [0], '#38bdf8');
+  hbar('chart-country', rows.map(r => r.country || '??'), rows.map(r => +r.cnt), '#38bdf8');
+}
+async function loadBySource() {
+  const rows = await query(q.bySource());
+  if (!rows.length) return doughnut('chart-source', ['(no data)'], [1]);
+  doughnut('chart-source', rows.map(r => r.src || 'unknown'), rows.map(r => +r.cnt));
+}
+async function loadByTool() {
+  const rows = await query(q.byTool());
+  if (!rows.length) return doughnut('chart-tool', ['(no data)'], [1]);
+  doughnut('chart-tool', rows.map(r => r.tool || 'unknown'), rows.map(r => +r.cnt));
+}
+async function loadErrors() {
+  const rows = await query(q.errors());
+  const card = document.getElementById('errors-card');
+  if (!rows.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  hbar('chart-errors', rows.map(r => r.err || 'unknown'), rows.map(r => +r.cnt), '#f43f5e');
+}
+
+// ── recent events ─────────────────────────────────────────────────────────────
+
+function eventBadge(ev) {
+  if (!ev) return '<span class="badge badge-other">—</span>';
+  const cls = ev.includes('success') ? 'success' : ev.includes('failure') ? 'failure' : ev.includes('start') ? 'start' : 'other';
+  const label = ev.replace('install_', '').replace('uninstall_', 'un:');
+  return `<span class="badge badge-${cls}">${label}</span>`;
+}
+
+function relTime(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts.replace(' ', 'T') + (ts.includes('T') ? '' : 'Z'));
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return `${Math.round(diff)}s ago`;
+  if (diff < 3600) return `${Math.round(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
+  return d.toLocaleDateString('en-GB', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function cell(field, value) {
+  if (!value) return '<span style="color:var(--muted)">—</span>';
+  return `<span class="filterable" onclick="quickFilter('${field}','${esc(value)}')" title="Filter by ${field}: ${value}">${value}</span>`;
+}
+
+async function loadRecent() {
+  const rows = await query(q.recent());
+  recentRows = rows;
+  const tbody = document.getElementById('recent-tbody');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted);padding:20px 12px;">No events in range.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map((r, i) => `<tr>
+    <td style="color:var(--muted);white-space:nowrap;font-size:12px">${relTime(r.timestamp)}</td>
+    <td><span class="filterable" onclick="quickFilter('event','${esc(r.event)}')">${eventBadge(r.event)}</span></td>
+    <td>${cell('client', r.client)}</td>
+    <td>${cell('os', r.os)}</td>
+    <td>${cell('source', r.src)}</td>
+    <td>${cell('country', r.country)}</td>
+    <td>${r.error_code
+      ? `<span class="filterable" style="color:var(--rose);font-size:12px" onclick="quickFilter('error','${esc(r.error_code)}')">${r.error_code}</span>`
+      : '<span style="color:var(--muted)">—</span>'}</td>
+    <td>${r.log_tail
+      ? `<button class="log-btn" onclick="showLog(${i})">view</button>`
+      : '<span style="color:var(--muted)">—</span>'}</td>
+  </tr>`).join('');
+}
+
+function showLog(i) {
+  const r = recentRows[i];
+  if (!r) return;
+  document.getElementById('log-modal-title').textContent =
+    `${r.event || 'event'} · ${r.client || 'unknown client'}`;
+  document.getElementById('log-modal-meta').textContent =
+    [r.os, r.country, relTime(r.timestamp), r.error_code ? `error: ${r.error_code}` : '']
+      .filter(Boolean).join(' · ');
+  const lines = (r.log_tail || '').split('\n');
+  document.getElementById('log-modal-content').innerHTML = lines.map(line => {
+    const escaped = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    if (/error|fail|exception|traceback/i.test(line)) return `<span class="log-line-err">${escaped}</span>`;
+    if (/warn|caution/i.test(line)) return `<span class="log-line-warn">${escaped}</span>`;
+    if (/success|ok\b|done|complete/i.test(line)) return `<span class="log-line-ok">${escaped}</span>`;
+    return escaped;
+  }).join('\n');
+  document.getElementById('log-modal').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeLog() {
+  document.getElementById('log-modal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLog(); });
+
+// ── preset + interval buttons ─────────────────────────────────────────────────
+
+function autoInterval(rangeHours) {
+  if (rangeHours <= 2)    return { n:'1',  unit:'MINUTE' };
+  if (rangeHours <= 12)   return { n:'5',  unit:'MINUTE' };
+  if (rangeHours <= 48)   return { n:'30', unit:'MINUTE' };
+  if (rangeHours <= 168)  return { n:'6',  unit:'HOUR' };
+  if (rangeHours <= 720)  return { n:'12', unit:'HOUR' };
+  return                         { n:'1',  unit:'DAY' };
+}
+
+function setIntervalActive(n, unit) {
+  activeInterval = { n, unit };
+  document.querySelectorAll('#interval-btns .seg-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.n === n && b.dataset.unit === unit);
+  });
+}
+
+function clearPresetActive() {
+  document.querySelectorAll('#preset-btns .seg-btn').forEach(b => b.classList.remove('active'));
+}
+
+document.querySelectorAll('#preset-btns .seg-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const hours = +btn.dataset.hours;
+    const now = new Date();
+    const from = new Date(now.getTime() - hours * 3600_000);
+    document.getElementById('dt-from').value = toDatetimeLocal(from);
+    document.getElementById('dt-to').value = '';  // live
+    updateLiveBadge();
+    clearPresetActive();
+    btn.classList.add('active');
+    const suggested = autoInterval(hours);
+    setIntervalActive(suggested.n, suggested.unit);
+    loadAll();
+  });
+});
+
+document.querySelectorAll('#interval-btns .seg-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    setIntervalActive(btn.dataset.n, btn.dataset.unit);
+    loadTimeSeries();
+  });
+});
+
+// update live badge and clear preset when user edits dt-to manually
+document.getElementById('dt-to').addEventListener('change', () => {
+  updateLiveBadge();
+  clearPresetActive();
+  loadAll();
+});
+document.getElementById('dt-from').addEventListener('change', () => {
+  clearPresetActive();
+  loadAll();
+});
+
+// ── filter UI ─────────────────────────────────────────────────────────────────
+
+function renderChips() {
+  document.getElementById('filter-chips').innerHTML = activeFilters.map((f, i) => `
+    <span class="filter-chip ${f.op === 'is not' ? 'chip-is-not' : ''}">
+      <span class="chip-field">${FIELD_MAP[f.field].label}</span>
+      <span class="chip-op">&nbsp;${f.op}&nbsp;</span>
+      <span class="chip-val">${f.value}</span>
+      <button class="chip-remove" onclick="removeFilter(${i})" title="Remove filter">×</button>
+    </span>
+  `).join('');
+  document.getElementById('clear-all-btn').hidden = activeFilters.length === 0;
+}
+
+function clearAllFilters() {
+  activeFilters = [];
+  renderChips();
+  loadAll();
+}
+document.getElementById('clear-all-btn').addEventListener('click', clearAllFilters);
+
+function removeFilter(i) {
+  activeFilters.splice(i, 1);
+  renderChips();
+  loadAll();
+}
+
+function quickFilter(field, value) {
+  const existing = activeFilters.findIndex(f => f.field === field && f.value === value && f.op === 'is');
+  if (existing >= 0) { removeFilter(existing); return; }
+  activeFilters.push({ field, op: 'is', value });
+  renderChips();
+  loadAll();
+}
+
+const fpPopover = document.getElementById('filter-popover');
+const fpField   = document.getElementById('fp-field');
+const fpOp      = document.getElementById('fp-op');
+const fpValue   = document.getElementById('fp-value');
+const fpApply   = document.getElementById('fp-apply');
+
+document.getElementById('add-filter-btn').addEventListener('click', async (e) => {
+  e.stopPropagation();
+  fpPopover.hidden = !fpPopover.hidden;
+  if (!fpPopover.hidden) await populateValues();
+});
+
+async function populateValues() {
+  fpValue.innerHTML = '<option>Loading…</option>';
+  fpApply.disabled = true;
+  try {
+    const rows = await query(q.fieldValues(fpField.value));
+    const vals = rows.map(r => r.v).filter(Boolean);
+    fpValue.innerHTML = vals.length
+      ? vals.map(v => `<option value="${v.replace(/"/g,'&quot;')}">${v}</option>`).join('')
+      : '<option value="">(no data)</option>';
+    fpApply.disabled = false;
+  } catch { fpValue.innerHTML = '<option>(error)</option>'; }
+}
+
+fpField.addEventListener('change', populateValues);
+document.getElementById('fp-cancel').addEventListener('click', () => { fpPopover.hidden = true; });
+
+fpApply.addEventListener('click', () => {
+  const field = fpField.value, op = fpOp.value, value = fpValue.value;
+  if (!value) return;
+  if (!activeFilters.find(f => f.field === field && f.op === op && f.value === value)) {
+    activeFilters.push({ field, op, value });
+    renderChips();
+    loadAll();
+  }
+  fpPopover.hidden = true;
+});
+
+document.addEventListener('click', (e) => {
+  if (!fpPopover.hidden && !fpPopover.contains(e.target) && e.target.id !== 'add-filter-btn')
+    fpPopover.hidden = true;
+});
+
+// ── orchestrate ───────────────────────────────────────────────────────────────
+
+function setStatus(ok, msg) {
+  document.getElementById('status-dot').className = 'dot' + (ok ? '' : ' error');
+  document.getElementById('status-text').textContent = msg;
+}
+
+async function loadAll() {
+  const btn = document.getElementById('refresh-btn');
+  btn.classList.add('spinning');
+  setStatus(true, 'Loading…');
+  const t0 = Date.now();
+
+  const results = await Promise.allSettled([
+    loadKpis(), loadTimeSeries(),
+    loadByClient(), loadByOS(), loadByCountry(),
+    loadBySource(), loadByTool(), loadErrors(), loadRecent(),
+  ]);
+
+  btn.classList.remove('spinning');
+  const failed = results.filter(r => r.status === 'rejected');
+  if (failed.length) {
+    setStatus(false, `Error: ${failed[0].reason?.message || 'unknown'}`);
+    console.error('Dashboard errors:', failed.map(f => f.reason));
+  } else {
+    const fLabel = activeFilters.length ? ` · ${activeFilters.length} filter${activeFilters.length > 1 ? 's' : ''}` : '';
+    setStatus(true, `Loaded in ${Date.now()-t0}ms · ${DATASET}${fLabel}`);
+  }
+  document.getElementById('last-updated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+document.getElementById('refresh-btn').addEventListener('click', loadAll);
+setInterval(() => { if (isLive()) loadAll(); }, 5 * 60 * 1000);
+
+// ── init ──────────────────────────────────────────────────────────────────────
+
+async function init() {
+  // apply server-configured defaults, then fall back to 7-day preset
+  try {
+    const cfg = await fetch('/api/config').then(r => r.json());
+    if (cfg.from) {
+      document.getElementById('dt-from').value = cfg.from;
+      document.getElementById('dt-from').classList.add('has-value');
+      clearPresetActive();
+    }
+    if (cfg.to) {
+      document.getElementById('dt-to').value = cfg.to;
+      document.getElementById('dt-to').classList.add('has-value');
+    }
+    if (!cfg.from && !cfg.to) {
+      // default: 7d preset
+      const now = new Date();
+      document.getElementById('dt-from').value = toDatetimeLocal(new Date(now - 7*24*3600_000));
+    }
+  } catch {
+    const now = new Date();
+    document.getElementById('dt-from').value = toDatetimeLocal(new Date(now - 7*24*3600_000));
+  }
+  updateLiveBadge();
+  // default: hide script-download noise from recent events table
+  activeFilters = [{ field: 'event', op: 'is not', value: 'install_start' }];
+  renderChips();
+  loadAll();
+}
+
+init();
+</script>
+</body>
+</html>
