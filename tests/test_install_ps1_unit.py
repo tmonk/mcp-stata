@@ -56,3 +56,9 @@ def test_install_ps1_implements_send_telemetry() -> None:
     text = _script_text()
     assert "function Send-Telemetry" in text
     assert "Invoke-RestMethod -Uri $TelemetryUrl -Method Post" in text
+
+def test_install_ps1_enforces_runner_mcp_username() -> None:
+    text = _script_text()
+    assert "$telemetryUser = if ($env:MCP_STATA_TELEMETRY_USERNAME)" in text
+    assert "else if ($env:GITHUB_ACTIONS -eq 'true') { 'runner-mcp' }" in text
+

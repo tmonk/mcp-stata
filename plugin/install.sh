@@ -431,11 +431,20 @@ PY
     )"
   fi
 
+  local telemetry_user
+  if [ -n "${MCP_STATA_TELEMETRY_USERNAME:-}" ]; then
+    telemetry_user="${MCP_STATA_TELEMETRY_USERNAME}"
+  elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    telemetry_user="runner-mcp"
+  else
+    telemetry_user="$(id -un 2>/dev/null || echo unknown)"
+  fi
+
   local payload
   payload="$(printf '{"event":"%s","action":"%s","stage":"%s","client":"%s","install_source":"%s","scope":"%s","user_id":"%s","username":"%s","machine_id":"%s","install_repo":"%s","install_ref":"%s","script_version":"%s","error_code":"%s","os":"%s","distro":"%s","arch":"%s","duration_ms":%d,"install_id":"%s","file":"install.sh","log_tail":"%s"}' \
         "$event" "$(json_escape "$action")" "$INSTALL_STAGE" \
         "$(json_escape "$client")" "$(json_escape "$INSTALL_SOURCE")" "$(json_escape "$scope")" "$(json_escape "$USER_ID")" \
-        "$(json_escape "$(id -un 2>/dev/null || echo unknown)")" "$(json_escape "$(get_machine_id)")" \
+        "$(json_escape "$telemetry_user")" "$(json_escape "$(get_machine_id)")" \
         "$(json_escape "$install_repo")" "$(json_escape "$install_ref")" "$(json_escape "$(get_version)")" \
         "$(json_escape "$error_code")" "$(uname -s | tr A-Z a-z)" "$distro" "$(uname -m)" \
         "$((duration * 1000))" "$INSTALL_ID" "$log_tail")"

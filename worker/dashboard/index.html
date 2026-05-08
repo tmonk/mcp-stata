@@ -1059,14 +1059,20 @@ document.getElementById('dt-from').addEventListener('change', () => {
 
 function renderChips() {
   document.getElementById('filter-chips').innerHTML = activeFilters.map((f, i) => `
-    <span class="filter-chip ${f.op === 'is not' ? 'chip-is-not' : ''}">
+    <span class="filter-chip ${f.op === 'is not' ? 'chip-is-not' : ''}" style="cursor:pointer; user-select:none;" onclick="toggleFilterOp(${i})" title="Click to toggle is / is not">
       <span class="chip-field">${FIELD_MAP[f.field].label}</span>
       <span class="chip-op">&nbsp;${f.op}&nbsp;</span>
       <span class="chip-val">${f.value}</span>
-      <button class="chip-remove" onclick="removeFilter(${i})" title="Remove filter">×</button>
+      <button class="chip-remove" onclick="event.stopPropagation(); removeFilter(${i})" title="Remove filter">×</button>
     </span>
   `).join('');
   document.getElementById('clear-all-btn').hidden = activeFilters.length === 0;
+}
+
+function toggleFilterOp(i) {
+  activeFilters[i].op = activeFilters[i].op === 'is' ? 'is not' : 'is';
+  renderChips();
+  loadAll();
 }
 
 function clearAllFilters() {
@@ -1242,9 +1248,16 @@ async function init() {
     document.getElementById('dt-from').value = toDatetimeLocal(new Date(now - 7*24*3600_000));
   }
   updateLiveBadge();
-  // Default: hide script-download noise from recent events table *unless* we're live,
+  // Default: hide test runs (user's machine and CI runners)
+  activeFilters = [
+    { field: 'username', op: 'is not', value: 'tom' },
+    { field: 'username', op: 'is not', value: 'runner-mcp' }
+  ];
+  // Hide script-download noise from recent events table *unless* we're live,
   // where users typically want immediate feedback that installs are happening.
-  activeFilters = isLive() ? [] : [{ field: 'event', op: 'is not', value: 'install_start' }];
+  if (!isLive()) {
+    activeFilters.push({ field: 'event', op: 'is not', value: 'install_start' });
+  }
   renderChips();
   updateSoundUI();
   document.getElementById('sound-select').addEventListener('change', (e) => {
