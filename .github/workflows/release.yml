@@ -4,6 +4,15 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - 'worker/**'
+      - 'docs/**'
+      - 'img/**'
+      - '*.md'
+      - '.github/workflows/*/'
+      - '.gitignore'
+      - '.envrc*'
+      - 'LICENSE'
 
 permissions:
   actions: write
