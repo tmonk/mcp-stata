@@ -132,5 +132,14 @@ echo "INTEGRITY_CHECK_PASSED"
         self.assertEqual(res.returncode, 0)
         self.assertIn("INTEGRITY_CHECK_PASSED", res.stdout)
 
+    def test_alpine_uninstall(self):
+        print("Testing Uninstall on Alpine...")
+        # Alpine: ensure even with musl/sh, the uninstall command exits 0
+        res = self.run_in_docker("alpine:latest", "apk add --no-cache bash curl && bash /repo/plugin/install.sh --uninstall --dry-run --no-fail-on-empty", shell="sh")
+        print(res.stdout)
+        if res.returncode != 0:
+            print(res.stderr)
+        self.assertEqual(res.returncode, 0)
+
 if __name__ == "__main__":
     unittest.main()
