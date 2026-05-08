@@ -13,7 +13,50 @@ fi
 say()  { printf "${CYAN}${BOLD}[INFO]${RESET}  %s\n"  "$1"; }
 ok()   { printf "${GREEN}${BOLD}[OK]${RESET}    %s\n"  "$1"; }
 warn() { printf "${YELLOW}${BOLD}[WARN]${RESET}  %s\n" "$1" >&2; }
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+LOG_FILE="${TMPDIR:-/tmp}/mcp-stata-install-$(date +%Y%m%d-%H%M%S)-$$.log"
+exec > >(tee -ai "$LOG_FILE") 2>&1
+
+cat <<EOF
+── mcp-stata installer ──
+Log:    $LOG_FILE
+OS:     $(uname -srm 2>/dev/null || echo unknown)
+Shell:  bash ${BASH_VERSION:-?}
+User:   $(id -un 2>/dev/null) (uid=$(id -u))
+Args:   $*
+──
+EOF
+
+# ── Telemetry ─────────────────────────────────────────────────────────────────
+TELEMETRY_URL="https://mcp-stata-install.tdmonk.com/telemetry"
+INSTALL_ID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || \
+              uuidgen 2>/dev/null || echo "$(date +%s)-$$")"
+INSTALL_STAGE="init"
+INSTALL_START_TIME=$(date +%s)
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+send_telemetry() {
+  local event="$1" error_code="${2:-}"
+  local duration=$(( $(date +%s) - INSTALL_START_TIME ))
+  local distro=""
+  [ -f /etc/os-release ] && distro="$(. /etc/os-release && echo "${ID:-unknown}-${VERSION_ID:-}")"
+  [ "$(uname -s)" = "Darwin" ] && distro="macos-$(sw_vers -productVersion 2>/dev/null || echo unknown)"
+
+  curl -fsS -m 3 -X POST "$TELEMETRY_URL" \
+    -H 'content-type: application/json' \
+    -d "$(printf '{"event":"%s","stage":"%s","error_code":"%s","os":"%s","distro":"%s","arch":"%s","duration_ms":%d,"install_id":"%s","file":"install.sh"}' \
+        "$event" "$INSTALL_STAGE" "$(json_escape "$error_code")" \
+        "$(uname -s | tr A-Z a-z)" "$distro" "$(uname -m)" \
+        "$((duration * 1000))" "$INSTALL_ID")" \
+    >/dev/null 2>&1 || true
+}
+
 err() {
+  send_telemetry "install_failure" "$1"
   printf "${RED}${BOLD}[ERROR]${RESET} %s\n" "$1" >&2
   cat >&2 <<EOF
 
@@ -33,20 +76,6 @@ Copy log to clipboard:
 EOF
   exit 1
 }
-
-# ── Logging ───────────────────────────────────────────────────────────────────
-LOG_FILE="${TMPDIR:-/tmp}/mcp-stata-install-$(date +%Y%m%d-%H%M%S)-$$.log"
-exec > >(tee -ai "$LOG_FILE") 2>&1
-
-cat <<EOF
-── mcp-stata installer ──
-Log:    $LOG_FILE
-OS:     $(uname -srm 2>/dev/null || echo unknown)
-Shell:  bash ${BASH_VERSION:-?}
-User:   $(id -un 2>/dev/null) (uid=$(id -u))
-Args:   $*
-──
-EOF
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 # Handle local file execution vs piped/remote execution
@@ -166,11 +195,13 @@ main() {
   fi
 
   trap cleanup EXIT
-  ensure_repo_root
-  ensure_uv
+  INSTALL_STAGE="ensure_repo_root"; ensure_repo_root
+  INSTALL_STAGE="ensure_uv";        ensure_uv
   
   say "Launching mcp-stata installer..."
+  INSTALL_STAGE="setup_toolkit"
   uv run --python 3.11 "${INSTALL_REPO_ROOT}/scripts/setup_toolkit.py" "$@" || err "Python installer failed"
+  send_telemetry "install_success"
 }
 
 main "$@"

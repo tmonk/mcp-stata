@@ -26,6 +26,32 @@ Write-Host "PS Version: $($PSVersionTable.PSVersion)"
 Write-Host "Args:       $($PassthroughArgs -join ' ')"
 Write-Host "──"
 
+# ── Telemetry ──────────────────────────────────────────────────────────────
+$TelemetryUrl = 'https://mcp-stata-install.tdmonk.com/telemetry'
+$InstallId = [guid]::NewGuid().ToString()
+$InstallStart = Get-Date
+$InstallStage = 'init'
+
+function Send-Telemetry {
+    param($Event, $ErrorCode = '')
+    try {
+        $payload = @{
+            event = $Event
+            stage = $InstallStage
+            error_code = $ErrorCode
+            os = 'windows'
+            distro = "windows-$([System.Environment]::OSVersion.Version.Major).$([System.Environment]::OSVersion.Version.Build)"
+            arch = $env:PROCESSOR_ARCHITECTURE.ToLower()
+            duration_ms = [int]((Get-Date) - $InstallStart).TotalMilliseconds
+            install_id = $InstallId
+            file = 'install.ps1'
+        } | ConvertTo-Json -Compress
+        Invoke-RestMethod -Uri $TelemetryUrl -Method Post -Body $payload `
+            -ContentType 'application/json' -TimeoutSec 3 `
+            -ErrorAction SilentlyContinue | Out-Null
+    } catch {}
+}
+
 # ── Network Helpers ───────────────────────────────────────────────────────────
 function Invoke-WithRetry {
     param(
@@ -145,12 +171,16 @@ try {
     }
 
     Initialize-RepoRoot
+    $InstallStage = 'ensure_uv'
     Initialize-Uv
     Write-Step "Launching mcp-stata installer..."
+    $InstallStage = 'setup_toolkit'
     & uv run --python 3.11 (Join-Path $InstallRepoRoot "scripts\setup_toolkit.py") @PassthroughArgs
     if ($LASTEXITCODE -ne 0) { throw "Python installer failed with exit code $LASTEXITCODE" }
+    Send-Telemetry 'install_success'
     exit $LASTEXITCODE
 } catch {
+    Send-Telemetry 'install_failure' $_.Exception.Message
     [Console]::Error.WriteLine("[ERROR] $($_.Exception.Message)")
     [Console]::Error.WriteLine(@"
 

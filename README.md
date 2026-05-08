@@ -569,3 +569,4 @@ python -m build
 ```
 
 [![Tests](https://github.com/tmonk/mcp-stata/actions/workflows/build-test.yml/badge.svg)](https://github.com/tmonk/mcp-stata/actions/workflows/build-test.yml)
+# mcp-stata-install
