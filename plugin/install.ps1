@@ -12,7 +12,39 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RepoUrl = if ($env:MCP_STATA_REPO_URL) { $env:MCP_STATA_REPO_URL } else { 'https://github.com/tmonk/mcp-stata' }
-$ZipUrl  = "${RepoUrl}/archive/refs/heads/main.zip"
+$Ref     = if ($env:MCP_STATA_REF) { $env:MCP_STATA_REF } else { 'main' }
+$ZipUrl  = "${RepoUrl}/archive/${Ref}.zip"
+
+# ── Logging ────────────────────────────────────────────────────────────────
+$LogFile = Join-Path $env:TEMP ("mcp-stata-install-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".log")
+Start-Transcript -Path $LogFile -Append -ErrorAction SilentlyContinue | Out-Null
+
+Write-Host "── mcp-stata installer ──"
+Write-Host "Log:        $LogFile"
+Write-Host "OS:         $([System.Environment]::OSVersion.VersionString)"
+Write-Host "PS Version: $($PSVersionTable.PSVersion)"
+Write-Host "Args:       $($PassthroughArgs -join ' ')"
+Write-Host "──"
+
+# ── Network Helpers ───────────────────────────────────────────────────────────
+function Invoke-WithRetry {
+    param(
+        [ScriptBlock]$Script,
+        [int]$MaxRetries = 3,
+        [int]$DelaySeconds = 2
+    )
+    $attempt = 0
+    while ($true) {
+        try {
+            return &$Script
+        } catch {
+            $attempt++
+            if ($attempt -ge $MaxRetries) { throw }
+            Write-Host "[WARN]  Request failed (attempt $attempt/$MaxRetries). Retrying in $DelaySeconds seconds..." -ForegroundColor Yellow
+            Start-Sleep -Seconds $DelaySeconds
+        }
+    }
+}
 
 # ── Formatting ────────────────────────────────────────────────────────────────
 function Write-Step { param($msg) Write-Host "[INFO]  $msg" -ForegroundColor Cyan }
@@ -50,7 +82,7 @@ function Initialize-RepoRoot {
     New-Item -ItemType Directory -Path $script:TempDir | Out-Null
     
     $zipFile = Join-Path $script:TempDir "source.zip"
-    Invoke-WebRequest -Uri $ZipUrl -OutFile $zipFile -UseBasicParsing
+    Invoke-WithRetry { Invoke-WebRequest -Uri $ZipUrl -OutFile $zipFile -UseBasicParsing }
     
     $extractDir = Join-Path $script:TempDir "extract"
     Expand-Archive -Path $zipFile -DestinationPath $extractDir
@@ -77,7 +109,7 @@ function Initialize-Uv {
         Write-Warn "Could not set execution policy. If installation fails, run: Set-ExecutionPolicy RemoteSigned -Scope CurrentUser"
     }
 
-    Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
+    Invoke-WithRetry { Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression }
 
     # Refresh PATH from machine/user scopes for current process to catch new 'uv' install
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
@@ -116,9 +148,25 @@ try {
     Initialize-Uv
     Write-Step "Launching mcp-stata installer..."
     & uv run --python 3.11 (Join-Path $InstallRepoRoot "scripts\setup_toolkit.py") @PassthroughArgs
+    if ($LASTEXITCODE -ne 0) { throw "Python installer failed with exit code $LASTEXITCODE" }
     exit $LASTEXITCODE
 } catch {
-    Write-Fail $_.Exception.Message
+    [Console]::Error.WriteLine("[ERROR] $($_.Exception.Message)")
+    [Console]::Error.WriteLine(@"
+
+──────────────────────────────────────────────────────────────────
+Installation failed. Full log saved to:
+  $LogFile
+
+Please open a bug report and paste the log contents:
+  https://github.com/tmonk/mcp-stata/issues/new?template=install-failure.yml
+
+Copy log to clipboard:
+  Get-Content '$LogFile' | Set-Clipboard
+──────────────────────────────────────────────────────────────────
+"@)
+    exit 1
 } finally {
     Remove-TempDir
+    Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
 }

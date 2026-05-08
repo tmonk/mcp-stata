@@ -1,0 +1,43 @@
+name: Install failure
+description: Report a problem running the install script
+title: "[install] "
+labels: ["bug", "install"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before submitting, please skim the log for anything sensitive
+        (corporate hostnames, internal URLs). Home paths are normal — no need to redact.
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      placeholder: "macOS 14.4 (Apple Silicon) / Ubuntu 22.04 / Windows 11"
+    validations:
+      required: true
+
+  - type: input
+    id: shell
+    attributes:
+      label: Shell or PowerShell version
+      placeholder: "bash 5.2 / PowerShell 7.4 / PowerShell 5.1"
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command you ran
+      render: shell
+      placeholder: |
+        curl -fsSL https://... | bash -s -- --agent claude
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Install log
+      description: Paste the contents of the log file shown in the failure message
+      render: text
+    validations:
+      required: true

@@ -13,7 +13,40 @@ fi
 say()  { printf "${CYAN}${BOLD}[INFO]${RESET}  %s\n"  "$1"; }
 ok()   { printf "${GREEN}${BOLD}[OK]${RESET}    %s\n"  "$1"; }
 warn() { printf "${YELLOW}${BOLD}[WARN]${RESET}  %s\n" "$1" >&2; }
-err()  { printf "${RED}${BOLD}[ERROR]${RESET} %s\n"   "$1" >&2; exit 1; }
+err() {
+  printf "${RED}${BOLD}[ERROR]${RESET} %s\n" "$1" >&2
+  cat >&2 <<EOF
+
+──────────────────────────────────────────────────────────────────
+Installation failed. Full log saved to:
+  ${LOG_FILE}
+
+Please open a bug report and paste the log contents:
+  https://github.com/tmonk/mcp-stata/issues/new?template=install-failure.yml
+
+Copy log to clipboard:
+  macOS:         pbcopy < "${LOG_FILE}"
+  Linux (X11):   xclip -selection clipboard < "${LOG_FILE}"
+  Linux (Wayl.): wl-copy < "${LOG_FILE}"
+  WSL:           clip.exe < "${LOG_FILE}"
+──────────────────────────────────────────────────────────────────
+EOF
+  exit 1
+}
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+LOG_FILE="${TMPDIR:-/tmp}/mcp-stata-install-$(date +%Y%m%d-%H%M%S)-$$.log"
+exec > >(tee -ai "$LOG_FILE") 2>&1
+
+cat <<EOF
+── mcp-stata installer ──
+Log:    $LOG_FILE
+OS:     $(uname -srm 2>/dev/null || echo unknown)
+Shell:  bash ${BASH_VERSION:-?}
+User:   $(id -un 2>/dev/null) (uid=$(id -u))
+Args:   $*
+──
+EOF
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 # Handle local file execution vs piped/remote execution
@@ -26,7 +59,8 @@ else
 fi
 
 REPO_URL="${MCP_STATA_REPO_URL:-https://github.com/tmonk/mcp-stata}"
-TARBALL_URL="${REPO_URL}/archive/refs/heads/main.tar.gz"
+REF="${MCP_STATA_REF:-main}"
+TARBALL_URL="${REPO_URL}/archive/${REF}.tar.gz"
 
 INSTALL_REPO_ROOT="${REPO_ROOT}"
 TEMP_DIR=""
@@ -93,7 +127,7 @@ ensure_repo_root() {
   TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mcp-stata-install.XXXXXX")"
   say "Fetching mcp-stata source..."
   
-  curl -LsSf "${TARBALL_URL}" | tar xz -C "${TEMP_DIR}" --strip-components=1
+  curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused "${TARBALL_URL}" | tar xz -C "${TEMP_DIR}" --strip-components=1
   
   INSTALL_REPO_ROOT="${TEMP_DIR}"
   ok "Source extracted to ${INSTALL_REPO_ROOT}"
@@ -106,7 +140,7 @@ ensure_uv() {
 
   # We invoke the official installer. It's idempotent.
   say "Ensuring uv is installed..."
-  curl -fsSL https://astral.sh/uv/install.sh | sh
+  curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused https://astral.sh/uv/install.sh | sh
 
   # Search for uv in common locations to refresh the current PATH
   CANDIDATE_PATHS=("${HOME}/.local/bin" "${XDG_BIN_HOME:-}" "${HOME}/.cargo/bin")
@@ -136,7 +170,7 @@ main() {
   ensure_uv
   
   say "Launching mcp-stata installer..."
-  uv run --python 3.11 "${INSTALL_REPO_ROOT}/scripts/setup_toolkit.py" "$@"
+  uv run --python 3.11 "${INSTALL_REPO_ROOT}/scripts/setup_toolkit.py" "$@" || err "Python installer failed"
 }
 
 main "$@"
