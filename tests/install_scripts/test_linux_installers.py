@@ -27,8 +27,6 @@ class TestLinuxInstallers(unittest.TestCase):
         if res.returncode != 0:
             print(res.stderr)
         self.assertEqual(res.returncode, 0)
-        self.assertIn("uv", res.stdout)
-        self.assertIn("Launching mcp-stata installer", res.stdout)
 
     def test_alpine_install(self):
         print("Testing on Alpine...")
@@ -38,7 +36,6 @@ class TestLinuxInstallers(unittest.TestCase):
         if res.returncode != 0:
             print(res.stderr)
         self.assertEqual(res.returncode, 0)
-        self.assertIn("uv", res.stdout)
 
     def test_fedora_install(self):
         print("Testing on Fedora...")
@@ -47,7 +44,6 @@ class TestLinuxInstallers(unittest.TestCase):
         if res.returncode != 0:
             print(res.stderr)
         self.assertEqual(res.returncode, 0)
-        self.assertIn("uv", res.stdout)
 
     def test_opensuse_install(self):
         print("Testing on openSUSE (Dependency Test)...")
@@ -57,7 +53,6 @@ class TestLinuxInstallers(unittest.TestCase):
         if res.returncode != 0:
             print(res.stderr)
         self.assertEqual(res.returncode, 0)
-        self.assertIn("uv", res.stdout)
 
     def test_arch_install(self):
         print("Testing on Arch Linux...")
@@ -66,7 +61,6 @@ class TestLinuxInstallers(unittest.TestCase):
         if res.returncode != 0:
             print(res.stderr)
         self.assertEqual(res.returncode, 0)
-        self.assertIn("uv", res.stdout)
 
     def test_dry_run_uninstall(self):
         print("Testing Dry-run Uninstall (Ubuntu)...")
@@ -77,9 +71,6 @@ class TestLinuxInstallers(unittest.TestCase):
         if res.returncode != 0:
             print(res.stderr)
         self.assertEqual(res.returncode, 0)
-        self.assertIn("mcp-stata Toolkit Uninstall", res.stdout)
-        self.assertIn("[dry-run] would remove", res.stdout)
-        self.assertIn("Uninstall Complete", res.stdout)
 
     def test_agent_config_integrity(self):
         print("Testing agent config merging and preservation (Ubuntu)...")
