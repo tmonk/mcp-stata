@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v3.0.3 (2026-05-08)
+
+### Bug Fixes
+
+- Add gzip as a required dependency for linux installers to support uv extraction
+  ([`57873b2`](https://github.com/tmonk/mcp-stata/commit/57873b2b689e1a55438ada29dbe4330a07f4a9f4))
+
+### Testing
+
+- Fix installer scripts cross platform
+  ([`fe1da82`](https://github.com/tmonk/mcp-stata/commit/fe1da82490f5832fc4242b096d58a426e9f315ab))
+
+
 ## v3.0.2 (2026-05-08)
 
 ### Bug Fixes

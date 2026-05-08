@@ -3,12 +3,12 @@
   "name": "io.github.tmonk/mcp-stata",
   "title": "Stata MCP Server",
   "description": "Agentic Stata toolkit built for research: execute Stata code with structured outputs, easily diagnose code, and use research-oriented audit tools.",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mcp-stata",
-      "version": "3.0.2",
+      "version": "3.0.3",
       "transport": {
         "type": "stdio"
       }
