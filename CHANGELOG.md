@@ -2,6 +2,22 @@
 
 <!-- version list -->
 
+## v3.1.4 (2026-05-08)
+
+### Bug Fixes
+
+- Install and wrangler scripts
+  ([`1392ed2`](https://github.com/tmonk/mcp-stata/commit/1392ed25b23d05175af466107684331029766b3d))
+
+- Update data schema mapping and dashboard log modal to consolidate user and machine identifiers
+  ([`4212f3a`](https://github.com/tmonk/mcp-stata/commit/4212f3afa41fec8cd5257715fb398ee134a9b3eb))
+
+### Continuous Integration
+
+- Restrict release workflow triggers to exclude documentation and non-critical file changes
+  ([`ad75bae`](https://github.com/tmonk/mcp-stata/commit/ad75baebd904c685e5496245941963664a5e9c68))
+
+
 ## v3.1.3 (2026-05-08)
 
 ### Bug Fixes
