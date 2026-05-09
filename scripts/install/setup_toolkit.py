@@ -582,8 +582,13 @@ def _link_points_to(link: Path, target_resolved: Path) -> bool:
 
 
 def _remove_link_or_dir(link: Path) -> None:
-    """Remove `link` regardless of whether it is a symlink, junction, or directory."""
-    if not link.exists() and not link.is_symlink():
+    """Remove `link` regardless of whether it is a symlink, junction, or directory.
+
+    Uses os.path.lexists rather than Path.exists / Path.is_symlink so that
+    *dangling* Windows junctions and broken symlinks (where the underlying
+    reparse point is still on disk but the target is gone) are still cleaned up.
+    """
+    if not os.path.lexists(link):
         return
     try:
         link.unlink()
@@ -600,10 +605,10 @@ def _remove_link_or_dir(link: Path) -> None:
 
 def _remove_symlink(link: Path) -> bool:
     """Remove a previously installed link (symlink, junction, or copied tree)."""
-    if not link.exists() and not link.is_symlink():
+    if not os.path.lexists(link):
         return False
     _remove_link_or_dir(link)
-    return not link.exists() and not link.is_symlink()
+    return not os.path.lexists(link)
 
 
 def remove_json_server_config(path: Path, *, top_key: str) -> tuple[Path, bool]:
