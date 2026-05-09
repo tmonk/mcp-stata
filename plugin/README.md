@@ -110,7 +110,7 @@ Supports: `claude`, `codex`, `gemini`, `cursor`, `windsurf`, `vscode`.
 <!-- BEGIN GENERATED_SLASH_SKILLS -->
 | Command | Description |
 |---|---|
-| `/stata` | Show mcp-stata identity, connected tools, and status. Entry point for mcp-stata, an agentic toolkit for Stata. |
+| `/stata` | Show mcp-stata identity, connected tools, and status. Use when the user asks if mcp-stata is available, asks about access to the toolkit, or asks what Stata tools are connected. |
 | `/stata-graph [graph_name]` | List, export, and review Stata graphs from the current session. |
 | `/stata-help <topic>` | Look up Stata command documentation and display formatted help text. |
 | `/stata-inspect [variable]` | Describe and summarize the current dataset in memory. Optionally inspect a specific variable with codebook. |

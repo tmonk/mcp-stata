@@ -300,12 +300,12 @@ VS Code documents `.vscode/mcp.json` and the `servers` schema, including `type` 
 
 The toolkit includes a catalog of "Skills", providing domain knowledge to AI agents.
 
-- **Base Skill**: [skill/SKILL.md](skill/SKILL.md) — Main Stata toolkit dispatcher.
-- **Modernize Skill**: [modernize/SKILL.md](skills-catalog/modernize/SKILL.md) — Replaces legacy Stata patterns (i.e. prefer frames over `preserve`, `restore`.)
-- **Replication Skill**: [replication/SKILL.md](skills-catalog/replication/SKILL.md) — Reproducibility and robustness workflows.
-- **Data Audit Skill**: [data-audit/SKILL.md](skills-catalog/data-audit/SKILL.md) — Dataset QA and sanity checks.
-- **Publication QA Skill**: [publication-qa/SKILL.md](skills-catalog/publication-qa/SKILL.md) — Tables and figures for paper readiness.
-- **Environment Diagnose Skill**: [environment-diagnose/SKILL.md](skills-catalog/environment-diagnose/SKILL.md) — Setup and platform troubleshooting.
+- **Base Skill**: [plugin/skills/stata-toolkit/SKILL.md](plugin/skills/stata-toolkit/SKILL.md) — Main Stata toolkit dispatcher.
+- **Modernize Skill**: [plugin/skills/stata-modernize/SKILL.md](plugin/skills/stata-modernize/SKILL.md) — Replaces legacy Stata patterns (i.e. prefer frames over `preserve`, `restore`.)
+- **Replication Skill**: [plugin/skills/stata-replication/SKILL.md](plugin/skills/stata-replication/SKILL.md) — Reproducibility and robustness workflows.
+- **Data Audit Skill**: [plugin/skills/stata-data-audit/SKILL.md](plugin/skills/stata-data-audit/SKILL.md) — Dataset QA and sanity checks.
+- **Publication QA Skill**: [plugin/skills/stata-publication-qa/SKILL.md](plugin/skills/stata-publication-qa/SKILL.md) — Tables and figures for paper readiness.
+- **Environment Diagnose Skill**: [plugin/skills/stata-environment-diagnose/SKILL.md](plugin/skills/stata-environment-diagnose/SKILL.md) — Setup and platform troubleshooting.
 - Additional plugin skills cover basic causal inference, table building, power analysis, data provenance, and referee-response work.
 
 ## Tools Available (from server.py)

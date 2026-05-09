@@ -9,8 +9,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_SKILLS = ROOT / "plugin" / "skills"
 PLUGIN_AGENTS = ROOT / "plugin" / "agents"
-ROOT_SKILL = ROOT / "skill" / "SKILL.md"
-TOP_LEVEL_SKILLS = ROOT / "skills-catalog"
 DATA_MODULE = ROOT / "src" / "mcp_stata" / "toolkit_catalog_data.py"
 PLUGIN_README = ROOT / "plugin" / "README.md"
 SKILL_FRONTMATTER_KEYS = {"name", "description"}
@@ -211,36 +209,6 @@ def build_data_module(skills: list[dict], agents: list[dict]) -> str:
     )
 
 
-def sync_root_skill(skills: list[dict]) -> None:
-    root_doc = next(item for item in skills if item["id"] == ROOT_SKILL_ID)
-    ROOT_SKILL.parent.mkdir(parents=True, exist_ok=True)
-    ROOT_SKILL.write_text(
-        render_full_markdown(
-            name=root_doc["name"],
-            description=root_doc["description"],
-            body=root_doc["body"],
-        )
-    )
-
-
-def sync_top_level_skill_catalog(skills: list[dict]) -> None:
-    mirrored = [
-        item
-        for item in skills
-        if item["invocation_type"] == "context-skill" and item["id"] != ROOT_SKILL_ID
-    ]
-    for doc in mirrored:
-        slug = doc["id"].removeprefix("stata-")
-        path = TOP_LEVEL_SKILLS / slug / "SKILL.md"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            render_full_markdown(
-                name=doc["name"],
-                description=doc["description"],
-                body=doc["body"],
-            )
-        )
-
 
 def sync_readme(skills: list[dict], agents: list[dict]) -> None:
     text = PLUGIN_README.read_text()
@@ -278,8 +246,6 @@ def main() -> None:
     skills = load_skill_docs()
     agents = load_agent_docs()
     DATA_MODULE.write_text(build_data_module(skills, agents))
-    sync_root_skill(skills)
-    sync_top_level_skill_catalog(skills)
     sync_readme(skills, agents)
     print(f"Generated catalog for {len(skills)} skills and {len(agents)} agents.")
 

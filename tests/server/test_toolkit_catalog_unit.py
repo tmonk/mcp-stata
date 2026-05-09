@@ -75,7 +75,7 @@ def test_catalog_references_and_scripts_resolve():
             assert (skill_dir / script).exists(), f"missing script {script} for {item['id']}"
 
 
-def test_pyproject_force_includes_mirrored_context_skills():
+def test_pyproject_force_includes_plugin_skills():
     text = PYPROJECT.read_text()
     for slug in (
         "modernize",
@@ -89,4 +89,4 @@ def test_pyproject_force_includes_mirrored_context_skills():
         "data-provenance",
         "referee-response",
     ):
-        assert f"skills-catalog/{slug}/SKILL.md" in text
+        assert f"plugin/skills/stata-{slug}/SKILL.md" in text
