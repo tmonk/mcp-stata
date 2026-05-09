@@ -18,7 +18,7 @@ from mcp_stata.stata_client import StataClient
 logger = logging.getLogger("mcp_stata.worker")
 
 class StataWorker:
-    def __init__(self, conn: Connection):
+    def __init__(self, conn: Connection, startup_do_file: Optional[str] = None):
         self.conn = conn
         self.client: Optional[StataClient] = None
         self.loop = asyncio.new_event_loop()
@@ -26,6 +26,7 @@ class StataWorker:
         self._command_queue = queue.Queue()
         self._is_running = True
         self.profile_code: Optional[str] = None
+        self.startup_do_file = startup_do_file
 
     def _listen_on_pipe(self):
         """Background thread to listen for out-of-band signals (like 'break')."""
@@ -312,8 +313,8 @@ class StataWorker:
                 "traceback": traceback.format_exc()
             })
 
-def main(conn):
-    worker = StataWorker(conn)
+def main(conn, startup_do_file: Optional[str] = None):
+    worker = StataWorker(conn, startup_do_file=startup_do_file)
     worker.run()
 
 if __name__ == "__main__":

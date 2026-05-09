@@ -38,7 +38,7 @@ class StataSession:
         "load_data",
     }
 
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, startup_do_file: Optional[str] = None):
         self.id = session_id
         self.status = "starting"
         self.created_at = datetime.now(timezone.utc).isoformat()
@@ -52,7 +52,7 @@ class StataSession:
         self._history_lock = asyncio.Lock()
         
         self._parent_conn, self._child_conn = Pipe()
-        self._process = Process(target=self._run_worker, args=(self._child_conn,))
+        self._process = Process(target=self._run_worker, args=(self._child_conn, startup_do_file))
         self._process.daemon = True
         self._process.start()
         
@@ -63,9 +63,11 @@ class StataSession:
         self._listener_running = True
         self._listener_task = asyncio.create_task(self._listen_to_worker())
 
-    def _run_worker(self, conn: Connection):
+    def _run_worker(self, conn: Connection, startup_do_file: Optional[str] = None):
+        if startup_do_file:
+            os.environ["MCP_STATA_STARTUP_DO_FILE"] = startup_do_file
         from mcp_stata.worker import main
-        main(conn)
+        main(conn, startup_do_file)
 
     async def _listen_to_worker(self):
         loop = asyncio.get_running_loop()
@@ -446,10 +448,10 @@ class SessionManager:
         # Start default session
         await self.get_or_create_session(self._default_session_id)
 
-    async def get_or_create_session(self, session_id: str) -> StataSession:
+    async def get_or_create_session(self, session_id: str, startup_do_file: Optional[str] = None) -> StataSession:
         if session_id not in self._sessions:
             logger.info(f"Creating new Stata session: {session_id}")
-            session = StataSession(session_id)
+            session = StataSession(session_id, startup_do_file=startup_do_file)
             self._sessions[session_id] = session
             
         session = self._sessions[session_id]

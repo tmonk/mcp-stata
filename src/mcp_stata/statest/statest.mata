@@ -117,6 +117,18 @@ void statest_assert_matrix(string scalar name, string scalar expected_name, real
 
 end
 
+program define statest_reset
+    version 16
+    mata: st_numscalar("statest_assertion_index", 0)
+    capture scalar drop statest_command
+    capture scalar drop statest_variable
+    capture scalar drop statest_actual
+    capture scalar drop statest_expected
+    capture scalar drop statest_tolerance
+    capture scalar drop statest_actual_str
+    capture scalar drop statest_expected_str
+end
+
 /* Stata wrappers */
 
 program define st_assert_scalar
