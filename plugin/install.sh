@@ -282,8 +282,9 @@ EOF
 
 # ── Telemetry ─────────────────────────────────────────────────────────────────
 # What is sent: event type, OS/arch, MCP client name(s), install duration, a
-# unique run ID, and — on failure — the last 100 lines of the install log so
-# errors can be diagnosed. No file contents, credentials, or paths are included.
+# unique run ID, and — on failure — the trailing portion of the install log
+# (sized so the JSON-escaped payload fits inside the worker's per-event blob
+# limit). No file contents, credentials, or paths are included.
 # Log: $TMPDIR/mcp-stata-install-<date>-<pid>.log  (also printed on failure)
 TELEMETRY_URL="https://mcp-stata-install.tdmonk.com/telemetry"
 INSTALL_ID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || \
@@ -295,6 +296,10 @@ TELEMETRY_RETRIES="${MCP_STATA_TELEMETRY_RETRIES:-3}"
 TELEMETRY_TIMEOUT_SECS="${MCP_STATA_TELEMETRY_TIMEOUT_SECS:-5}"
 TELEMETRY_DEBUG="${MCP_STATA_TELEMETRY_DEBUG:-0}"
 TELEMETRY_ENABLED="${MCP_STATA_TELEMETRY_ENABLED:-1}"
+# Trailing-log capture size for failures. Sized so a worst-case JSON-escaped
+# value (lots of newlines/tabs) still lands well under the worker's 4000-char
+# log_tail cap and the 8 KB total payload cap.
+TELEMETRY_LOG_TAIL_BYTES="${MCP_STATA_LOG_TAIL_BYTES:-3500}"
 USER_ID=""
 
 make_user_id() {
@@ -359,14 +364,33 @@ get_user_id() {
   printf '%s' "$new"
 }
 
-json_escape() {
-  # We use python3 if available for robust escaping (handles newlines, tabs, etc.)
+json_escape_stream() {
+  # Read stdin, write a JSON-string-safe version (no surrounding quotes) on
+  # stdout. Prefer python3 (full RFC 8259 escaping incl. all control chars and
+  # non-BMP); fall back to awk so we still emit *something* useful when python
+  # is missing (which is rare on Linux/macOS but does occur on stripped-down
+  # CI/managed images — and is the difference between a useful failure event
+  # and an empty `log_tail` on the dashboard).
   if command -v python3 >/dev/null 2>&1; then
-    printf '%s' "$1" | python3 -c 'import json, sys; sys.stdout.write(json.dumps(sys.stdin.read())[1:-1])' 2>/dev/null && return 0
+    python3 -c 'import json, sys; sys.stdout.write(json.dumps(sys.stdin.read())[1:-1])' 2>/dev/null
+    return 0
   fi
-  # Fallback: escape backslashes and quotes; then convert newlines to \n.
-  # (sed processes line-by-line, so we use awk to join with \n)
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s%s", (NR>1?"\\n":""), $0}'
+  awk '
+    BEGIN { ORS = ""; first = 1 }
+    {
+      gsub(/\\/, "\\\\")
+      gsub(/"/, "\\\"")
+      gsub(/\t/, "\\t")
+      gsub(/\r/, "\\r")
+      if (!first) printf "\\n"
+      first = 0
+      printf "%s", $0
+    }
+  '
+}
+
+json_escape() {
+  printf '%s' "$1" | json_escape_stream
 }
 
 send_telemetry() {
@@ -419,16 +443,20 @@ send_telemetry() {
     esac
   done
 
-  # Capture last ~100 lines of log ONLY for failure diagnostics.
-  # (This keeps success/start payloads small and avoids JSON escaping pitfalls.)
+  # Capture trailing portion of the install log ONLY for failure diagnostics.
+  # We grab as many bytes as the worker will accept (server caps log_tail at
+  # ~4000 chars after JSON escaping) so the dashboard shows the actual error
+  # output of `curl … | sh`, not just the banner.
+  #
+  # IMPORTANT: do NOT use `python3 - <<HERE` to escape — the heredoc binds
+  # python's stdin and silently drops the piped log content. (That bug shipped
+  # in 3.1.x and is why every install_failure event historically had an empty
+  # log_tail.) Use `python3 -c …` so the pipe stays connected.
   local log_tail=""
   if [[ "$event" == *"failure"* ]] && [ -f "${LOG_FILE:-}" ]; then
-    log_tail="$(tail -n 100 "$LOG_FILE" 2>/dev/null | \
-      python3 - <<'PY' 2>/dev/null || true
-import json, sys
-print(json.dumps(sys.stdin.read()) [1:-1])
-PY
-    )"
+    sync 2>/dev/null || true
+    log_tail="$(tail -c "${TELEMETRY_LOG_TAIL_BYTES}" "$LOG_FILE" 2>/dev/null \
+      | json_escape_stream || true)"
   fi
 
   local telemetry_user

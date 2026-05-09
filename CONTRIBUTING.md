@@ -94,19 +94,19 @@ Python tests are organized with pytest markers:
 
 #### All Tests (Requires Stata)
 ```bash
-pytest
+uv run pytest
 ```
 
 #### Tests Without Stata (Fast/CI)
 Useful for checking logic, UI components, and parsing without a Stata license:
 ```bash
-pytest -v -m "not requires_stata"
+uv run pytest -v -m "not requires_stata"
 ```
 
 #### Native Sorter Integration
 Verify the bridge between Python and Rust:
 ```bash
-pytest tests/test_native_sorter.py
+uv run pytest tests/test_native_sorter.py
 ```
 
 ### 3. Build Integration Tests
@@ -114,7 +114,7 @@ pytest tests/test_native_sorter.py
 We verify that the package builds correctly and all binaries are functional:
 ```bash
 # Run all build integration tests
-pytest tests/test_build_integration.py -v -m slow
+uv run pytest tests/test_build_integration.py -v -m slow
 
 # Or use the convenience script
 ./scripts/tests/test_build.sh

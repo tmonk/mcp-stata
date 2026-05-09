@@ -81,6 +81,10 @@ $TelemetryEnabled = if ($env:MCP_STATA_TELEMETRY_ENABLED) { [int]$env:MCP_STATA_
 $TelemetryRetries = if ($env:MCP_STATA_TELEMETRY_RETRIES) { [int]$env:MCP_STATA_TELEMETRY_RETRIES } else { 3 }
 $TelemetryTimeoutSec = if ($env:MCP_STATA_TELEMETRY_TIMEOUT_SECS) { [int]$env:MCP_STATA_TELEMETRY_TIMEOUT_SECS } else { 5 }
 $TelemetryDebug = if ($env:MCP_STATA_TELEMETRY_DEBUG) { [int]$env:MCP_STATA_TELEMETRY_DEBUG } else { 0 }
+# Trailing-log capture size for failures. Sized so a worst-case JSON-escaped
+# value (lots of newlines/tabs) still lands well under the worker's 4000-char
+# log_tail cap and the 8 KB total payload cap.
+$TelemetryLogTailBytes = if ($env:MCP_STATA_LOG_TAIL_BYTES) { [int]$env:MCP_STATA_LOG_TAIL_BYTES } else { 3500 }
 $DryRun = $PassthroughArgs -contains '--dry-run'
 $UserId = ''
 
@@ -400,9 +404,23 @@ function Send-Telemetry {
             if ($arg -like '--scope=*') { $scope = $arg.Substring(8) }
         }
 
+        # Capture trailing portion of the install log ONLY for failures.
+        # Use byte-based slicing (not -Tail N) so a single very long line
+        # (e.g. uv installer dumping a stack trace) still fits the worker's
+        # log_tail cap. The catch block flushes Stop-Transcript before this
+        # runs, so the file already contains everything up to the failure.
         $logTail = ''
         if ($Event -like '*failure*' -and $LogFile -and (Test-Path $LogFile)) {
-            $logTail = (Get-Content $LogFile -Tail 100 -ErrorAction SilentlyContinue) -join "`n"
+            try {
+                $allText = Get-Content $LogFile -Raw -ErrorAction SilentlyContinue
+                if ($allText) {
+                    if ($allText.Length -gt $TelemetryLogTailBytes) {
+                        $logTail = $allText.Substring($allText.Length - $TelemetryLogTailBytes)
+                    } else {
+                        $logTail = $allText
+                    }
+                }
+            } catch {}
         }
 
         $telemetryUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -592,6 +610,8 @@ try {
     exit 0
 } catch {
     $failEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_failure' } else { 'install_failure' }
+    # Ensure log is flushed to disk before sending telemetry
+    try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
     Send-Telemetry $failEvent $_.Exception.Message
     Show-Failure $_.Exception.Message
     exit 1
