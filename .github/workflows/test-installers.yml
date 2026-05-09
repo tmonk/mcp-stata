@@ -8,7 +8,7 @@ on:
       - 'plugin/install.ps1'
       - 'scripts/install/setup_toolkit.py'
       - '.github/workflows/test-installers.yml'
-      - 'tests/install_scripts/**'
+      - 'tests/installer/**'
   pull_request:
     branches: [ main ]
     paths:
@@ -16,7 +16,7 @@ on:
       - 'plugin/install.ps1'
       - 'scripts/install/setup_toolkit.py'
       - '.github/workflows/test-installers.yml'
-      - 'tests/install_scripts/**'
+      - 'tests/installer/**'
 
 jobs:
   test-linux:
@@ -36,7 +36,7 @@ jobs:
             done
           done
       - name: Run Linux Installer Tests (Docker)
-        run: python3 tests/install_scripts/test_linux_installers.py
+        run: python3 tests/installer/test_linux_installers.py
 
   test-macos:
     runs-on: macos-latest

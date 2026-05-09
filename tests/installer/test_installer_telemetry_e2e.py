@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-INSTALL_SH = Path(__file__).resolve().parents[1] / "plugin" / "install.sh"
+INSTALL_SH = Path(__file__).resolve().parents[2] / "plugin" / "install.sh"
 
 # This URL must match the literal string the installer uses for the uv
 # bootstrap. Keeping it as a module constant means a sneaky string change in
@@ -163,7 +163,9 @@ def test_install_sh_telemetry_start_has_full_metadata(tmp_path: Path) -> None:
     assert start["event"] == "install_start"
     assert start["client"] == "cursor"
     assert start["scope"] == "user"
-    assert start["os"] == "darwin"
+    import sys
+    expected_os = "darwin" if sys.platform == "darwin" else "linux"
+    assert start["os"] == expected_os
     assert start["user_id"]
     assert start["machine_id"]
     assert start["script_version"]

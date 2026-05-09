@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-INSTALL_SH = Path(__file__).resolve().parents[1] / "plugin" / "install.sh"
+INSTALL_SH = Path(__file__).resolve().parents[2] / "plugin" / "install.sh"
 pytestmark = pytest.mark.skipif(
     not INSTALL_SH.exists(),
     reason="plugin/install.sh not found",
@@ -208,7 +208,7 @@ class TestGeminiConfig:
         assert link.exists()
 
     def test_manifest_contains_env_placeholders(self):
-        manifest = json.loads((Path(__file__).resolve().parents[1] / "plugin" / "gemini-extension.json").read_text())
+        manifest = json.loads((Path(__file__).resolve().parents[2] / "plugin" / "gemini-extension.json").read_text())
         entry = manifest["mcpServers"]["mcp-stata"]
         assert entry["cwd"] == "${extensionPath}"
         assert "env" not in entry
@@ -351,7 +351,7 @@ class TestMcpArgs:
         bin_dir = tmp_path / "bin"
         _stub_uvx(bin_dir)
         _run(["--agent", "gemini"], home=tmp_path)
-        manifest = json.loads((Path(__file__).resolve().parents[1] / "plugin" / "gemini-extension.json").read_text())
+        manifest = json.loads((Path(__file__).resolve().parents[2] / "plugin" / "gemini-extension.json").read_text())
         entry = manifest["mcpServers"]["mcp-stata"]
         assert entry["command"] == "uvx"
         assert entry["args"] == self.EXPECTED_ARGS
@@ -491,7 +491,7 @@ class TestSummaryOutput:
 
 class TestPluginMetadata:
     def test_hooks_schema_uses_session_start_matcher(self):
-        hooks = json.loads((Path(__file__).resolve().parents[1] / "plugin" / "hooks" / "hooks.json").read_text())
+        hooks = json.loads((Path(__file__).resolve().parents[2] / "plugin" / "hooks" / "hooks.json").read_text())
         session_start = hooks["hooks"]["SessionStart"][0]
         assert session_start["matcher"] == "startup|resume|clear|compact"
         command_hook = session_start["hooks"][0]

@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-INSTALL_PS1 = Path(__file__).resolve().parents[1] / "plugin" / "install.ps1"
+INSTALL_PS1 = Path(__file__).resolve().parents[2] / "plugin" / "install.ps1"
 
 
 def _script_text() -> str:

@@ -66,7 +66,7 @@ jobs:
 
       - name: Run Environment Diagnostic Tests
         run: |
-          uv run pytest -v tests/test_env_diagnostic.py -s
+          uv run pytest -v tests/execution/test_env_diagnostic.py -s
         timeout-minutes: 5
 
       - name: Run all tests that don't require Stata
@@ -81,7 +81,7 @@ jobs:
           MCP_STATA_MOCK: "1"
         run: |
           # Run integration tests using Protocol Mocking
-          uv run pytest -v tests/test_mock_protocol.py
+          uv run pytest -v tests/server/test_mock_protocol.py
         timeout-minutes: 5
         continue-on-error: false
 

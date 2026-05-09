@@ -106,7 +106,7 @@ uv run pytest -v -m "not requires_stata"
 #### Native Sorter Integration
 Verify the bridge between Python and Rust:
 ```bash
-uv run pytest tests/test_native_sorter.py
+uv run pytest tests/data/test_native_sorter.py
 ```
 
 ### 3. Build Integration Tests
@@ -114,7 +114,7 @@ uv run pytest tests/test_native_sorter.py
 We verify that the package builds correctly and all binaries are functional:
 ```bash
 # Run all build integration tests
-uv run pytest tests/test_build_integration.py -v -m slow
+uv run pytest tests/execution/test_build_integration.py -v -m slow
 
 # Or use the convenience script
 ./scripts/tests/test_build.sh
@@ -170,7 +170,7 @@ We maintain bootstrap scripts for easy installation across platforms. These are 
 To verify the `install.sh` script across various Linux distributions (Ubuntu, Fedora, Alpine, etc.), run the Docker-based test suite:
 
 ```bash
-python3 tests/install_scripts/test_linux_installers.py
+python3 tests/installer/test_linux_installers.py
 ```
 
 *Note: Requires Docker to be running locally.*

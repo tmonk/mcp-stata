@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def _load_smcl_module():
-    module_path = Path(__file__).resolve().parents[1] / "src" / "mcp_stata" / "smcl" / "smcl2html.py"
+    module_path = Path(__file__).resolve().parents[2] / "src" / "mcp_stata" / "smcl" / "smcl2html.py"
     spec = importlib.util.spec_from_file_location("mcp_stata_smcl2html", module_path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None

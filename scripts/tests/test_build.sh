@@ -19,7 +19,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
 echo -e "${YELLOW}Step 1: Running build integration tests...${NC}"
-python -m pytest tests/test_build_integration.py -v -m slow
+python -m pytest tests/execution/test_build_integration.py -v -m slow
 
 echo ""
 echo -e "${GREEN}✓ All build integration tests passed!${NC}"

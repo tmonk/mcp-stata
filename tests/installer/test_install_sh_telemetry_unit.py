@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-INSTALL_SH = Path(__file__).resolve().parents[1] / "plugin" / "install.sh"
+INSTALL_SH = Path(__file__).resolve().parents[2] / "plugin" / "install.sh"
 pytestmark = pytest.mark.skipif(
     not INSTALL_SH.exists(),
     reason="plugin/install.sh not found",

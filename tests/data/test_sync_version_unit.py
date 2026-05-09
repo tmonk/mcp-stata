@@ -13,7 +13,7 @@ import pytest
 # Load the script as a module without requiring hatch / Stata at import time
 # ---------------------------------------------------------------------------
 
-_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "maintenance" / "sync_server_version.py"
+_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "maintenance" / "sync_server_version.py"
 
 
 def _load_sync_module():
@@ -366,7 +366,7 @@ class TestMain:
 
     def test_real_plugin_dir_all_at_current_version(self, monkeypatch, capsys):
         """Smoke test: real plugin/ tree should already be at current version."""
-        real_root = Path(__file__).resolve().parents[1]
+        real_root = Path(__file__).resolve().parents[2]
         real_version = json.loads(
             (real_root / "pyproject.toml").read_text().split('version = "')[1].split('"')[0]
             if False else "{}"  # avoid TOML parsing — read pyproject directly

@@ -161,7 +161,7 @@ async def test_server_tool_load_data_heuristic(clean_client):
     # In these tests, stata_client fixture from conftest is usually used.
     
     # We'll use a local instance for isolation if needed, but server.py 
-    # uses a global StataClient. This is why we have tests/test_server.py.
+    # uses a global StataClient. This is why we have tests/server/test_server.py.
     pass # Already covered in test_server.py but good to keep in mind
 
 def test_spaces_in_path_initialization(tmp_path, clean_client, monkeypatch):

@@ -4,7 +4,7 @@ import importlib.util
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DATA_MODULE = ROOT / "src" / "mcp_stata" / "toolkit_catalog_data.py"
 SERVER_FILE = ROOT / "src" / "mcp_stata" / "server.py"
 PLUGIN_SKILLS = ROOT / "plugin" / "skills"
