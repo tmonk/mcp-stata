@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v3.2.1 (2026-05-09)
+
+### Bug Fixes
+
+- Update plugin marketplace install
+  ([`3b02fae`](https://github.com/tmonk/mcp-stata/commit/3b02faed12a3defd54943f28b660351940cb04df))
+
+### Documentation
+
+- Enhance background task handling instructions in stata-analyst and stata-run documentation
+  ([`9420c71`](https://github.com/tmonk/mcp-stata/commit/9420c71996a78d8e1fd814387ae200a57ca70443))
+
+
 ## v3.2.0 (2026-05-09)
 
 ### Bug Fixes
