@@ -1,0 +1,15 @@
+{
+  "mode": "optimized",
+  "sequential": {
+    "total_tests": 20,
+    "duration": 8.268063874988002,
+    "parallel": false,
+    "workers": 1
+  },
+  "parallel": {
+    "total_tests": 20,
+    "duration": 8.490762959001586,
+    "parallel": true,
+    "workers": 4
+  }
+}

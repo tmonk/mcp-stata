@@ -1,0 +1,26 @@
+{
+  "timestamp": "2026-05-09T14:42:04.407175",
+  "suite": "significant",
+  "results": [
+    {
+      "suite": "significant",
+      "total_tests": 20,
+      "passed": 20,
+      "failed": 0,
+      "wall_clock_seconds": 7.949263749993406,
+      "parallel": false,
+      "workers": 1,
+      "avg_seconds_per_test": 0.3974631874996703
+    },
+    {
+      "suite": "significant",
+      "total_tests": 20,
+      "passed": 20,
+      "failed": 0,
+      "wall_clock_seconds": 8.949039333994733,
+      "parallel": true,
+      "workers": 4,
+      "avg_seconds_per_test": 0.44745196669973664
+    }
+  ]
+}

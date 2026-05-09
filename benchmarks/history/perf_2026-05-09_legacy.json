@@ -1,0 +1,15 @@
+{
+  "mode": "legacy",
+  "sequential": {
+    "total_tests": 20,
+    "duration": 38.672330624991446,
+    "parallel": false,
+    "workers": 1
+  },
+  "parallel": {
+    "total_tests": 20,
+    "duration": 11.830314291990362,
+    "parallel": true,
+    "workers": 4
+  }
+}
