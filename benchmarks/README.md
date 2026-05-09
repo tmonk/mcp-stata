@@ -10,14 +10,14 @@ This directory contains performance benchmarks and history for the `statest` fra
 
 ## Running Benchmarks
 
-Use the provided script in `scripts/`:
+Use the provided script in `benchmarks/scripts/`:
 
 ```bash
 # Run the 'significant' suite with 4 workers
-python3 scripts/benchmark_statest.py --suite significant
+python3 benchmarks/scripts/benchmark_statest.py --suite significant
 
 # Run both sequential and parallel modes
-python3 scripts/benchmark_statest.py --suite significant --sequential
+python3 benchmarks/scripts/benchmark_statest.py --suite significant --sequential
 ```
 
 ## Performance Targets

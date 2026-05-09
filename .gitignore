@@ -26,5 +26,4 @@ AGENTS.md
 mcp-stata-install/
 /worker/.wrangler
 .mcpregistry_*
-benchmarks/history/report_2026-05-09_optimization.md
-benchmarks/history/run_20260509_144224.md
+benchmarks/history/*.md
