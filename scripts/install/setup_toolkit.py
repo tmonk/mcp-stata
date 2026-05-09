@@ -486,22 +486,93 @@ def register_generic_skills(*, project_root: Path | None = None) -> Path | None:
 
 
 def _ensure_symlink(link: Path, target: Path) -> bool:
-    if link.is_symlink():
-        if link.resolve() == target.resolve():
-            return True
-        link.unlink()
-    elif link.exists():
-        print_warning(f"Skipping {link}: existing directory or file would be overwritten.")
+    """Install `target` at `link` using the highest-fidelity primitive available.
+
+    Tries in order:
+      1. Real symlink. Free on POSIX; on Windows requires either Administrator
+         privileges or Developer Mode (WinError 1314 otherwise).
+      2. Directory junction (`mklink /J`). Windows-only, no elevated privileges
+         required for unprivileged users, same read semantics as a symlink.
+      3. Copy via shutil.copytree. Last resort; works everywhere but won't
+         reflect upstream source changes without reinstalling.
+
+    The install paths are namespace-owned by mcp-stata (e.g.
+    ~/.agents/skills/mcp-stata), so any pre-existing item at `link` is
+    treated as a previous install and replaced.
+    """
+    target_resolved = target.resolve()
+    if _link_points_to(link, target_resolved):
+        return True
+    _remove_link_or_dir(link)
+
+    try:
+        link.symlink_to(target)
+        return True
+    except OSError as exc:
+        if os.name != "nt":
+            raise
+        symlink_err = exc
+
+    try:
+        # stdout/stderr suppressed: we only care about the exit code, and
+        # mklink's localized stderr can't always be decoded under the active
+        # codepage (e.g. de-DE cp1252), which would surface as UnicodeDecodeError.
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return True
+    except (OSError, subprocess.CalledProcessError):
+        pass
+
+    try:
+        shutil.copytree(target, link)
+        return True
+    except OSError as copy_exc:
+        print_warning(
+            f"Could not link or copy {target} -> {link}: "
+            f"symlink failed ({symlink_err}); junction and copy also failed ({copy_exc})."
+        )
         return False
-    link.symlink_to(target)
-    return True
+
+
+def _link_points_to(link: Path, target_resolved: Path) -> bool:
+    """True if `link` is a symlink or junction whose target resolves to `target_resolved`."""
+    try:
+        existing = Path(os.readlink(link))
+    except OSError:
+        return False
+    if not existing.is_absolute():
+        existing = link.parent / existing
+    try:
+        return existing.resolve() == target_resolved
+    except OSError:
+        return False
+
+
+def _remove_link_or_dir(link: Path) -> None:
+    """Remove `link` regardless of whether it is a symlink, junction, or directory."""
+    if not link.exists() and not link.is_symlink():
+        return
+    try:
+        link.unlink()
+        return
+    except (OSError, IsADirectoryError):
+        pass
+    try:
+        os.rmdir(link)  # removes empty dirs and Windows junctions without touching target
+        return
+    except OSError:
+        pass
+    shutil.rmtree(link, ignore_errors=True)
 
 
 def _remove_symlink(link: Path) -> bool:
-    if link.is_symlink():
-        link.unlink()
-        return True
-    return False
+    """Remove a previously installed link (symlink, junction, or copied tree)."""
+    if not link.exists() and not link.is_symlink():
+        return False
+    _remove_link_or_dir(link)
+    return not link.exists() and not link.is_symlink()
 
 
 def remove_json_server_config(path: Path, *, top_key: str) -> tuple[Path, bool]:
