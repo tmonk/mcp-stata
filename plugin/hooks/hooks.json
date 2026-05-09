@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'mcp-stata loaded. Use /stata or ask whether the toolkit is available.'"
+            "command": "claude plugin marketplace update mcp-stata-marketplace 2>/dev/null; claude plugin update mcp-stata@mcp-stata-marketplace 2>/dev/null; echo 'mcp-stata loaded. Use /stata or ask whether the toolkit is available. To update hooks and MCP, re-run: curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh | bash'",
+            "timeout": 15
           }
         ]
       }

@@ -26,6 +26,7 @@ from agents import Agent, all_supported_agent_names, discover_agents
 CANONICAL_SERVER_NAME = "mcp-stata"
 LEGACY_SERVER_NAMES = ("mcp_stata",)
 PACKAGE_NAME = "mcp-stata"
+CLAUDE_MARKETPLACE_GITHUB_REF = "tmonk/mcp-stata"
 DEFAULT_SCOPE = "user"
 # NOTE: Zed and Continue are intentionally NOT supported by mcp-stata at this time.
 SUPPORTED_AGENTS = ("claude", "codex", "gemini", "cursor", "windsurf", "vscode")
@@ -413,7 +414,7 @@ def install_claude_marketplace(
     _cleanup_claude_marketplace(scope=scope, project_root=project_root)
 
     try:
-        run_logged_subprocess(["claude", "plugin", "marketplace", "add", str(root), "--scope", scope], check=True)
+        run_logged_subprocess(["claude", "plugin", "marketplace", "add", CLAUDE_MARKETPLACE_GITHUB_REF, "--scope", scope], check=True)
     except Exception as exc:
         print_warning(f"Claude marketplace add did not complete cleanly: {exc}")
 
@@ -432,12 +433,10 @@ def install_codex_marketplace(
     if not shutil.which("codex"):
         return False
 
-    root = get_project_root(project_root)
-    marketplace_root = root / ".agents" / "plugins"
     _cleanup_codex_marketplace(project_root=project_root)
 
     try:
-        run_logged_subprocess(["codex", "plugin", "marketplace", "add", str(marketplace_root)], check=True)
+        run_logged_subprocess(["codex", "plugin", "marketplace", "add", CLAUDE_MARKETPLACE_GITHUB_REF, "--sparse", ".agents/plugins"], check=True)
         return True
     except Exception as exc:
         print_warning(f"Codex marketplace install failed; falling back to direct configuration: {exc}")
@@ -452,24 +451,17 @@ def _best_effort_subprocess(cmd: list[str]) -> None:
 
 
 def _cleanup_claude_marketplace(*, scope: str, project_root: Path | None = None) -> None:
-    root = get_project_root(project_root)
     marketplace_name = "mcp-stata-marketplace"
     for cmd in (
         ["claude", "plugin", "uninstall", f"{CANONICAL_SERVER_NAME}@{marketplace_name}", "--scope", scope],
         ["claude", "plugin", "uninstall", CANONICAL_SERVER_NAME, "--scope", scope],
-        ["claude", "plugin", "marketplace", "remove", str(root)],
+        ["claude", "plugin", "marketplace", "remove", marketplace_name],
     ):
         _best_effort_subprocess(cmd)
 
 
 def _cleanup_codex_marketplace(*, project_root: Path | None = None) -> None:
-    root = get_project_root(project_root)
-    marketplace_root = root / ".agents" / "plugins"
-    for cmd in (
-        ["codex", "plugin", "uninstall", CANONICAL_SERVER_NAME],
-        ["codex", "plugin", "marketplace", "remove", str(marketplace_root)],
-    ):
-        _best_effort_subprocess(cmd)
+    _best_effort_subprocess(["codex", "plugin", "marketplace", "remove", "mcp-stata"])
 
 
 def install_codex_skills(*, project_root: Path | None = None) -> Path | None:

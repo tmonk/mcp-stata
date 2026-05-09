@@ -319,8 +319,8 @@ def test_claude_marketplace_reinstall_cleans_our_old_entries_first(mock_home):
     expected_prefixes = [
         ["claude", "plugin", "uninstall", "mcp-stata@mcp-stata-marketplace", "--scope", "project"],
         ["claude", "plugin", "uninstall", "mcp-stata", "--scope", "project"],
-        ["claude", "plugin", "marketplace", "remove", str(project_root)],
-        ["claude", "plugin", "marketplace", "add", str(project_root), "--scope", "project"],
+        ["claude", "plugin", "marketplace", "remove", "mcp-stata-marketplace"],
+        ["claude", "plugin", "marketplace", "add", "tmonk/mcp-stata", "--scope", "project"],
         ["claude", "plugin", "install", "mcp-stata@mcp-stata-marketplace", "--scope", "project"],
     ]
     assert [cmd for cmd, _ in calls] == expected_prefixes
@@ -340,12 +340,11 @@ def test_codex_marketplace_reinstall_cleans_our_old_entries_first(mock_home):
 
     assert ok is True
     expected = [
-        ["codex", "plugin", "uninstall", "mcp-stata"],
-        ["codex", "plugin", "marketplace", "remove", str(project_root / ".agents" / "plugins")],
-        ["codex", "plugin", "marketplace", "add", str(project_root / ".agents" / "plugins")],
+        ["codex", "plugin", "marketplace", "remove", "mcp-stata"],
+        ["codex", "plugin", "marketplace", "add", "tmonk/mcp-stata", "--sparse", ".agents/plugins"],
     ]
     assert [cmd for cmd, _ in calls] == expected
-    assert [check for _, check in calls] == [False, False, False]
+    assert [check for _, check in calls] == [False, False]
 
 def test_install_gemini_extension(mock_home):
     link = setup_toolkit.install_gemini_extension()

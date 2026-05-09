@@ -109,6 +109,9 @@ show_success() {
   printf "   %b%s%b %s\n" "${YELLOW}${BOLD}" "3." "${RESET}" "/stata-run regress price mpg"
   printf "   %b%s%b %s\n" "${YELLOW}${BOLD}" "4." "${RESET}" "/stata-results"
   blank
+  printf "%b%s%b\n" "${CYAN}${BOLD}" "TO UPDATE" "${RESET}"
+  printf "   %b%s%b\n" "${CYAN}" "curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh | bash" "${RESET}"
+  blank
   printf "%b%s%b %s\n" "${DIM}" "log    " "${RESET}" "$LOG_FILE"
   printf "%b%s%b %s\n" "${DIM}" "contact" "${RESET}" "$AUTHOR_EMAIL"
 }

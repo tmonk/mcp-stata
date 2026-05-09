@@ -255,6 +255,9 @@ class TestMain:
         _write_json(root / ".agents/plugins/marketplace.json", {
             "plugins": [{"name": "mcp-stata", "version": version}]
         })
+        _write_json(root / ".claude-plugin/marketplace.json", {
+            "plugins": [{"name": "mcp-stata", "version": version}]
+        })
 
         # Markdown skills and manifests
         for skill in ["stata-toolkit", "stata-run", "stata-inspect"]:
@@ -290,6 +293,7 @@ class TestMain:
         ])
         monkeypatch.setattr(sync, "PLUGIN_JSON_NESTED", [
             plugin / ".agents/plugins/marketplace.json",
+            plugin / ".claude-plugin/marketplace.json",
         ])
         monkeypatch.setattr(sync, "PLUGIN_MANIFEST_GLOB", [
             plugin / "skills" / "*" / "manifest.json",
@@ -308,6 +312,8 @@ class TestMain:
         assert _read_json(plugin / "gemini-extension.json")["version"] == "2.0.0"
         # marketplace nested
         data = _read_json(plugin / ".agents/plugins/marketplace.json")
+        assert data["plugins"][0]["version"] == "2.0.0"
+        data = _read_json(plugin / ".claude-plugin/marketplace.json")
         assert data["plugins"][0]["version"] == "2.0.0"
         # manifests
         for skill in ["stata-toolkit", "stata-run", "stata-inspect"]:

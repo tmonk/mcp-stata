@@ -25,6 +25,7 @@ PLUGIN_JSON_FILES = [
 # JSON files where version lives inside a nested array (plugins[].version).
 PLUGIN_JSON_NESTED = [
     PLUGIN_DIR / ".agents" / "plugins" / "marketplace.json",
+    PLUGIN_DIR / ".claude-plugin" / "marketplace.json",
 ]
 
 # Sidecar manifest files with a top-level "version" field.

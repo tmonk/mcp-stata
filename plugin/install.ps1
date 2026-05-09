@@ -196,6 +196,11 @@ function Show-Success {
     Write-Host '   4.' -ForegroundColor Yellow -NoNewline
     Write-Host ' /stata-results'
     Write-Host ''
+    Write-Host ''
+    Write-Host 'TO UPDATE' -ForegroundColor Cyan -NoNewline
+    Write-Host ''
+    Write-Host '   irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex' -ForegroundColor Cyan
+    Write-Host ''
     Write-Host ('log'.PadRight(8)) -ForegroundColor DarkGray -NoNewline
     Write-Host $LogFile
     Write-Host ('contact'.PadRight(8)) -ForegroundColor DarkGray -NoNewline
