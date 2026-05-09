@@ -47,10 +47,17 @@ function Get-Version {
 
     $root = if ($script:InstallRepoRoot) { $script:InstallRepoRoot } else { $RepoRoot }
 
-    # 1. Try git if in a checkout
+    # 1. Try git if in a checkout.
+    # Note: under PowerShell 5.1 with $ErrorActionPreference = 'Stop', redirecting a
+    # native command's stderr (`2>$null`) wraps each stderr line in a NativeCommandError
+    # ErrorRecord, which Stop then promotes to a terminating exception. Wrap the call
+    # so a missing/invalid git checkout falls through to the next strategy instead of
+    # aborting the installer (e.g. when bootstrapped via `irm | iex` from $HOME).
     if (Get-Command git -ErrorAction SilentlyContinue) {
-        $v = (git -C $root describe --tags --always --dirty 2>$null) -join ''
-        if ($v) { return $v }
+        try {
+            $v = & git -C $root describe --tags --always --dirty 2>$null
+            if ($LASTEXITCODE -eq 0 -and $v) { return ($v -join '') }
+        } catch {}
     }
 
     # 2. Try pyproject.toml if source is available
