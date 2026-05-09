@@ -21,6 +21,7 @@ SKILLS = [
     "trigger_text": "Show mcp-stata identity, connected tools, and status. Entry point for mcp-stata, an agentic toolkit for Stata.",
     "invocation_type": "slash-command",
     "references": [],
+    "reference_docs": {},
     "scripts": [],
     "body": "ToolSearch query=\"select:stata_manage_session\"\n\nCall `stata_manage_session(action=\"detect\")` to verify the Stata connection. If `stata_manage_session(action=\"detect\")` fails, report the error and suggest the user set `STATA_PATH` to the Stata executable path.\n\nThen respond with:\n```\n                                    __        __       \n   ____ ___  _________        _____/ /_____ _/ /_____ _\n  / __ `__ \\/ ___/ __ \\______/ ___/ __/ __ `/ __/ __ `/\n / / / / / / /__/ /_/ /_____(__  ) /_/ /_/ / /_/ /_/ / \n/_/ /_/ /_/\\___/ .___/     /____/\\__/\\__,_/\\__/\\__,_/  \n              /_/                                        mcp-stata\n\nmcp-stata is connected. Stata {version} ({flavor}) detected.\n\nMCP Tools:\n  stata_run              \u2014 execute do-file code & ad-hoc commands\n  stata_load_data        \u2014 load datasets (sysuse / webuse / path)\n  stata_inspect_data     \u2014 describe, codebook, summary, list, get rows\n  stata_manage_graphs    \u2014 list, export, or export_all graphs\n  stata_get_help         \u2014 Stata command documentation\n  stata_get_results      \u2014 fetch r() / e() / s() stored results\n  stata_read_log         \u2014 tail or search log output\n  stata_manage_session   \u2014 create/stop sessions, history diff, UI channel\n  stata_task_status      \u2014 poll background task progress\n  stata_control          \u2014 break or cancel running work\n\nSlash Commands:\n  /stata-run <code>      \u2014 run arbitrary Stata code\n  /stata-inspect [var]   \u2014 describe/summarize current dataset\n  /stata-results         \u2014 fetch stored r()/e()/s() results\n  /stata-graph [name]    \u2014 export graph(s)\n  /stata-lint <path>     \u2014 lint a .do or .ado file\n  /stata-log [path]      \u2014 tail log output\n  /stata-help <topic>    \u2014 look up Stata documentation\n\nResources (MCP):\n  stata://data/summary        stata://data/metadata\n  stata://graphs/list         stata://variables/list\n  stata://results/stored\n```",
     "path": "plugin/skills/stata/SKILL.md",
@@ -47,6 +48,9 @@ SKILLS = [
     "references": [
       "references/designs.md"
     ],
+    "reference_docs": {
+      "references/designs.md": "# Causal Designs\n\nUse this checklist:\n\n- DiD and event study: pre-trends, treatment timing, cohort composition\n- IV: first stage strength, exclusion concerns, interpretation of LATE\n- RD: bandwidth, polynomial sensitivity, manipulation checks\n- Matching and weighting: overlap, balance, trimming, estimand clarity\n\nReport both what the estimate says and how credible the identifying assumptions look.\n"
+    },
     "scripts": [],
     "body": "# Causal Inference\n\nUse this skill when the question is causal, not merely predictive.\n\n1. Clarify the identification strategy.\n2. Check the right diagnostics and assumptions for the design.\n3. Separate point estimates from identification credibility.\n\nRead `references/designs.md` for design-specific guidance.\n",
     "path": "plugin/skills/stata-causal-inference/SKILL.md",
@@ -73,6 +77,9 @@ SKILLS = [
     "references": [
       "references/checklist.md"
     ],
+    "reference_docs": {
+      "references/checklist.md": "# Data Audit Checklist\n\nReview the dataset in this order:\n\n1. Structure: observations, variables, types, labels.\n2. Summary statistics: missingness, ranges, obvious anomalies.\n3. Key identifiers: duplicates, accidental many-to-many merges, unlabeled categories.\n4. Variable readiness: missing labels, odd storage types, suspicious sentinel values.\n5. Documentation readiness: what a coauthor or referee would need explained.\n\nUseful targeted checks:\n\n- `duplicates report id`\n- `count if missing(var)`\n- `tab var, missing`\n- consistency checks with `assert`\n\nReport:\n\n- what was checked,\n- concrete risks found,\n- what appears clean,\n- what still needs manual confirmation.\n"
+    },
     "scripts": [],
     "body": "# Data Audit\n\nRun a compact but explicit audit of the active dataset.\n\n1. Start with `stata_inspect_data(action=\"describe\")` and `stata_inspect_data(action=\"summary\")`.\n2. Use targeted `codebook`, `search`, and `stata_run` checks for key variables or suspicious patterns.\n3. Report concrete issues, not generic reassurance.\n\nRead `references/checklist.md` for the full audit checklist and recommended output format.\n",
     "path": "plugin/skills/stata-data-audit/SKILL.md",
@@ -99,6 +106,9 @@ SKILLS = [
     "references": [
       "references/lineage.md"
     ],
+    "reference_docs": {
+      "references/lineage.md": "# Lineage Checklist\n\nTrack:\n\n- source datasets,\n- merge keys and merge types,\n- sample restrictions,\n- generated variables,\n- saved intermediates,\n- outputs that depend on each stage.\n\nFlag any step that is hard to reproduce from committed code and named inputs.\n"
+    },
     "scripts": [],
     "body": "# Data Provenance\n\nUse this skill when lineage and reproducibility matter.\n\n1. Map the sequence of source files and transformations.\n2. Flag untracked merges, overwrites, and silent sample restrictions.\n3. Produce a concise provenance narrative a coauthor can audit.\n\nRead `references/lineage.md` for the provenance checklist.\n",
     "path": "plugin/skills/stata-data-provenance/SKILL.md",
@@ -125,6 +135,9 @@ SKILLS = [
     "references": [
       "references/troubleshooting.md"
     ],
+    "reference_docs": {
+      "references/troubleshooting.md": "# Troubleshooting Flow\n\nStart with:\n\n1. `stata_manage_session(action=\"detect\", include_packages=True)`\n2. the smallest failing `stata_run(...)`\n3. `stata_read_log` if the result is truncated\n\nCommon buckets:\n\n- `STATA_PATH` missing or wrong\n- missing user-written packages such as `reghdfe` or `gtools`\n- startup/profile side effects\n- permissions problems affecting temp files, logs, or graphs\n- workstation differences across lab or coauthor machines\n\nUse `scripts/report_environment.py` to summarize the environment deterministically before recommending a fix.\n"
+    },
     "scripts": [
       "scripts/report_environment.py"
     ],
@@ -153,6 +166,7 @@ SKILLS = [
     "trigger_text": "List, export, and review Stata graphs from the current session.",
     "invocation_type": "slash-command",
     "references": [],
+    "reference_docs": {},
     "scripts": [],
     "body": "1. Call `stata_manage_graphs(action=\"list\")` to see all graphs in memory, with the active graph marked.\n\n2. If an argument (graph name) was provided:\n   - Call `stata_manage_graphs(action=\"export\", graph_name=<argument>, format=\"png\")` and display the exported file path.\n\n3. If no argument was provided and graphs exist:\n   - Call `stata_manage_graphs(action=\"export_all\", format=\"png\")` to export all graphs.\n   - Display all exported file paths for the user to inspect.\n\n4. If no graphs are in memory, tell the user to create a graph first (e.g., `/stata-run histogram price` or `/stata-run scatter price mpg`).\n\nAfter export, review the graph(s): check titles, axis labels, legends, and whether the plot matches expectations. Report any issues.\n",
     "path": "plugin/skills/stata-graph/SKILL.md",
@@ -179,6 +193,7 @@ SKILLS = [
     "trigger_text": "Look up Stata command documentation and display formatted help text.",
     "invocation_type": "slash-command",
     "references": [],
+    "reference_docs": {},
     "scripts": [],
     "body": "The argument is the Stata command or help topic (e.g., \"regress\", \"graph\", \"if\", \"egen\", \"frames\").\n\nCall `stata_get_help(topic=<argument>, plain_text=False, merge_paragraphs=True)`.\n\nDisplay the help text. The response is formatted as Markdown. Present:\n1. Syntax section first\n2. Description and options\n3. Examples if present\n\nIf no argument is provided, ask the user which Stata command they want help with.\n\nIf the help topic is not found (error in response), suggest:\n- Checking spelling (e.g., \"summarize\" not \"summarise\")\n- Using `help contents` as the topic for the help index\n- Searching for related commands with `/stata-inspect` using `action=\"search\"`\n",
     "path": "plugin/skills/stata-help/SKILL.md",
@@ -205,6 +220,7 @@ SKILLS = [
     "trigger_text": "Describe and summarize the current dataset in memory. Optionally inspect a specific variable with codebook.",
     "invocation_type": "slash-command",
     "references": [],
+    "reference_docs": {},
     "scripts": [],
     "body": "If an argument (variable name) is provided:\n1. Call `stata_inspect_data(action=\"codebook\", query=<variable>)` and display the codebook output.\n\nIf no argument is provided:\n1. Call `stata_inspect_data(action=\"describe\")` \u2014 display the dataset structure (obs, vars, types, labels).\n2. Call `stata_inspect_data(action=\"summary\")` \u2014 display descriptive statistics (N, mean, sd, min, max).\n3. Present both results in a clear, readable format.\n\nIf either call returns an error indicating no data in memory, tell the user to load data first (e.g., `/stata-run sysuse auto, clear` or `stata_load_data(\"auto\")`).\n",
     "path": "plugin/skills/stata-inspect/SKILL.md",
@@ -231,6 +247,7 @@ SKILLS = [
     "trigger_text": "Run static analysis on a Stata .do or .ado file and report style and best-practice issues.",
     "invocation_type": "slash-command",
     "references": [],
+    "reference_docs": {},
     "scripts": [],
     "body": "The argument is the absolute path to a `.do` or `.ado` file.\n\n1. Call `stata_inspect_data(action=\"lint\", path=<argument>)`.\n\n2. Display the lint results, grouping issues by severity or type:\n   - Line number and issue description for each finding\n   - Common issues: use of `cd`, `preserve`/`restore`, `#delimit`, hardcoded paths, long lines, missing `version` statement\n\n3. For each category of issue found, briefly explain the modern alternative (refer to the **stata-modernize** skill for details).\n\n4. If the file is clean, confirm: \"No issues found in `<filename>`.\"\n\n5. If the path argument is missing, tell the user to provide an absolute path to a `.do` or `.ado` file.\n",
     "path": "plugin/skills/stata-lint/SKILL.md",
@@ -257,6 +274,7 @@ SKILLS = [
     "trigger_text": "Tail, read, or search a Stata log file from a previous command or background task.",
     "invocation_type": "slash-command",
     "references": [],
+    "reference_docs": {},
     "scripts": [],
     "body": "Parse the argument:\n- First token: log file path or background task_id\n- Second token (optional): search term\n\n**If a search term is provided**, call:\n```\nstata_read_log(path=<first_token>, query=<second_token>, before=2, after=2, regex=False)\n```\nDisplay matching lines with context.\n\n**If no search term**, call:\n```\nstata_read_log(path=<first_token>, tail_lines=50)\n```\nDisplay the last 50 lines of the log.\n\n**If the argument looks like a task_id** (not a file path), call:\n```\nstata_read_log(task_id=<argument>, tail_lines=50)\n```\n\nIf no argument is provided, tell the user to supply a log file path or task_id. These are returned by `stata_run` in the `log_path` field of the JSON response.\n\nIf the log is large and truncated, note the `offset` for reading more (the response includes the current byte offset).\n",
     "path": "plugin/skills/stata-log/SKILL.md",
@@ -283,6 +301,9 @@ SKILLS = [
     "references": [
       "references/patterns.md"
     ],
+    "reference_docs": {
+      "references/patterns.md": "# Modernization Patterns\n\nPrefer these replacements:\n\n- `preserve` / `restore` -> frames and `frlink` / `frget`\n- `regress y x i.fe` with large FE sets -> `reghdfe`\n- `egen` aggregations on large data -> `gegen` / `gcollapse`\n- `cd` and hard-coded working directories -> project locals or globals\n- `#delimit ;` -> standard line continuation with `///`\n\nWhen modernizing, explain:\n\n- what the old pattern risks,\n- why the replacement is better,\n- whether the replacement depends on Stata 16+ or external packages.\n"
+    },
     "scripts": [],
     "body": "# Modernize Stata\n\nUse this skill when a user wants stronger Stata code, not just working Stata code.\n\n1. Identify the current anti-patterns.\n2. Recommend or implement modern replacements with clear rationale.\n3. Favor frames, `reghdfe`, `gtools`, portable paths, and explicit state handling.\n\nRead `references/patterns.md` for common replacements and examples.\n",
     "path": "plugin/skills/stata-modernize/SKILL.md",
@@ -309,6 +330,9 @@ SKILLS = [
     "references": [
       "references/power-checklist.md"
     ],
+    "reference_docs": {
+      "references/power-checklist.md": "# Power Checklist\n\nState:\n\n- estimand,\n- variance assumptions,\n- effect size or MDE,\n- alpha and power targets,\n- cluster structure when relevant.\n\nDo not blur ex ante design calculations with ex post excuses for noisy estimates.\n"
+    },
     "scripts": [],
     "body": "# Power Analysis\n\nUse this skill when precision and detectability are the focus.\n\n1. Clarify the estimand and target effect size.\n2. State the assumptions behind the power calculation.\n3. Distinguish formal power analysis from ex post rationalization.\n\nRead `references/power-checklist.md` for the reporting checklist.\n",
     "path": "plugin/skills/stata-power-analysis/SKILL.md",
@@ -335,6 +359,9 @@ SKILLS = [
     "references": [
       "references/checklist.md"
     ],
+    "reference_docs": {
+      "references/checklist.md": "# Publication QA Checklist\n\nFor tables:\n\n- coefficient labels clear enough for readers\n- sample size consistent across specifications\n- clustering and FE notes explicit\n- fit statistics present when expected\n- rounding and notation consistent\n\nFor figures:\n\n- title, subtitle, notes, axis labels, legends\n- scale choices do not obscure interpretation\n- graph defaults do not look exploratory\n- colors and categories remain legible when printed\n\nUse `scripts/graph_qa_checklist.py` to turn graph metadata into a deterministic review scaffold.\n"
+    },
     "scripts": [
       "scripts/graph_qa_checklist.py"
     ],
@@ -363,6 +390,9 @@ SKILLS = [
     "references": [
       "references/response-patterns.md"
     ],
+    "reference_docs": {
+      "references/response-patterns.md": "# Response Patterns\n\nFor each referee or coauthor request:\n\n1. restate the request,\n2. define the exact rerun or robustness check,\n3. capture the output and any changed interpretation,\n4. note what remains unchanged,\n5. preserve the audit trail.\n\nAvoid sprawling exploratory reruns that are not tied to the criticism being answered.\n"
+    },
     "scripts": [],
     "body": "# Referee Response\n\nUse this skill when the task is to answer a critique rather than merely rerun code.\n\n1. Translate the critique into a finite set of empirical checks.\n2. Keep outputs tied to the exact request.\n3. Separate confirmed findings, changed results, and unresolved issues.\n\nRead `references/response-patterns.md` for the workflow template.\n",
     "path": "plugin/skills/stata-referee-response/SKILL.md",
@@ -389,6 +419,9 @@ SKILLS = [
     "references": [
       "references/workflow.md"
     ],
+    "reference_docs": {
+      "references/workflow.md": "# Replication Workflow\n\n1. Identify the authoritative entrypoint.\n2. Run the baseline cleanly and save the full log.\n3. Capture stored results after each model.\n4. Compare requested variants systematically.\n5. Distinguish environment failures from substantive result changes.\n\nDo not say a result replicates unless the target output materially matches.\n\nUse:\n\n- `scripts/compare_specs.py` for structured coefficient/spec comparisons\n- `scripts/summarize_log.py` for long replication logs\n"
+    },
     "scripts": [
       "scripts/compare_specs.py",
       "scripts/summarize_log.py"
@@ -418,6 +451,7 @@ SKILLS = [
     "trigger_text": "Fetch and display stored r(), e(), and s() results from the last Stata command.",
     "invocation_type": "slash-command",
     "references": [],
+    "reference_docs": {},
     "scripts": [],
     "body": "Call `stata_get_results(include_matrices=True, as_json=True)`.\n\nPresent the results in a structured format:\n- **r() scalars**: name \u2192 value pairs (e.g., r(N), r(mean), r(sd))\n- **e() scalars**: model-level results (e.g., e(N), e(r2), e(F))\n- **e() matrices**: if present, display b (coefficients) and V (variance-covariance) as formatted tables\n- **s() macros**: string results if any\n\nIf no results are stored (empty response), tell the user to run a Stata command first (e.g., `regress`, `summarize`, `ttest`).\n\nIf the user needs Mata state, note they can ask you to call `stata_get_results(include_mata=True)`.\n",
     "path": "plugin/skills/stata-results/SKILL.md",
@@ -445,6 +479,7 @@ SKILLS = [
     "trigger_text": "Run arbitrary Stata code or a .do file and display the result.",
     "invocation_type": "slash-command",
     "references": [],
+    "reference_docs": {},
     "scripts": [],
     "body": "The argument is the Stata code or absolute path to a `.do` file to execute.\n\n1. If the argument ends in `.do` or `.ado`, call:\n   ```\n   stata_run(code=<argument>, is_file=True, echo=True, as_json=True)\n   ```\n   Otherwise call:\n   ```\n   stata_run(code=<argument>, echo=True, as_json=True)\n   ```\n\n2. If `success` is `true`, display the `stdout` output. Note the output is truncated to 5,000 chars; if the response includes a `log_path`, offer to tail the full log with `/stata-log <log_path>`.\n\n3. If `success` is `false`, display the error message and `rc` code. Suggest using `/stata-lint <path>` for syntax issues or `/stata-help <command>` for documentation.\n\n4. If the command produces graphs, note that `/stata-graph` can export them.\n",
     "path": "plugin/skills/stata-run/SKILL.md",
@@ -469,6 +504,7 @@ SKILLS = [
     "trigger_text": "Install, configure, update, or verify mcp-stata across Claude Code, Codex, Gemini CLI, Cursor, Windsurf, and VS Code. Activate when users ask to set up the Stata toolkit or troubleshoot the installation.",
     "invocation_type": "slash-command",
     "references": [],
+    "reference_docs": {},
     "scripts": [],
     "body": "# Setup and Verification\n\nUse the shared installer and verification flow instead of hand-writing per-agent config unless the user explicitly asks for manual steps.\n\n## Preferred Install Commands\n\nProject-shared install:\n\n```bash\nbash plugin/install.sh --scope project\n```\n\nPersonal install:\n\n```bash\nbash plugin/install.sh --scope user\n```\n\nSpecific agent:\n\n```bash\nbash plugin/install.sh --agent codex\n```\n\nPin a version if a lab wants to:\n\n```bash\nbash plugin/install.sh --version 2.5.1\n```\n\nOffline/local source:\n\n```bash\nbash plugin/install.sh --local-source /path/to/mcp-stata\n```\n\nLive verification:\n\n```bash\nbash plugin/install.sh --verify\n```\n\n## What the Installer Does\n\n- Uses the canonical server id `mcp-stata`\n- Writes project-scoped configs where the client supports them\n- Falls back to user-scoped config where project scope is not first-class\n- Installs Codex skills into the Codex skills directory\n- Installs the Gemini extension from `plugin/gemini-extension.json`\n- Registers shared `~/.agents/skills/mcp-stata` symlinks for compatible agents\n- Supports latest-by-default installs and explicit version pinning\n\n## Verification Standard\n\nWhen the user asks whether setup is complete, verify more than \u201cthe file exists\u201d:\n\n1. Stata discovery and edition\n2. `uv` / `uvx` availability\n3. package availability for `reghdfe` and `gtools`\n4. graph-export readiness\n5. log-path emission for command output\n6. startup/profile behavior\n\nIf live verification is not possible on the current machine, state exactly what remains unverified.\n\n## Troubleshooting\n\n- If Stata is not discovered, tell the user to set `STATA_PATH`.\n- If a user-managed machine blocks temp files, logs, or graph export, use the **stata-environment-diagnose** skill.\n- If project-wide configs are undesirable, re-run with `--scope user`.\n",
     "path": "plugin/skills/stata-setup/SKILL.md",
@@ -495,6 +531,9 @@ SKILLS = [
     "references": [
       "references/table-patterns.md"
     ],
+    "reference_docs": {
+      "references/table-patterns.md": "# Table Patterns\n\nReview:\n\n- column comparability,\n- sample size drift,\n- coefficient labels,\n- notes for controls, FE, clustering, and weights,\n- consistent rounding.\n\nTreat a table as reader-facing prose in numeric form, not just extracted estimates.\n"
+    },
     "scripts": [
       "scripts/check_table_ready.py"
     ],
@@ -525,6 +564,11 @@ SKILLS = [
       "references/research-workflows.md",
       "references/error-handling.md"
     ],
+    "reference_docs": {
+      "references/tool-reference.md": "# Tool Reference\n\nUse these tools as the core Stata execution surface:\n\n- `stata_run` for ad hoc commands and `.do` files.\n- `stata_load_data` to load a dataset before analysis.\n- `stata_inspect_data` for `describe`, `summary`, `codebook`, `search`, `list`, `get`, and `lint`.\n- `stata_get_results` for stored `r()`, `e()`, and `s()` results.\n- `stata_manage_graphs` for listing and exporting graphs.\n- `stata_manage_session` for detection, session lifecycle, UI-channel access, and history diff.\n- `stata_task_status` and `stata_control` for background jobs and interrupts.\n- `stata_read_log` for full logs when direct output is truncated.\n\nWhen the user asks whether mcp-stata is available, verify with `stata_manage_session(action=\"detect\")` and include the detected Stata version and flavor in the reply.\n",
+      "references/research-workflows.md": "# Research Workflows\n\nUse the toolkit as the entrypoint for these paper-oriented workflows:\n\n- Replication and robustness checks.\n- Data audit before estimation.\n- Publication QA for tables and graphs.\n- Referee-response re-runs with specification comparisons.\n- Causal inference workflows where identifying assumptions and diagnostics matter.\n- Environment diagnosis on university-managed or locked-down machines.\n\nPrefer the specialized skills whenever a workflow has repeated judgment points or multiple execution steps.\n",
+      "references/error-handling.md": "# Error Handling\n\n- Surface `rc` codes explicitly when Stata returns an error.\n- If output is truncated, read the full `log_path` with `stata_read_log`.\n- Use `trace=True` for unclear do-file failures.\n- Use `background=True` plus `stata_task_status` for long-running jobs.\n- Use `stata_control(action=\"break\", id=<session_id>)` to interrupt a running command in-session.\n- Use `stata_control(action=\"cancel\", id=<task_id>)` for background-task cancellation.\n"
+    },
     "scripts": [],
     "body": "# Stata Toolkit Dispatcher\n\nUse this skill as the default router for Stata work.\n\n1. Confirm the `mcp-stata` MCP server is available.\n2. Route quick tasks to the direct slash-style skills:\n   - `stata-run`\n   - `stata-inspect`\n   - `stata-results`\n   - `stata-graph`\n   - `stata-help`\n   - `stata-log`\n   - `stata-lint`\n3. Route research workflows to the specialized skills:\n   - `stata-data-audit`\n   - `stata-environment-diagnose`\n   - `stata-modernize`\n   - `stata-publication-qa`\n   - `stata-replication`\n   - `stata-causal-inference`\n   - `stata-table-builder`\n   - `stata-power-analysis`\n   - `stata-data-provenance`\n   - `stata-referee-response`\n4. Use the MCP tools directly when the user needs ad hoc Stata execution or a mixed workflow.\n\nRead these references when needed:\n- `references/tool-reference.md` for the tool map and identity response.\n- `references/research-workflows.md` for end-to-end economics workflows.\n- `references/error-handling.md` for log, `rc`, and background-task handling.\n",
     "path": "plugin/skills/stata-toolkit/SKILL.md",
@@ -699,6 +743,31 @@ RESOURCES = [
     "description": "The most recent scored eval report, when available."
   }
 ]
+
+CHECKLISTS = {
+  "causal-inference": "# Causal Designs\n\nUse this checklist:\n\n- DiD and event study: pre-trends, treatment timing, cohort composition\n- IV: first stage strength, exclusion concerns, interpretation of LATE\n- RD: bandwidth, polynomial sensitivity, manipulation checks\n- Matching and weighting: overlap, balance, trimming, estimand clarity\n\nReport both what the estimate says and how credible the identifying assumptions look.\n",
+  "stata-causal-inference": "# Causal Designs\n\nUse this checklist:\n\n- DiD and event study: pre-trends, treatment timing, cohort composition\n- IV: first stage strength, exclusion concerns, interpretation of LATE\n- RD: bandwidth, polynomial sensitivity, manipulation checks\n- Matching and weighting: overlap, balance, trimming, estimand clarity\n\nReport both what the estimate says and how credible the identifying assumptions look.\n",
+  "data-audit": "# Data Audit Checklist\n\nReview the dataset in this order:\n\n1. Structure: observations, variables, types, labels.\n2. Summary statistics: missingness, ranges, obvious anomalies.\n3. Key identifiers: duplicates, accidental many-to-many merges, unlabeled categories.\n4. Variable readiness: missing labels, odd storage types, suspicious sentinel values.\n5. Documentation readiness: what a coauthor or referee would need explained.\n\nUseful targeted checks:\n\n- `duplicates report id`\n- `count if missing(var)`\n- `tab var, missing`\n- consistency checks with `assert`\n\nReport:\n\n- what was checked,\n- concrete risks found,\n- what appears clean,\n- what still needs manual confirmation.\n",
+  "stata-data-audit": "# Data Audit Checklist\n\nReview the dataset in this order:\n\n1. Structure: observations, variables, types, labels.\n2. Summary statistics: missingness, ranges, obvious anomalies.\n3. Key identifiers: duplicates, accidental many-to-many merges, unlabeled categories.\n4. Variable readiness: missing labels, odd storage types, suspicious sentinel values.\n5. Documentation readiness: what a coauthor or referee would need explained.\n\nUseful targeted checks:\n\n- `duplicates report id`\n- `count if missing(var)`\n- `tab var, missing`\n- consistency checks with `assert`\n\nReport:\n\n- what was checked,\n- concrete risks found,\n- what appears clean,\n- what still needs manual confirmation.\n",
+  "data-provenance": "# Lineage Checklist\n\nTrack:\n\n- source datasets,\n- merge keys and merge types,\n- sample restrictions,\n- generated variables,\n- saved intermediates,\n- outputs that depend on each stage.\n\nFlag any step that is hard to reproduce from committed code and named inputs.\n",
+  "stata-data-provenance": "# Lineage Checklist\n\nTrack:\n\n- source datasets,\n- merge keys and merge types,\n- sample restrictions,\n- generated variables,\n- saved intermediates,\n- outputs that depend on each stage.\n\nFlag any step that is hard to reproduce from committed code and named inputs.\n",
+  "environment-diagnose": "# Troubleshooting Flow\n\nStart with:\n\n1. `stata_manage_session(action=\"detect\", include_packages=True)`\n2. the smallest failing `stata_run(...)`\n3. `stata_read_log` if the result is truncated\n\nCommon buckets:\n\n- `STATA_PATH` missing or wrong\n- missing user-written packages such as `reghdfe` or `gtools`\n- startup/profile side effects\n- permissions problems affecting temp files, logs, or graphs\n- workstation differences across lab or coauthor machines\n\nUse `scripts/report_environment.py` to summarize the environment deterministically before recommending a fix.\n",
+  "stata-environment-diagnose": "# Troubleshooting Flow\n\nStart with:\n\n1. `stata_manage_session(action=\"detect\", include_packages=True)`\n2. the smallest failing `stata_run(...)`\n3. `stata_read_log` if the result is truncated\n\nCommon buckets:\n\n- `STATA_PATH` missing or wrong\n- missing user-written packages such as `reghdfe` or `gtools`\n- startup/profile side effects\n- permissions problems affecting temp files, logs, or graphs\n- workstation differences across lab or coauthor machines\n\nUse `scripts/report_environment.py` to summarize the environment deterministically before recommending a fix.\n",
+  "modernize": "# Modernization Patterns\n\nPrefer these replacements:\n\n- `preserve` / `restore` -> frames and `frlink` / `frget`\n- `regress y x i.fe` with large FE sets -> `reghdfe`\n- `egen` aggregations on large data -> `gegen` / `gcollapse`\n- `cd` and hard-coded working directories -> project locals or globals\n- `#delimit ;` -> standard line continuation with `///`\n\nWhen modernizing, explain:\n\n- what the old pattern risks,\n- why the replacement is better,\n- whether the replacement depends on Stata 16+ or external packages.\n",
+  "stata-modernize": "# Modernization Patterns\n\nPrefer these replacements:\n\n- `preserve` / `restore` -> frames and `frlink` / `frget`\n- `regress y x i.fe` with large FE sets -> `reghdfe`\n- `egen` aggregations on large data -> `gegen` / `gcollapse`\n- `cd` and hard-coded working directories -> project locals or globals\n- `#delimit ;` -> standard line continuation with `///`\n\nWhen modernizing, explain:\n\n- what the old pattern risks,\n- why the replacement is better,\n- whether the replacement depends on Stata 16+ or external packages.\n",
+  "power-analysis": "# Power Checklist\n\nState:\n\n- estimand,\n- variance assumptions,\n- effect size or MDE,\n- alpha and power targets,\n- cluster structure when relevant.\n\nDo not blur ex ante design calculations with ex post excuses for noisy estimates.\n",
+  "stata-power-analysis": "# Power Checklist\n\nState:\n\n- estimand,\n- variance assumptions,\n- effect size or MDE,\n- alpha and power targets,\n- cluster structure when relevant.\n\nDo not blur ex ante design calculations with ex post excuses for noisy estimates.\n",
+  "publication-qa": "# Publication QA Checklist\n\nFor tables:\n\n- coefficient labels clear enough for readers\n- sample size consistent across specifications\n- clustering and FE notes explicit\n- fit statistics present when expected\n- rounding and notation consistent\n\nFor figures:\n\n- title, subtitle, notes, axis labels, legends\n- scale choices do not obscure interpretation\n- graph defaults do not look exploratory\n- colors and categories remain legible when printed\n\nUse `scripts/graph_qa_checklist.py` to turn graph metadata into a deterministic review scaffold.\n",
+  "stata-publication-qa": "# Publication QA Checklist\n\nFor tables:\n\n- coefficient labels clear enough for readers\n- sample size consistent across specifications\n- clustering and FE notes explicit\n- fit statistics present when expected\n- rounding and notation consistent\n\nFor figures:\n\n- title, subtitle, notes, axis labels, legends\n- scale choices do not obscure interpretation\n- graph defaults do not look exploratory\n- colors and categories remain legible when printed\n\nUse `scripts/graph_qa_checklist.py` to turn graph metadata into a deterministic review scaffold.\n",
+  "referee-response": "# Response Patterns\n\nFor each referee or coauthor request:\n\n1. restate the request,\n2. define the exact rerun or robustness check,\n3. capture the output and any changed interpretation,\n4. note what remains unchanged,\n5. preserve the audit trail.\n\nAvoid sprawling exploratory reruns that are not tied to the criticism being answered.\n",
+  "stata-referee-response": "# Response Patterns\n\nFor each referee or coauthor request:\n\n1. restate the request,\n2. define the exact rerun or robustness check,\n3. capture the output and any changed interpretation,\n4. note what remains unchanged,\n5. preserve the audit trail.\n\nAvoid sprawling exploratory reruns that are not tied to the criticism being answered.\n",
+  "replication": "# Replication Workflow\n\n1. Identify the authoritative entrypoint.\n2. Run the baseline cleanly and save the full log.\n3. Capture stored results after each model.\n4. Compare requested variants systematically.\n5. Distinguish environment failures from substantive result changes.\n\nDo not say a result replicates unless the target output materially matches.\n\nUse:\n\n- `scripts/compare_specs.py` for structured coefficient/spec comparisons\n- `scripts/summarize_log.py` for long replication logs\n",
+  "stata-replication": "# Replication Workflow\n\n1. Identify the authoritative entrypoint.\n2. Run the baseline cleanly and save the full log.\n3. Capture stored results after each model.\n4. Compare requested variants systematically.\n5. Distinguish environment failures from substantive result changes.\n\nDo not say a result replicates unless the target output materially matches.\n\nUse:\n\n- `scripts/compare_specs.py` for structured coefficient/spec comparisons\n- `scripts/summarize_log.py` for long replication logs\n",
+  "table-builder": "# Table Patterns\n\nReview:\n\n- column comparability,\n- sample size drift,\n- coefficient labels,\n- notes for controls, FE, clustering, and weights,\n- consistent rounding.\n\nTreat a table as reader-facing prose in numeric form, not just extracted estimates.\n",
+  "stata-table-builder": "# Table Patterns\n\nReview:\n\n- column comparability,\n- sample size drift,\n- coefficient labels,\n- notes for controls, FE, clustering, and weights,\n- consistent rounding.\n\nTreat a table as reader-facing prose in numeric form, not just extracted estimates.\n",
+  "toolkit": "# Research Workflows\n\nUse the toolkit as the entrypoint for these paper-oriented workflows:\n\n- Replication and robustness checks.\n- Data audit before estimation.\n- Publication QA for tables and graphs.\n- Referee-response re-runs with specification comparisons.\n- Causal inference workflows where identifying assumptions and diagnostics matter.\n- Environment diagnosis on university-managed or locked-down machines.\n\nPrefer the specialized skills whenever a workflow has repeated judgment points or multiple execution steps.\n",
+  "stata-toolkit": "# Research Workflows\n\nUse the toolkit as the entrypoint for these paper-oriented workflows:\n\n- Replication and robustness checks.\n- Data audit before estimation.\n- Publication QA for tables and graphs.\n- Referee-response re-runs with specification comparisons.\n- Causal inference workflows where identifying assumptions and diagnostics matter.\n- Environment diagnosis on university-managed or locked-down machines.\n\nPrefer the specialized skills whenever a workflow has repeated judgment points or multiple execution steps.\n"
+}
 
 SKILL_BY_ID = {item["id"]: item for item in SKILLS}
 AGENT_BY_ID = {item["id"]: item for item in AGENTS}

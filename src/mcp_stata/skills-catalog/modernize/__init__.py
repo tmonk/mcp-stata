@@ -1,1 +1,0 @@
-"""Modern Stata practices skill."""

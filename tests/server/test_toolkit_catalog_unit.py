@@ -40,9 +40,19 @@ def test_catalog_metadata_shape():
 
 def test_server_uses_generated_catalog():
     text = SERVER_FILE.read_text()
-    assert "from .toolkit_catalog_data import SKILLS, SKILL_BY_ID" in text
+    assert "from .toolkit_catalog_data import SKILLS, SKILL_BY_ID, CHECKLISTS" in text
     assert '"resource_uri": f"stata://skills/{item[\'id\']}"' in text
     assert 'return doc["content"]' in text
+
+
+def test_catalog_contains_checklists():
+    mod = _load_data_module()
+    assert len(mod.CHECKLISTS) > 0
+    # Check for a few expected keys
+    assert "data-audit" in mod.CHECKLISTS
+    assert "stata-data-audit" in mod.CHECKLISTS
+    assert "publication-qa" in mod.CHECKLISTS
+    assert "# Data Audit Checklist" in mod.CHECKLISTS["data-audit"]
 
 
 def test_skill_frontmatter_is_minimal():
@@ -65,28 +75,54 @@ def test_manifests_and_generated_openai_yaml_exist():
         assert (skill_dir / "agents" / "openai.yaml").exists(), f"missing openai.yaml for {skill_dir.name}"
 
 
-def test_catalog_references_and_scripts_resolve():
+def test_catalog_is_complete_and_synced():
+    """Verifies that the generated catalog is a 1:1 match with the plugin/skills directory."""
     mod = _load_data_module()
-    for item in mod.SKILLS:
-        skill_dir = ROOT / "plugin" / "skills" / item["id"]
-        for ref in item.get("references", []):
-            assert (skill_dir / ref).exists(), f"missing reference {ref} for {item['id']}"
-        for script in item.get("scripts", []):
-            assert (skill_dir / script).exists(), f"missing script {script} for {item['id']}"
+    
+    # Get all skill directories that should be in the catalog
+    expected_skill_ids = set()
+    for skill_dir in PLUGIN_SKILLS.iterdir():
+        if skill_dir.is_dir() and (skill_dir / "SKILL.md").exists():
+            # The skill ID comes from the 'name' field in frontmatter, 
+            # which by convention matches the directory name for these skills
+            expected_skill_ids.add(skill_dir.name)
+            
+    actual_skill_ids = {item["id"] for item in mod.SKILLS}
+    
+    # Check for missing or extra skills
+    missing = expected_skill_ids - actual_skill_ids
+    extra = actual_skill_ids - expected_skill_ids
+    
+    assert not missing, f"Skills in plugin/skills but missing from catalog: {missing}"
+    # Note: Extra skills are allowed if they come from other sources, 
+    # but currently we expect a 1:1 match with plugin/skills.
+    assert not extra, f"Skills in catalog but missing from plugin/skills: {extra}"
+
+    # Verify content embedding for each skill
+    for skill_id in expected_skill_ids:
+        skill_dir = PLUGIN_SKILLS / skill_id
+        skill_data = mod.SKILL_BY_ID[skill_id]
+        
+        # Check basic fields
+        assert skill_data["name"] == skill_id
+        assert "description" in skill_data
+        assert "content" in skill_data
+        
+        # Check reference embedding
+        manifest_path = skill_dir / "manifest.json"
+        if manifest_path.exists():
+            import json
+            manifest = json.loads(manifest_path.read_text())
+            expected_refs = manifest.get("references", [])
+            
+            for ref in expected_refs:
+                assert ref in skill_data["reference_docs"], f"Missing embedded reference {ref} for {skill_id}"
+                ref_content = (skill_dir / ref).read_text()
+                assert skill_data["reference_docs"][ref] == ref_content, f"Content mismatch for reference {ref} in {skill_id}"
 
 
-def test_pyproject_force_includes_plugin_skills():
+def test_pyproject_contains_no_stale_force_includes():
+    """Ensures we didn't leave any skill-related force-includes in pyproject.toml."""
     text = PYPROJECT.read_text()
-    for slug in (
-        "modernize",
-        "data-audit",
-        "environment-diagnose",
-        "publication-qa",
-        "replication",
-        "causal-inference",
-        "table-builder",
-        "power-analysis",
-        "data-provenance",
-        "referee-response",
-    ):
-        assert f"plugin/skills/stata-{slug}/SKILL.md" in text
+    assert "plugin/skills/" not in text or "force-include" not in text.split("plugin/skills/")[0]
+    assert "mcp_stata/skills-catalog" not in text

@@ -48,7 +48,7 @@ import threading
 import time
 
 from .ui_http import UIChannelManager
-from .toolkit_catalog_data import SKILLS, SKILL_BY_ID
+from .toolkit_catalog_data import SKILLS, SKILL_BY_ID, CHECKLISTS
 
 
 # Configure logging
@@ -200,17 +200,6 @@ class StataClientProxy:
 client = StataClientProxy()
 ui_channel = None
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RESEARCH_CHECKLISTS: dict[str, str] = {
-    "data-audit": "plugin/skills/stata-data-audit/references/checklist.md",
-    "publication-qa": "plugin/skills/stata-publication-qa/references/checklist.md",
-    "replication": "plugin/skills/stata-replication/references/workflow.md",
-    "causal-inference": "plugin/skills/stata-causal-inference/references/designs.md",
-    "data-provenance": "plugin/skills/stata-data-provenance/references/lineage.md",
-    "power-analysis": "plugin/skills/stata-power-analysis/references/power-checklist.md",
-    "referee-response": "plugin/skills/stata-referee-response/references/response-patterns.md",
-    "environment-diagnose": "plugin/skills/stata-environment-diagnose/references/troubleshooting.md",
-    "table-builder": "plugin/skills/stata-table-builder/references/table-patterns.md",
-}
 
 def _log_tool_call(tool_name: str, ctx: Context | None = None) -> None:
     request_id = None
@@ -1857,10 +1846,10 @@ def _project_manifest_data() -> dict[str, Any]:
 
 
 def _read_reference_text(topic: str) -> str:
-    rel_path = RESEARCH_CHECKLISTS.get(topic)
-    if rel_path is None:
+    content = CHECKLISTS.get(topic)
+    if content is None:
         raise ValueError(f"Unknown checklist topic: {topic}")
-    return (REPO_ROOT / rel_path).read_text()
+    return content
 
 
 def _allowed_path_roots() -> list[Path]:

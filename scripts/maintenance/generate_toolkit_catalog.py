@@ -134,6 +134,15 @@ def load_skill_docs() -> list[dict]:
         )
         manifest = load_manifest(path.parent / "manifest.json")
         skill_id = meta["name"]
+        
+        # Load embedded references
+        references = manifest.get("references", [])
+        reference_docs = {}
+        for ref_path in references:
+            full_ref_path = path.parent / ref_path
+            if full_ref_path.exists():
+                reference_docs[ref_path] = full_ref_path.read_text()
+
         docs.append(
             {
                 "id": skill_id,
@@ -148,7 +157,8 @@ def load_skill_docs() -> list[dict]:
                 ),
                 "trigger_text": manifest.get("trigger_text", meta["description"]),
                 "invocation_type": manifest.get("invocation_type", "context-skill"),
-                "references": manifest.get("references", []),
+                "references": references,
+                "reference_docs": reference_docs,
                 "scripts": manifest.get("scripts", []),
                 "body": body,
                 "path": str(path.relative_to(ROOT)),
@@ -198,12 +208,26 @@ def load_agent_docs() -> list[dict]:
 
 
 def build_data_module(skills: list[dict], agents: list[dict]) -> str:
+    # Build a lookup for research checklists (mapping short names to content)
+    # This replaces the hardcoded file paths in server.py
+    checklists = {}
+    for skill in skills:
+        # Map skill ID (e.g. stata-data-audit) to its first reference if it looks like a checklist
+        # Also map shorter names used in server.py (e.g. data-audit)
+        base_id = skill["id"].replace("stata-", "")
+        for ref_path, content in skill.get("reference_docs", {}).items():
+            if "checklist" in ref_path or "workflow" in ref_path or "designs" in ref_path or "lineage" in ref_path or "power" in ref_path or "response" in ref_path or "troubleshooting" in ref_path or "patterns" in ref_path:
+                checklists[base_id] = content
+                checklists[skill["id"]] = content
+                break
+
     return (
         '"""Generated toolkit catalog data. Do not edit by hand."""\n\n'
         f"SKILLS = {json.dumps(skills, indent=2)}\n\n"
         f"AGENTS = {json.dumps(agents, indent=2)}\n\n"
         f"PROMPTS = {json.dumps(PROMPTS, indent=2)}\n\n"
         f"RESOURCES = {json.dumps(RESOURCES, indent=2)}\n\n"
+        f"CHECKLISTS = {json.dumps(checklists, indent=2)}\n\n"
         'SKILL_BY_ID = {item["id"]: item for item in SKILLS}\n'
         'AGENT_BY_ID = {item["id"]: item for item in AGENTS}\n'
     )

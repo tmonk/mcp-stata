@@ -70,17 +70,8 @@ packages = ["src/mcp_stata"]
 exclude = ["/tests", "/uv.lock"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"plugin/skills/stata-toolkit/SKILL.md" = "mcp_stata/skills/SKILL.md"
-"plugin/skills/stata-modernize/SKILL.md" = "mcp_stata/skills-catalog/modernize/SKILL.md"
-"plugin/skills/stata-data-audit/SKILL.md" = "mcp_stata/skills-catalog/data-audit/SKILL.md"
-"plugin/skills/stata-environment-diagnose/SKILL.md" = "mcp_stata/skills-catalog/environment-diagnose/SKILL.md"
-"plugin/skills/stata-publication-qa/SKILL.md" = "mcp_stata/skills-catalog/publication-qa/SKILL.md"
-"plugin/skills/stata-replication/SKILL.md" = "mcp_stata/skills-catalog/replication/SKILL.md"
-"plugin/skills/stata-causal-inference/SKILL.md" = "mcp_stata/skills-catalog/causal-inference/SKILL.md"
-"plugin/skills/stata-table-builder/SKILL.md" = "mcp_stata/skills-catalog/table-builder/SKILL.md"
-"plugin/skills/stata-power-analysis/SKILL.md" = "mcp_stata/skills-catalog/power-analysis/SKILL.md"
-"plugin/skills/stata-data-provenance/SKILL.md" = "mcp_stata/skills-catalog/data-provenance/SKILL.md"
-"plugin/skills/stata-referee-response/SKILL.md" = "mcp_stata/skills-catalog/referee-response/SKILL.md"
+"src/mcp_stata/py.typed" = "mcp_stata/py.typed"
+
 
 [tool.ruff]
 line-length = 100
