@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Add the script's directory to sys.path to allow importing local modules like 'agents'
@@ -496,6 +497,11 @@ def _ensure_symlink(link: Path, target: Path) -> bool:
       3. Copy via shutil.copytree. Last resort; works everywhere but won't
          reflect upstream source changes without reinstalling.
 
+    Special case: if `target` lives inside the system temp directory it is
+    treated as transient (the install bootstrap unpacks source to TEMP and
+    cleans it up at the end), and we skip straight to copy so the install
+    doesn't end with a dangling symlink/junction.
+
     The install paths are namespace-owned by mcp-stata (e.g.
     ~/.agents/skills/mcp-stata), so any pre-existing item at `link` is
     treated as a previous install and replaced.
@@ -505,6 +511,10 @@ def _ensure_symlink(link: Path, target: Path) -> bool:
         return True
     _remove_link_or_dir(link)
 
+    if _is_transient_path(target_resolved):
+        return _copy_into(link, target)
+
+    symlink_err: OSError | None = None
     try:
         link.symlink_to(target)
         return True
@@ -525,14 +535,35 @@ def _ensure_symlink(link: Path, target: Path) -> bool:
     except (OSError, subprocess.CalledProcessError):
         pass
 
+    return _copy_into(link, target, prior_error=symlink_err)
+
+
+def _copy_into(link: Path, target: Path, *, prior_error: OSError | None = None) -> bool:
     try:
         shutil.copytree(target, link)
         return True
     except OSError as copy_exc:
-        print_warning(
-            f"Could not link or copy {target} -> {link}: "
-            f"symlink failed ({symlink_err}); junction and copy also failed ({copy_exc})."
-        )
+        if prior_error is not None:
+            msg = (
+                f"Could not link or copy {target} -> {link}: "
+                f"symlink failed ({prior_error}); junction and copy also failed ({copy_exc})."
+            )
+        else:
+            msg = f"Could not copy {target} -> {link}: {copy_exc}."
+        print_warning(msg)
+        return False
+
+
+def _is_transient_path(p: Path) -> bool:
+    """True if `p` is inside the system temp directory (subject to bootstrap cleanup)."""
+    try:
+        tmp = Path(tempfile.gettempdir()).resolve()
+    except OSError:
+        return False
+    try:
+        p.relative_to(tmp)
+        return True
+    except ValueError:
         return False
 
 
