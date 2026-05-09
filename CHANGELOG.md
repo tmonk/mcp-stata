@@ -2,6 +2,51 @@
 
 <!-- version list -->
 
+## v3.2.0 (2026-05-09)
+
+### Bug Fixes
+
+- Consistent anon user ID in logs
+  ([`762d042`](https://github.com/tmonk/mcp-stata/commit/762d042e1ffa5940ab365457d2162e7f087423b9))
+
+- Update statest to include parallel running, CI/CD Integration, failure analysis
+  ([`334b294`](https://github.com/tmonk/mcp-stata/commit/334b2945f1a18942d0f73b0ef2976c7eb9aae87f))
+
+- Versions
+  ([`1b89305`](https://github.com/tmonk/mcp-stata/commit/1b89305d858c782c6a85a8de51bbddd9d16dcc93))
+
+- **tests**: Resolve path regressions from reorganization and clean up statest internal tests
+  ([`7147258`](https://github.com/tmonk/mcp-stata/commit/714725838c561512998c985285ec7a01eefa1314))
+
+### Features
+
+- Introduce statest testing framework v0.1 with initial assertions and test runner
+  ([`c25424a`](https://github.com/tmonk/mcp-stata/commit/c25424a09828624e44bd55ddea5b3955d1809180))
+
+### Performance Improvements
+
+- **statest**: Added benchmark history
+  ([`7e7c3a7`](https://github.com/tmonk/mcp-stata/commit/7e7c3a74e746bf03cdf68c2a1000e531067e3cfe))
+
+- **statest**: Implement session pooling and structured results for optimization
+  ([`6d9f85d`](https://github.com/tmonk/mcp-stata/commit/6d9f85d31d7b22ab47b7b6247318351641c3b0e2))
+
+- **statest**: Implement session pooling and structured results for optimization
+  ([`15256fb`](https://github.com/tmonk/mcp-stata/commit/15256fb96d564e3d850574eb2482f370aa9aa09c))
+
+### Refactoring
+
+- Consolidate skills and remove redundant documentation files
+  ([`5aef410`](https://github.com/tmonk/mcp-stata/commit/5aef4102506c81c4c3afdfd4f77262d0f6644da2))
+
+- Improve installer failure telemetry by using byte-based log tailing, ensuring log flushing, and
+  fixing JSON escaping bugs.
+  ([`d2aad07`](https://github.com/tmonk/mcp-stata/commit/d2aad076a4b98a04ceb910e3d8e762759c6aaad8))
+
+- Migrate skill definitions to plugin directory and update catalog generator and tests
+  ([`3e17ea4`](https://github.com/tmonk/mcp-stata/commit/3e17ea4a56d72f6d398ceb1a3704a758a2966d07))
+
+
 ## v3.1.6 (2026-05-08)
 
 
