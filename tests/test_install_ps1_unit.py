@@ -62,4 +62,16 @@ def test_install_ps1_enforces_runner_mcp_username() -> None:
     assert "if ($env:MCP_STATA_TELEMETRY_USERNAME) {" in text
     assert "elseif ($env:GITHUB_ACTIONS -eq 'true') {" in text
     assert "$telemetryUser = 'runner-mcp'" in text
+def test_install_ps1_sends_telemetry_early() -> None:
+    text = _script_text()
+    # Check that Send-Telemetry is called early in the entry point
+    assert "$script:UserId = Get-UserId" in text
+    assert "$startEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_start' } else { 'install_start' }" in text
+    assert "Send-Telemetry $startEvent" in text
 
+    # Check the ordering: UserId must be set before Send-Telemetry
+    user_id_pos = text.find("$script:UserId = Get-UserId")
+    telemetry_pos = text.find("Send-Telemetry $startEvent")
+    assert user_id_pos != -1
+    assert telemetry_pos != -1
+    assert user_id_pos < telemetry_pos

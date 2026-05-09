@@ -547,21 +547,22 @@ Show-Header
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 try {
+    # 1. Identity & Early Metadata
+    $script:UserId = Get-UserId
+    $startEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_start' } else { 'install_start' }
+
+    # 2. Emit start event IMMEDIATELY
+    Send-Telemetry $startEvent
+
     if ($PassthroughArgs -contains '--help' -or $PassthroughArgs -contains '-h') {
         Show-Help
         exit 0
     }
 
-    $script:UserId = Get-UserId
-
     $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if ($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         Write-Warn "Running as Administrator. $ActionLabel will be local to the admin profile."
     }
-
-    # Emit start event (best-effort).
-    $startEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_start' } else { 'install_start' }
-    Send-Telemetry $startEvent
 
     # Telemetry-only mode: test end-to-end telemetry without mutating the machine.
     if ($env:MCP_STATA_TELEMETRY_ONLY -eq '1') {

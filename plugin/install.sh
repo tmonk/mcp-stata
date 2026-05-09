@@ -646,16 +646,28 @@ detect_action_label() {
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 main() {
+  # 1. Parse critical flags early for telemetry
+  MCP_STATA_DRY_RUN=0
+  local start_event="install_start"
   for arg in "$@"; do
-    if [[ "$arg" == "--verbose" ]]; then
-      VERBOSE_MODE=1
-      break
-    fi
+    case "$arg" in
+      --verbose) VERBOSE_MODE=1 ;;
+      --dry-run) MCP_STATA_DRY_RUN=1 ;;
+      --uninstall) start_event="uninstall_start" ;;
+    esac
   done
+  export MCP_STATA_DRY_RUN
 
+  # 2. Initialize Identity & Metadata
+  USER_ID="$(get_user_id)"
+  
+  # 3. Emit start event IMMEDIATELY.
+  # This ensures that even if bootstrap fails, we have a record of the attempt with metadata.
+  send_telemetry "$start_event" "" "$@" || true
+
+  # 4. Standard startup sequence
   setup_logging
   show_header "$@"
-
   detect_action_label "$@"
 
   for arg in "$@"; do
@@ -665,34 +677,11 @@ main() {
     fi
   done
 
-  # Detect dry-run early so we can avoid creating telemetry state files in tests.
-  MCP_STATA_DRY_RUN=0
-  for arg in "$@"; do
-    if [ "$arg" = "--dry-run" ]; then
-      MCP_STATA_DRY_RUN=1
-      break
-    fi
-  done
-  export MCP_STATA_DRY_RUN
-
-  USER_ID="$(get_user_id)"
-
   if [ "$(id -u)" -eq 0 ]; then
     warn "Running as root. ${ACTION_LABEL} will be local to the root user."
   fi
 
   trap cleanup EXIT
-
-  # Emit a real run-scoped start event (distinct from the worker's script-fetch event).
-  # Best-effort only; never fail install because telemetry isn't reachable.
-  local start_event="install_start"
-  for arg in "$@"; do
-    if [ "$arg" = "--uninstall" ]; then
-      start_event="uninstall_start"
-      break
-    fi
-  done
-  send_telemetry "$start_event" "" "$@" || true
 
   # Telemetry-only mode: exercise end-to-end telemetry without mutating the machine.
   # Usage:
@@ -700,12 +689,7 @@ main() {
   if [ "${MCP_STATA_TELEMETRY_ONLY:-}" = "1" ]; then
     INSTALL_STAGE="telemetry_only"
     local end_event="install_success"
-    for arg in "$@"; do
-      if [ "$arg" = "--uninstall" ]; then
-        end_event="uninstall_success"
-        break
-      fi
-    done
+    [ "$start_event" = "uninstall_start" ] && end_event="uninstall_success"
     send_telemetry "$end_event" "" "$@" || true
     ok "Telemetry-only mode complete"
     detail "install_id=${INSTALL_ID}"
