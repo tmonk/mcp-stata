@@ -49,6 +49,8 @@ import time
 
 from .ui_http import UIChannelManager
 from .toolkit_catalog_data import SKILLS, SKILL_BY_ID, CHECKLISTS
+from .statest import runner as statest_runner
+
 
 
 # Configure logging
@@ -2515,6 +2517,101 @@ async def get_skill_content(skill_path: str) -> str:
     if not doc:
         raise ValueError(f"Skill not found: {skill_path}")
     return doc["content"]
+
+
+_last_test_results: Dict[str, Any] = {}
+
+@mcp.tool(structured_output=True)
+@log_call
+async def stata_run_tests(
+    path: str,
+    session_id: Optional[str] = None
+) -> ToolEnvelope:
+    """Discover and run all test_*.do files under path.
+    
+    Args:
+        path: Directory path to search for tests.
+        session_id: Optional ID of an existing session to run tests in. 
+                   If omitted, fresh sessions are used for each test.
+    """
+    summary = await statest_runner.run_tests(path, session_manager, session_id=session_id)
+    _last_test_results[session_id or "default"] = summary.model_dump()
+    
+    envelope = _build_envelope(
+        tool="stata_run_tests",
+        success=summary.failed == 0,
+        session_id=session_id,
+        data=summary.model_dump()
+    )
+    return envelope
+
+@mcp.tool(structured_output=True)
+@log_call
+async def stata_run_test(
+    path: str,
+    session_id: Optional[str] = None
+) -> ToolEnvelope:
+    """Run a single test_*.do file.
+    
+    Args:
+        path: Path to the test file.
+        session_id: Optional ID of an existing session to run the test in.
+                   If omitted, a fresh session is used.
+    """
+    result = await statest_runner.run_test(path, session_manager, existing_session_id=session_id)
+    # We also update the 'last results' for this session_id or 'default'
+    # but as a single-entry summary
+    summary = {
+        "path": os.path.dirname(path),
+        "total_tests": 1,
+        "passed": 1 if result.success else 0,
+        "failed": 0 if result.success else 1,
+        "results": [result.model_dump()],
+        "summary_text": "Passed" if result.success else "Failed"
+    }
+    _last_test_results[session_id or "default"] = summary
+
+    envelope = _build_envelope(
+        tool="stata_run_test",
+        success=result.success,
+        session_id=session_id,
+        data=result.model_dump()
+    )
+    return envelope
+
+@mcp.tool(structured_output=True)
+@log_call
+async def stata_discover_tests(path: str) -> ToolEnvelope:
+    """List all discoverable test files under path without running them."""
+    tests = statest_runner.discover_tests(path)
+    envelope = _build_envelope(
+        tool="stata_discover_tests",
+        success=True,
+        data={"path": path, "tests": tests, "count": len(tests)}
+    )
+    return envelope
+
+@mcp.tool(structured_output=True)
+@log_call
+async def stata_get_test_results(session_id: str = "default") -> ToolEnvelope:
+    """Return full structured results from the last test run for a session."""
+    results = _last_test_results.get(session_id)
+    if not results:
+        envelope = _build_envelope(
+            tool="stata_get_test_results",
+            success=False,
+            session_id=session_id,
+            error=ErrorEnvelope(message=f"No test results found for session {session_id}")
+        )
+        return envelope
+    
+    envelope = _build_envelope(
+        tool="stata_get_test_results",
+        success=True,
+        session_id=session_id,
+        data=results
+    )
+    return envelope
 
 def main():
     if "--version" in sys.argv:

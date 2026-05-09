@@ -1944,6 +1944,7 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         """Load startup .do files matching native Stata behavior.
 
         Execution order:
+        0. Internal ``statest.mata`` for assertion support.
         1. ``MCP_STATA_STARTUP_DO_FILE`` entries (env var, may list several).
         2. First ``sysprofile.do`` found along the Stata search path.
         3. First ``profile.do`` found along the Stata search path.
@@ -1951,6 +1952,20 @@ with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr):
         All paths are deduplicated so the same file is never executed twice.
         """
         loaded_paths: set[str] = set()
+
+        # Phase 0: Internal statest support
+        statest_mata = os.path.join(os.path.dirname(__file__), "statest", "statest.mata")
+        sys.stderr.write(f"[mcp_stata] DEBUG: statest_mata path: {statest_mata} exists: {os.path.exists(statest_mata)}\n")
+        if os.path.exists(statest_mata):
+            logger.debug("Injecting internal statest.mata")
+            try:
+                # Use 'do' for reliability
+                self.stata.run(f'do {self._stata_quote(statest_mata)}', echo=False)
+                loaded_paths.add(self._normalize_startup_path(statest_mata))
+            except Exception as e:
+                logger.error("Failed to inject internal statest.mata: %s", e)
+
+
 
         startup_do_file = os.getenv("MCP_STATA_STARTUP_DO_FILE")
         if startup_do_file:
