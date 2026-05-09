@@ -875,20 +875,40 @@ async def stata_task_status(
     as_json: bool = False,
 ) -> ToolEnvelope | str:
     """Return task status for background executions.
-    
-    Provides detailed information about the state of a background task initiated 
-    via `stata_run` with `background=True`. Supports optional blocking wait for 
+
+    Provides detailed information about the state of a background task initiated
+    via `stata_run` with `background=True`. Supports optional blocking wait for
     task completion.
-    
+
+    **Critical usage pattern**: Every `stata_run(background=True)` task MUST be
+    resolved before returning to the user. You can do other work in between — fire
+    multiple background tasks, load data, inspect results — but you must call this
+    tool with `wait=True` on every task_id before the turn ends. Post-return
+    notifications are NOT surfaced to the model, so without an explicit wait call
+    the task completes silently and the conversation stalls.
+
+    Parallel example (fire two tasks, then wait on both):
+
+        t1 = stata_run(code="...", background=True)   # task_id in t1.data.task_id
+        t2 = stata_run(code="...", background=True)   # task_id in t2.data.task_id
+        # ... do other work ...
+        r1 = stata_task_status(task_id=t1.data.task_id, wait=True, timeout=<N>, tail_lines=<M>)
+        r2 = stata_task_status(task_id=t2.data.task_id, wait=True, timeout=<N>, tail_lines=<M>)
+        # if status == "timeout", call again until "done" or "failed"
+
     Args:
         task_id: The unique identifier of the background task to query.
         wait: If True, the call will block until the task finishes or the timeout is reached.
-        timeout: Maximum duration (in seconds) to wait if `wait` is True (defaults to 60.0).
+        timeout: Maximum seconds to wait. Set based on expected runtime: short commands ~30s,
+            typical do-files ~120s, large dataset jobs ~600s. If uncertain, use a moderate
+            value and loop on status='timeout' rather than setting an artificially high ceiling.
         poll_interval: Delay between checks (in seconds) when waiting for completion.
-        tail_lines: If > 0, includes the last N lines of the task's execution log.
-        
+        tail_lines: Lines of log to include in the response. Set based on how much output you
+            expect: 0 if you plan to call stata_read_log separately, 20-50 for quick
+            spot-checks, 100+ for verbose scripts where you want the full tail inline.
+
     Returns:
-        A JSON string containing task details: status (started, running, done, error, 
+        A JSON object containing task details: status (started, running, done, failed, timeout,
         not_found), timestamps, log path, and the final result if completed.
     """
     _log_tool_call("stata_task_status")
@@ -1042,18 +1062,23 @@ async def stata_run(
 ) -> ToolEnvelope | str:
     """Executes Stata code or a .do file.
 
-    This is the primary tool for interacting with Stata. It supports both 
+    This is the primary tool for interacting with Stata. It supports both
     synchronous execution and background processing for long-running scripts.
 
+    **Background mode** (`background=True`) returns a `task_id` immediately while
+    execution continues in a separate task. Because post-return notifications are
+    NOT surfaced back to the model, you MUST immediately call
+    `stata_task_status(task_id=<id>, wait=True, timeout=300, tail_lines=50)` right
+    after this tool returns. Loop on that call until `status` is `'done'` or
+    `'failed'`. Skipping the follow-up call will stall the conversation.
+
     Stata output is captured in real-time and written to a temporary log file.
-    The server emits `notifications/logMessage` events as output is generated.
-    If `background=True`, the tool returns a `task_id` immediately, and the 
-    actual execution continues in a separate process.
 
     Args:
         code: The Stata command string or the absolute path to a .do file.
         is_file: If True, the `code` parameter is treated as a path to a script file.
-        background: If True, runs the operation in the background.
+        background: If True, runs the operation in the background. Requires
+            immediate follow-up with stata_task_status(wait=True).
         ctx: FastMCP-injected request context for session and notification routing.
         echo: If True, includes the original command in the captured output.
         as_json: If True, returns a structured JSON response envelope.
@@ -1065,13 +1090,13 @@ async def stata_run(
         strip_smcl: If True, removes Stata SMCL tags from the output for readability.
         filter_pattern: Optional regex to include only matching lines in the output.
         exclude_pattern: Optional regex to omit matching lines from the output.
-        
+
     Returns:
-        For sync calls: The execution output (JSON or raw text). Note: the return 
-            value is truncated to the tail (max 5,000 chars) for token efficiency. 
-            Agents should follow real-time `logMessage` notifications or use 
-            `stata_read_log` on the provided `log_path` for full execution details.
-        For background calls: A JSON string containing the `task_id` and initial status.
+        For sync calls: The execution output (JSON or raw text). Note: the return
+            value is truncated to the tail (max 5,000 chars) for token efficiency.
+            Use `stata_read_log` on the provided `log_path` for full execution details.
+        For background calls: A JSON object containing `task_id` and initial status.
+            You MUST call stata_task_status(wait=True) immediately after receiving this.
     """
     risk = _classify_command_risk(code)
     warnings = []
@@ -1254,8 +1279,9 @@ async def stata_run(
             log_path=task_info.log_path,
             warnings=warnings,
             next_actions=[
-                "Poll stata_task_status with the task_id to watch progress.",
-                "Use stata_read_log with the returned log path for incremental output.",
+                        f"Before returning to the user, call stata_task_status(task_id='{task_id}', wait=True, timeout=<N>, tail_lines=<M>) to collect the result. Choose timeout based on expected runtime; choose tail_lines based on how much output you want inline. You may do other work first (e.g. launch parallel tasks), but every background task must be waited on before the turn ends.",
+                "If stata_task_status returns status='timeout', call it again. Repeat until status is 'done' or 'failed'.",
+                "After status='done', read data.result for the output. Use stata_read_log with log_path for the full log.",
             ],
         )
         return _envelope_legacy_json(envelope) if as_json else envelope

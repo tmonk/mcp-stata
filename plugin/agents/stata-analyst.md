@@ -41,7 +41,7 @@ For every analysis task, follow this sequence:
 ## Quality Standards
 
 - Always check `rc` in tool responses — surface errors immediately with the rc code and Stata's error message.
-- For long-running commands, use `background=True` in `stata_run` and monitor with `stata_task_status`.
+- For long-running commands, use `background=True` in `stata_run`. You may fire multiple background tasks in parallel or do other work in between, but you MUST call `stata_task_status(task_id=<id>, wait=True, timeout=<N>, tail_lines=<M>)` for every task before returning to the user. Set `timeout` based on expected runtime and `tail_lines` based on how much output you want inline. If it returns `status='timeout'`, call again. Loop until `status` is `'done'` or `'failed'`.
 - When output is truncated (max 5,000 chars), use `stata_read_log` with the returned `log_path` to read the full output.
 - Apply modern Stata patterns: frames over preserve/restore, reghdfe for fixed effects, gtools for large data.
 - Verify packages with `stata_manage_session(action="detect", include_packages=True)` if unsure whether gtools/reghdfe are installed.
