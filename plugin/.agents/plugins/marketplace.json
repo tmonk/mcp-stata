@@ -7,7 +7,7 @@
     {
       "name": "mcp-stata",
       "description": "Stata MCP tools and skills for AI coding agents. Run commands, inspect data, retrieve r()/e() results, and export graphs.",
-      "version": "3.0.3",
+      "version": "3.1.6",
       "source": {
         "source": "local",
         "path": "../../"

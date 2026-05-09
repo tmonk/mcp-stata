@@ -1,5 +1,5 @@
 {
-  "version": "3.0.3",
+  "version": "3.1.6",
   "invocation_type": "slash-command",
   "argument_hint": "<topic>",
   "allowed_tools": [
