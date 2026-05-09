@@ -34,7 +34,7 @@ def run(cmd, *, cwd=None, check=True, env=None):
 @pytest.fixture(scope="session")
 def project_root():
     """Return the project root directory."""
-    return Path(__file__).parent.parent
+    return Path(__file__).parent.parent.parent
 
 
 @pytest.fixture(scope="session")

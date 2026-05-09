@@ -12,7 +12,7 @@ pytestmark = [pytest.mark.requires_stata, pytest.mark.integration, pytest.mark.x
 
 def find_mcp_stata_cli():
     # Prefer local source execution for testing current changes
-    src_dir = Path(__file__).parent.parent / "src"
+    src_dir = Path(__file__).parent.parent.parent / "src"
     if src_dir.exists():
         return f"{sys.executable} -m mcp_stata.server"
     
@@ -34,7 +34,7 @@ async def test_e2e_command_isolation_and_log_path():
         command=sys.executable, 
         args=["-m", "mcp_stata.server"], 
         cwd=os.getcwd(),
-        env={**os.environ, "PYTHONPATH": str(Path(__file__).parent.parent / "src")}
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).parent.parent.parent / "src")}
     )
 
     async with AsyncExitStack() as stack:
@@ -78,7 +78,7 @@ async def test_e2e_preflight_bypass():
         command=sys.executable, 
         args=["-m", "mcp_stata.server"], 
         cwd=os.getcwd(),
-        env={**os.environ, "PYTHONPATH": str(Path(__file__).parent.parent / "src")}
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).parent.parent.parent / "src")}
     )
     
     # Just verify we can initialize the session

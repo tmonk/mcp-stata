@@ -8,7 +8,7 @@ import sys
 from types import SimpleNamespace
 
 # Since we're in the repo, we can import directly
-repo_root = Path(__file__).parent.parent
+repo_root = Path(__file__).parent.parent.parent
 sys.path.append(str(repo_root / "scripts" / "install"))
 
 import setup_toolkit
