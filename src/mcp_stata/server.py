@@ -2525,7 +2525,10 @@ _last_test_results: Dict[str, Any] = {}
 @log_call
 async def stata_run_tests(
     path: str,
-    session_id: Optional[str] = None
+    session_id: Optional[str] = None,
+    parallel: bool = False,
+    max_workers: int = 4,
+    junit_xml_path: Optional[str] = None
 ) -> ToolEnvelope:
     """Discover and run all test_*.do files under path.
     
@@ -2533,8 +2536,18 @@ async def stata_run_tests(
         path: Directory path to search for tests.
         session_id: Optional ID of an existing session to run tests in. 
                    If omitted, fresh sessions are used for each test.
+        parallel: If True, run tests in parallel using multiple sessions.
+        max_workers: Maximum number of parallel workers (default 4).
+        junit_xml_path: Optional path to save results in JUnit XML format.
     """
-    summary = await statest_runner.run_tests(path, session_manager, session_id=session_id)
+    summary = await statest_runner.run_tests(
+        path, 
+        session_manager, 
+        session_id=session_id,
+        parallel=parallel,
+        max_workers=max_workers,
+        junit_xml_path=junit_xml_path
+    )
     _last_test_results[session_id or "default"] = summary.model_dump()
     
     envelope = _build_envelope(
@@ -2567,7 +2580,7 @@ async def stata_run_test(
         "passed": 1 if result.success else 0,
         "failed": 0 if result.success else 1,
         "results": [result.model_dump()],
-        "summary_text": "Passed" if result.success else "Failed"
+        "summary_text": f"Ran 1 test. {'1 passed' if result.success else '1 failed'}."
     }
     _last_test_results[session_id or "default"] = summary
 

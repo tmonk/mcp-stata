@@ -1,0 +1,30 @@
+<?xml version='1.0' encoding='utf-8'?>
+<testsuites><testsuite name="statest" tests="20" failures="7" time="48.55"><testcase name="src/mcp_stata/statest/tests/test_fixtures/test_assertion_index_reset_after_setup.do" time="2.76" /><testcase name="src/mcp_stata/statest/tests/test_fixtures/test_setup_runs_before_test.do" time="2.76" /><testcase name="src/mcp_stata/statest/tests/test_fixtures/test_teardown_runs_on_fail.do" time="2.76"><failure message="expected 0, got 1" type="AssertionError">assertion: st_assert_scalar
+variable:  
+expected:  0
+actual:    1
+rc:        9</failure></testcase><testcase name="src/mcp_stata/statest/tests/test_fixtures/test_teardown_runs_on_pass.do" time="2.75" /><testcase name="src/mcp_stata/statest/tests/test_mata/test_assert_macro_fail.do" time="2.37"><failure message="expected summarize, got regress" type="AssertionError">assertion: st_assert_macro
+variable:  
+expected:  summarize
+actual:    regress
+rc:        9</failure></testcase><testcase name="src/mcp_stata/statest/tests/test_mata/test_assert_macro_pass.do" time="2.36" /><testcase name="src/mcp_stata/statest/tests/test_mata/test_assert_matrix_fail.do" time="2.36"><failure message="expected 0, got 0" type="AssertionError">assertion: st_assert_matrix
+variable:  A
+expected:  0
+actual:    0
+rc:        9</failure></testcase><testcase name="src/mcp_stata/statest/tests/test_mata/test_assert_matrix_pass.do" time="2.26" /><testcase name="src/mcp_stata/statest/tests/test_mata/test_assert_rc_fail.do" time="2.26"><failure message="expected 0, got 601" type="AssertionError">assertion: st_assert_rc
+variable:  use nonexistent.dta
+expected:  0
+actual:    601
+rc:        9</failure></testcase><testcase name="src/mcp_stata/statest/tests/test_mata/test_assert_rc_pass.do" time="2.37" /><testcase name="src/mcp_stata/statest/tests/test_mata/test_assert_scalar_fail.do" time="2.37"><failure message="expected 5000, got 6165.2568" type="AssertionError">assertion: st_assert_scalar
+variable:  
+expected:  5000
+actual:    6165.2568
+rc:        9</failure></testcase><testcase name="src/mcp_stata/statest/tests/test_mata/test_assert_scalar_pass.do" time="2.37" /><testcase name="src/mcp_stata/statest/tests/test_mata/test_assert_scalar_tol_fail.do" time="2.38"><failure message="expected 6165, got 6165.2568 (tol=0.0001)" type="AssertionError">assertion: st_assert_scalar
+variable:  
+expected:  6165
+actual:    6165.2568
+rc:        9</failure></testcase><testcase name="src/mcp_stata/statest/tests/test_mata/test_assert_scalar_tol_pass.do" time="2.35" /><testcase name="src/mcp_stata/statest/tests/test_runner/test_discovery.do" time="2.34" /><testcase name="src/mcp_stata/statest/tests/test_runner/test_failure_capture.do" time="2.28"><failure message="expected 2, got 1" type="AssertionError">assertion: st_assert_scalar
+variable:  
+expected:  2
+actual:    1
+rc:        9</failure></testcase><testcase name="src/mcp_stata/statest/tests/test_runner/test_run_single.do" time="2.47" /><testcase name="src/mcp_stata/statest/tests/test_runner/test_run_suite.do" time="2.37" /><testcase name="src/mcp_stata/statest/tests/test_sessions/test_session_isolation.do" time="2.25" /><testcase name="src/mcp_stata/statest/tests/test_sessions/test_session_teardown.do" time="2.35" /></testsuite></testsuites>

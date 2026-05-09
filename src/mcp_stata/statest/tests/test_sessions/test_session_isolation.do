@@ -1,5 +1,9 @@
 * test_session_isolation.do
-* The runner should run this in a fresh session.
-* We assert that a global macro from a hypothetical previous run is NOT present.
-st_assert_macro "$isolation_check", expected("")
-global isolation_check = 1
+* If this is isolated, this global should not exist from other tests
+* (Assuming no other test sets it, or they run in fresh sessions)
+if "$S_isolation" != "" {
+    display "Isolation failure!"
+    exit 9
+}
+global S_isolation = "done"
+st_assert_macro "$S_isolation", expected("done")

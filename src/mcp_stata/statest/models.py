@@ -21,6 +21,8 @@ class TestResult(BaseModel):
     failure: Optional[AssertionFailure] = None
     log_path: Optional[str] = None
     duration_seconds: float
+    setup_rc: Optional[int] = None
+    teardown_rc: Optional[int] = None
 
 class TestSuiteSummary(BaseModel):
     path: str
@@ -29,3 +31,4 @@ class TestSuiteSummary(BaseModel):
     failed: int
     results: List[TestResult]
     summary_text: str
+    junit_xml_path: Optional[str] = None
