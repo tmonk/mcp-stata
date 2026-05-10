@@ -13,10 +13,34 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# ── Configuration ─────────────────────────────────────────────────────────────
+$InstallHost = 'mcp-stata-install.tdmonk.com'
+$InstallUrlSh = "https://${InstallHost}/install.sh"
+$InstallUrlPs1 = "https://${InstallHost}/install.ps1"
+$TelemetryUrl = "https://${InstallHost}/telemetry"
+
+# GitHub fallback
+$GithubRepoUrl = 'https://github.com/tmonk/mcp-stata'
+$GithubRawUrl = 'https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin'
+$InstallFallbackSh = "${GithubRawUrl}/install.sh"
+$InstallFallbackPs1 = "${GithubRawUrl}/install.ps1"
+
+# Pull dynamic config from GitHub (optional, best-effort)
+try {
+    $dynamicConfig = Invoke-RestMethod -Uri "${GithubRawUrl}/installer.json" -TimeoutSec 2 -ErrorAction SilentlyContinue
+    if ($dynamicConfig -and $dynamicConfig.urls -and $dynamicConfig.urls.primary) {
+        $InstallHost = $dynamicConfig.urls.primary.base.Replace('https://', '')
+        $InstallUrlSh = $dynamicConfig.urls.primary.sh
+        $InstallUrlPs1 = $dynamicConfig.urls.primary.ps1
+        $TelemetryUrl = $dynamicConfig.urls.primary.telemetry
+    }
+} catch {}
+
 if (-not [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) {
     Write-Host '✖ This installer is for Windows only.' -ForegroundColor Red
     Write-Host ':: Please use install.sh for Linux or macOS:' -ForegroundColor Cyan
-    Write-Host '   curl -fsSL https://mcp-stata-install.tdmonk.com/install.sh | bash' -ForegroundColor Cyan
+    Write-Host "   curl -fsSL ${InstallUrlSh} | bash" -ForegroundColor Cyan
+    Write-Host "   (Fallback: curl -fsSL ${InstallFallbackSh} | bash)" -ForegroundColor DarkGray
     exit 1
 }
 
@@ -82,7 +106,6 @@ Start-Transcript -Path $LogFile -Append -ErrorAction SilentlyContinue | Out-Null
 # What is sent: event type, OS/arch, MCP client name(s), install duration, a
 # unique run ID, and — on failure — the last 100 lines of the install log so
 # errors can be diagnosed. No file contents, credentials, or paths are included.
-$TelemetryUrl = 'https://mcp-stata-install.tdmonk.com/telemetry'
 $InstallId = [guid]::NewGuid().ToString()
 $InstallStart = Get-Date
 $InstallStage = 'init'
@@ -188,7 +211,8 @@ Notes:
   - Telemetry is best-effort and never affects exit status.
 
 Examples:
-  irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex
+  irm ${InstallUrlPs1} | iex
+  # Fallback: irm ${InstallFallbackPs1} | iex
   powershell -ExecutionPolicy Bypass -File install.ps1 --agent cursor --dry-run
 "@ | Write-Host
 }
@@ -213,7 +237,8 @@ function Show-Success {
     Write-Host ''
     Write-Host 'TO UPDATE' -ForegroundColor Cyan -NoNewline
     Write-Host ''
-    Write-Host '   irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex' -ForegroundColor Cyan
+    Write-Host "   irm ${InstallUrlPs1} | iex" -ForegroundColor Cyan
+    Write-Host "   (Fallback: irm ${InstallFallbackPs1} | iex)" -ForegroundColor DarkGray
     Write-Host ''
     Write-Host ('log'.PadRight(8)) -ForegroundColor DarkGray -NoNewline
     Write-Host $LogFile

@@ -112,6 +112,8 @@ class TestBasicInvocation:
         result = _run(["--help"], home=tmp_path)
         assert result.returncode == 0
         assert "usage:" in result.stdout.lower()
+        assert "https://mcp-stata-install.tdmonk.com/install.sh" in result.stdout
+        assert "https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh" in result.stdout
 
     def test_help_shows_agent_list(self, tmp_path):
         result = _run(["--help"], home=tmp_path)
@@ -497,3 +499,29 @@ class TestPluginMetadata:
         command_hook = session_start["hooks"][0]
         assert command_hook["type"] == "command"
         assert "/stata" in command_hook["command"]
+        assert "mcp-stata-install.tdmonk.com" in command_hook["command"]
+        assert "raw.githubusercontent.com" in command_hook["command"]
+
+class TestFallbackConfiguration:
+    def test_defines_fallback_urls(self):
+        text = INSTALL_SH.read_text()
+        assert 'INSTALL_HOST="mcp-stata-install.tdmonk.com"' in text
+        assert 'GITHUB_RAW_URL="https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin"' in text
+        assert 'INSTALL_FALLBACK_SH="${GITHUB_RAW_URL}/install.sh"' in text
+
+    def test_pulls_dynamic_config(self):
+        text = INSTALL_SH.read_text()
+        assert 'DYNAMIC_CONFIG=$(curl -fsSL --max-time 2 "${GITHUB_RAW_URL}/installer.json"' in text
+        assert 'NEW_HOST=$(printf \'%s\' "$DYNAMIC_CONFIG" | grep -o \'"base": "[^"]*"\' | head -1 | cut -d\'"\' -f4 | sed \'s|https://||\')' in text
+
+    def test_success_message_includes_fallback(self, tmp_path):
+        # We need to successfully finish an install to see the success message.
+        # This is a bit heavy but ensures the message is correct.
+        bin_dir = tmp_path / "bin"
+        _stub_uvx(bin_dir)
+        (tmp_path / ".gemini").mkdir()
+        result = _run(["--agent", "gemini"], home=tmp_path)
+        assert result.returncode == 0
+        assert "TO UPDATE" in result.stdout
+        assert "https://mcp-stata-install.tdmonk.com/install.sh" in result.stdout
+        assert "https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh" in result.stdout

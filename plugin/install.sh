@@ -25,6 +25,31 @@ AUTHOR_EMAIL="t.d.monk@lse.ac.uk"
 # Note: VERSION is derived dynamically in main() after bootstrap
 VERBOSE_MODE=0
 
+# ── Configuration ─────────────────────────────────────────────────────────────
+# Primary installer domain and telemetry endpoint.
+INSTALL_HOST="mcp-stata-install.tdmonk.com"
+INSTALL_URL_SH="https://${INSTALL_HOST}/install.sh"
+TELEMETRY_URL="https://${INSTALL_HOST}/telemetry"
+
+# GitHub fallback (used if the primary domain is unreachable).
+GITHUB_REPO_URL="https://github.com/tmonk/mcp-stata"
+GITHUB_RAW_URL="https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin"
+INSTALL_FALLBACK_SH="${GITHUB_RAW_URL}/install.sh"
+
+# Pull dynamic config from GitHub (optional, best-effort)
+# This allows us to change the primary URL in the future without breaking old scripts.
+if command -v curl >/dev/null 2>&1; then
+  DYNAMIC_CONFIG=$(curl -fsSL --max-time 2 "${GITHUB_RAW_URL}/installer.json" 2>/dev/null || true)
+  if [ -n "$DYNAMIC_CONFIG" ]; then
+    NEW_HOST=$(printf '%s' "$DYNAMIC_CONFIG" | grep -o '"base": "[^"]*"' | head -1 | cut -d'"' -f4 | sed 's|https://||')
+    if [ -n "$NEW_HOST" ]; then
+      INSTALL_HOST="$NEW_HOST"
+      INSTALL_URL_SH="https://${INSTALL_HOST}/install.sh"
+      TELEMETRY_URL="https://${INSTALL_HOST}/telemetry"
+    fi
+  fi
+fi
+
 paint() {
   local style="$1"
   shift
@@ -111,7 +136,8 @@ show_success() {
   printf "   %b%s%b %s\n" "${YELLOW}${BOLD}" "4." "${RESET}" "/stata-results"
   blank
   printf "%b%s%b\n" "${CYAN}${BOLD}" "TO UPDATE" "${RESET}"
-  printf "   %b%s%b\n" "${CYAN}" "curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh | bash" "${RESET}"
+  printf "   %b%s%b\n" "${CYAN}" "curl -LsSf ${INSTALL_URL_SH} | bash" "${RESET}"
+  detail "Fallback: curl -LsSf ${INSTALL_FALLBACK_SH} | bash"
   blank
   printf "%b%s%b %s\n" "${DIM}" "log    " "${RESET}" "$LOG_FILE"
   printf "%b%s%b %s\n" "${DIM}" "contact" "${RESET}" "$AUTHOR_EMAIL"
@@ -265,7 +291,7 @@ setup_logging() {
 }
 
 show_help() {
-  cat <<'EOF'
+  cat <<EOF
 mcp-stata installer
 
 Usage:
@@ -279,7 +305,8 @@ Notes:
   - Telemetry is best-effort and never affects exit status.
 
 Examples:
-  curl -fsSL https://mcp-stata-install.tdmonk.com/install.sh | bash
+  curl -fsSL ${INSTALL_URL_SH} | bash
+  # Fallback: curl -fsSL ${INSTALL_FALLBACK_SH} | bash
   bash install.sh --agent cursor --dry-run
 EOF
 }
@@ -290,7 +317,6 @@ EOF
 # (sized so the JSON-escaped payload fits inside the worker's per-event blob
 # limit). No file contents, credentials, or paths are included.
 # Log: $TMPDIR/mcp-stata-install-<date>-<pid>.log  (also printed on failure)
-TELEMETRY_URL="https://mcp-stata-install.tdmonk.com/telemetry"
 INSTALL_ID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || \
               uuidgen 2>/dev/null || echo "$(date +%s)-$$")"
 INSTALL_STAGE="init"

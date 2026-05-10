@@ -24,13 +24,11 @@ This server enables LLMs to:
 ### 1 · Install
 
 macOS/Linux:
-
 ```bash
 curl -LsSf https://mcp-stata-install.tdmonk.com/install.sh | bash
 ```
 
 Windows (PowerShell):
-
 ```powershell
 irm https://mcp-stata-install.tdmonk.com/install.ps1 | iex
 ```

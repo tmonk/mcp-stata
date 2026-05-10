@@ -50,7 +50,17 @@ def test_install_ps1_non_verbose_mode_formats_toolkit_output() -> None:
 
 def test_install_ps1_contains_telemetry_endpoint() -> None:
     text = _script_text()
-    assert "$TelemetryUrl = 'https://mcp-stata-install.tdmonk.com/telemetry'" in text
+    assert "$TelemetryUrl = \"https://${InstallHost}/telemetry\"" in text
+
+def test_install_ps1_contains_fallback_urls() -> None:
+    text = _script_text()
+    assert "$InstallFallbackSh = \"${GithubRawUrl}/install.sh\"" in text
+    assert "$InstallFallbackPs1 = \"${GithubRawUrl}/install.ps1\"" in text
+
+def test_install_ps1_contains_dynamic_config_block() -> None:
+    text = _script_text()
+    assert "Invoke-RestMethod -Uri \"${GithubRawUrl}/installer.json\"" in text
+    assert "$InstallHost = $dynamicConfig.urls.primary.base.Replace('https://', '')" in text
 
 def test_install_ps1_implements_send_telemetry() -> None:
     text = _script_text()

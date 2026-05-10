@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "urls": {
+    "primary": {
+      "base": "https://mcp-stata-install.tdmonk.com",
+      "sh": "https://mcp-stata-install.tdmonk.com/install.sh",
+      "ps1": "https://mcp-stata-install.tdmonk.com/install.ps1",
+      "telemetry": "https://mcp-stata-install.tdmonk.com/telemetry"
+    },
+    "fallback": {
+      "base": "https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin",
+      "sh": "https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.sh",
+      "ps1": "https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin/install.ps1",
+      "telemetry": ""
+    }
+  }
+}
