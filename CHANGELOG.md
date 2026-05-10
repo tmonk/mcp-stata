@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v3.2.7 (2026-05-10)
+
+### Bug Fixes
+
+- Update module docstring and maintain lazy import for StataClient
+  ([`2ea1027`](https://github.com/tmonk/mcp-stata/commit/2ea102762104d22bcb888bef704d3d93398e5aaa))
+
+
 ## v3.2.6 (2026-05-10)
 
 ### Bug Fixes
