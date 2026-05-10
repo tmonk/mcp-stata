@@ -628,6 +628,7 @@ ensure_repo_root() {
   # If we're already in a checkout, use it.
   if [ -f "${REPO_ROOT}/scripts/install/setup_toolkit.py" ]; then
     detail "Using local checkout at ${REPO_ROOT}"
+    unset MCP_STATA_TRANSIENT_INSTALL_SOURCE 2>/dev/null || true
     return
   fi
 
@@ -641,6 +642,7 @@ ensure_repo_root() {
   curl -fsSL --retry 5 --retry-delay 2 --retry-connrefused "${TARBALL_URL}" | tar xz -C "${TEMP_DIR}" --strip-components=1 || err "Could not download or extract mcp-stata source" "$@"
 
   INSTALL_REPO_ROOT="${TEMP_DIR}"
+  export MCP_STATA_TRANSIENT_INSTALL_SOURCE=1
   ok "Source extracted to ${INSTALL_REPO_ROOT}"
 }
 

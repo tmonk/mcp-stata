@@ -4,6 +4,7 @@ import shutil
 import sys
 import subprocess
 import stat
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -83,4 +84,36 @@ def test_ensure_symlink_handles_broken_symlink(temp_dir):
     
     success = setup_toolkit._ensure_symlink(link, target)
     assert success is True
+    assert os.path.samefile(link, target)
+
+
+def test_ensure_symlink_copies_when_transient_install_source(temp_dir, monkeypatch):
+    """Tarball bootstrap sets MCP_STATA_TRANSIENT_INSTALL_SOURCE=1 — skills must be copied, not linked."""
+    monkeypatch.setenv("MCP_STATA_TRANSIENT_INSTALL_SOURCE", "1")
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
+
+    src = temp_dir / "skills_src" / "stata"
+    src.mkdir(parents=True)
+    (src / "SKILL.md").write_text("skill")
+
+    dest_parent = temp_dir / "skills_dest"
+    dest_parent.mkdir(parents=True)
+    link = dest_parent / "stata"
+
+    assert setup_toolkit._ensure_symlink(link, src) is True
+    assert link.is_dir()
+    assert not link.is_symlink()
+    assert (link / "SKILL.md").read_text() == "skill"
+
+
+def test_ensure_symlink_uses_symlink_when_under_tmp_without_env(temp_dir, monkeypatch):
+    monkeypatch.delenv("MCP_STATA_TRANSIENT_INSTALL_SOURCE", raising=False)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_dir))
+
+    target = temp_dir / "target"
+    target.mkdir()
+    link = temp_dir / "link"
+
+    assert setup_toolkit._ensure_symlink(link, target) is True
+    assert link.is_symlink()
     assert os.path.samefile(link, target)

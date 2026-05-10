@@ -518,6 +518,7 @@ function Remove-TempDir {
 function Initialize-RepoRoot {
     Write-BoxedTitle -Title 'BOOTSTRAP SOURCE' -Color Blue
     if (Test-Path (Join-Path $RepoRoot 'scripts\install\setup_toolkit.py')) {
+        Remove-Item Env:MCP_STATA_TRANSIENT_INSTALL_SOURCE -ErrorAction SilentlyContinue
         Write-Ok "Using local checkout at $RepoRoot"
         return
     }
@@ -536,6 +537,7 @@ function Initialize-RepoRoot {
 
     $innerDir = Get-ChildItem -Path $extractDir -Directory | Select-Object -First 1
     $script:InstallRepoRoot = $innerDir.FullName
+    $env:MCP_STATA_TRANSIENT_INSTALL_SOURCE = '1'
     Write-Ok "Source extracted to $($script:InstallRepoRoot)"
 }
 

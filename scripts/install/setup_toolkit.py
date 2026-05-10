@@ -18,6 +18,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Add the script's directory to sys.path to allow importing local modules like 'agents'
@@ -487,6 +488,80 @@ def register_generic_skills(*, project_root: Path | None = None) -> list[Path]:
     return _sync_skills(PLUGIN_SKILLS_DIR, skills_root)
 
 
+def _is_transient_install_source(p: Path) -> bool:
+    """
+    True when running from a tarball/temp checkout that the shell installer deletes
+    after setup_toolkit finishes — symlinks/junctions into that tree must not survive.
+
+    install.sh / install.ps1 set MCP_STATA_TRANSIENT_INSTALL_SOURCE=1 only for that case.
+    """
+    if os.environ.get("MCP_STATA_TRANSIENT_INSTALL_SOURCE") != "1":
+        return False
+    try:
+        tmp = Path(tempfile.gettempdir()).resolve()
+        p.resolve().relative_to(tmp)
+        return True
+    except ValueError:
+        return False
+
+
+def _link_target_path(link: Path) -> Path | None:
+    """Resolved target for symlink/junction, or None if link is not link-like."""
+    try:
+        raw = os.readlink(link)
+    except OSError:
+        return None
+    target = Path(raw)
+    if not target.is_absolute():
+        target = link.parent / target
+    try:
+        return target.resolve()
+    except OSError:
+        return None
+
+
+def _link_points_to(link: Path, target_resolved: Path) -> bool:
+    """True if link is a symlink/junction whose target resolves to target_resolved."""
+    resolved = _link_target_path(link)
+    return resolved is not None and resolved == target_resolved
+
+
+def _copy_into(link: Path, target: Path) -> bool:
+    """
+    Copy target directory to link when symlinks/junctions would outlive the source
+    (e.g. installer running from a TEMP checkout).
+    """
+    if not target.is_dir():
+        return False
+    target_resolved = target.resolve()
+    if os.path.lexists(link):
+        try:
+            link.unlink()
+        except OSError:
+            # Directory junctions/symlinks usually unlink(); directories may raise
+            # IsADirectoryError or EPERM depending on the OS — replace via rmtree below.
+            pass
+        if os.path.lexists(link):
+            if link.is_dir():
+                try:
+                    shutil.rmtree(link)
+                except OSError as exc:
+                    print_warning(f"Skipping {link}: could not replace directory: {exc}")
+                    return False
+            else:
+                try:
+                    link.unlink()
+                except OSError as exc:
+                    print_warning(f"Skipping {link}: could not remove existing path: {exc}")
+                    return False
+    try:
+        shutil.copytree(target_resolved, link, symlinks=True)
+    except OSError as exc:
+        print_warning(f"Skipping {link}: could not copy skills tree: {exc}")
+        return False
+    return True
+
+
 def _sync_skills(source_dir: Path, target_dir: Path) -> list[Path]:
     """
     Sync individual skill subdirectories from source_dir to target_dir.
@@ -499,13 +574,13 @@ def _sync_skills(source_dir: Path, target_dir: Path) -> list[Path]:
 
     # 1. Cleanup legacy namespaced link if it exists
     legacy_link = target_dir / CANONICAL_SERVER_NAME
-    if legacy_link.is_symlink():
-        try:
-            if str(legacy_link.resolve()).startswith(str(source_dir)):
-                legacy_link.unlink()
-                print_verbose(f"Removed legacy namespaced skill link: {legacy_link}")
-        except Exception:
-            pass
+    try:
+        legacy_resolved = _link_target_path(legacy_link)
+        if legacy_resolved is not None and str(legacy_resolved).startswith(str(source_dir)):
+            legacy_link.unlink(missing_ok=True)
+            print_verbose(f"Removed legacy namespaced skill link: {legacy_link}")
+    except Exception:
+        pass
 
     # Identify skills in the source
     source_skills = {p.name: p for p in source_dir.iterdir() if p.is_dir() and not p.name.startswith(".")}
@@ -519,15 +594,16 @@ def _sync_skills(source_dir: Path, target_dir: Path) -> list[Path]:
 
     # 3. Remove orphaned symlinks (Remove our OWN removed skills)
     for item in target_dir.iterdir():
-        if item.is_symlink():
-            try:
-                resolved = item.resolve()
-                if str(resolved).startswith(str(source_dir)):
-                    if item.name not in source_skills:
-                        item.unlink()
-                        print_verbose(f"Removed orphaned skill symlink: {item}")
-            except Exception:
-                pass
+        try:
+            resolved = _link_target_path(item)
+            if resolved is None:
+                continue
+            if str(resolved).startswith(str(source_dir)):
+                if item.name not in source_skills:
+                    item.unlink(missing_ok=True)
+                    print_verbose(f"Removed orphaned skill symlink: {item}")
+        except Exception:
+            pass
 
     return synced
 
@@ -540,43 +616,37 @@ def _cleanup_skills(target_dir: Path):
     # Also check the namespaced legacy link
     legacy_link = target_dir / CANONICAL_SERVER_NAME
     for item in list(target_dir.iterdir()) + [legacy_link]:
-        if item.exists() and item.is_symlink():
-            try:
-                if str(item.resolve()).startswith(str(PLUGIN_SKILLS_DIR)):
-                    item.unlink()
-                    removed.append(item)
-            except Exception:
-                pass
+        if not os.path.lexists(item):
+            continue
+        try:
+            resolved = _link_target_path(item)
+            if resolved is None:
+                continue
+            if str(resolved).startswith(str(PLUGIN_SKILLS_DIR)):
+                item.unlink(missing_ok=True)
+                removed.append(item)
+        except Exception:
+            pass
     return removed
 
 
 def _ensure_symlink(link: Path, target: Path) -> bool:
-    if os.path.lexists(link):
-        try:
-            # samefile() handles symlinks and junctions correctly across platforms
-            if link.exists() and target.exists() and os.path.samefile(link, target):
-                return True
-        except Exception:
-            pass
+    target_resolved = target.resolve()
+    if _is_transient_install_source(target_resolved):
+        return _copy_into(link, target)
 
-        if link.is_symlink():
+    if os.path.lexists(link):
+        if _link_points_to(link, target_resolved):
+            return True
+        # Real directories must never be unlinked here (macOS returns EPERM, not IsADirectoryError).
+        if link.is_dir() and not link.is_symlink() and _link_target_path(link) is None:
+            print_warning(f"Existing path {link} is a real directory and would be overwritten. Skipping.")
+            return False
+        try:
             link.unlink()
-        else:
-            # Real directory or Windows junction — remove before re-linking.
-            # os.rmdir removes a junction without touching its target; shutil.rmtree
-            # would follow the junction and delete the target, so avoid it on Windows.
-            try:
-                if link.is_dir():
-                    # Check if it's a real directory (not a link/junction)
-                    # On Windows, is_dir() is true for junctions too, but is_symlink() is false.
-                    # We want to be careful not to delete a user's real skills directory.
-                    print_warning(f"Existing path {link} is a real directory and would be overwritten. Skipping.")
-                    return False
-                else:
-                    link.unlink()
-            except Exception as exc:
-                print_warning(f"Skipping {link}: could not remove existing path: {exc}")
-                return False
+        except OSError as exc:
+            print_warning(f"Skipping {link}: could not remove existing path: {exc}")
+            return False
 
     try:
         link.symlink_to(target, target_is_directory=target.is_dir())
@@ -606,10 +676,16 @@ def _ensure_symlink(link: Path, target: Path) -> bool:
 
 
 def _remove_symlink(link: Path) -> bool:
-    if link.is_symlink():
+    """Remove symlink/junction at link (detected via lexists + unlink)."""
+    if not os.path.lexists(link):
+        return False
+    try:
         link.unlink()
-        return True
-    return False
+        return not os.path.lexists(link)
+    except IsADirectoryError:
+        return False
+    except OSError:
+        return False
 
 
 def remove_json_server_config(path: Path, *, top_key: str) -> tuple[Path, bool]:
