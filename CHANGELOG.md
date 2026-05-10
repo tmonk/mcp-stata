@@ -2,6 +2,17 @@
 
 <!-- version list -->
 
+## v3.2.3 (2026-05-10)
+
+### Bug Fixes
+
+- Add dynamic installer configuration and GitHub fallback URLs for install scripts
+  ([`673b433`](https://github.com/tmonk/mcp-stata/commit/673b433a92704a24e379006fb504a6c2bfe09469))
+
+- Use functions instead of symlink on Windows to allow for user mode run
+  ([`2df5477`](https://github.com/tmonk/mcp-stata/commit/2df5477c247a17a37e72376af18dc0deab904eff))
+
+
 ## v3.2.2 (2026-05-10)
 
 ### Bug Fixes
