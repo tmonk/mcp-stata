@@ -361,3 +361,24 @@ def test_stata_connection_verification():
         assert res is True
         # Check if any call matches "Found Stata"
         assert any("Found Stata" in call.args[0] for call in mock_success.call_args_list)
+
+
+def test_detect_stata_with_fallback():
+    # Scenario: MP is found but broken, SE is found and works.
+    # setup_toolkit.detect_stata() should return SE.
+    mock_candidates = [
+        ("/path/to/mp/stata-mp", "mp"),
+        ("/path/to/se/stata-se", "se")
+    ]
+    
+    with patch("mcp_stata.discovery.find_stata_candidates", return_value=mock_candidates), \
+         patch("mcp_stata.discovery.verify_stata_install") as mock_verify:
+        
+        # MP fails, SE succeeds
+        mock_verify.side_effect = lambda path, edition: edition == "se"
+        
+        path, edition = setup_toolkit.detect_stata()
+        
+        assert path == "/path/to/se/stata-se"
+        assert edition == "se"
+        assert mock_verify.call_count == 2

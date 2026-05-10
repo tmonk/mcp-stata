@@ -62,6 +62,9 @@ def print_error(msg: str) -> None:
 def set_verbose(enabled: bool) -> None:
     global VERBOSE
     VERBOSE = enabled
+    if enabled:
+        import logging
+        logging.basicConfig(level=logging.DEBUG, format="  [LOG] %(name)s: %(message)s")
 
 
 def _append_install_log(message: str) -> None:
