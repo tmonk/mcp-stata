@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v3.2.9 (2026-05-10)
+
+### Bug Fixes
+
+- Compact FastMCP unstructured tool JSON ([#54](https://github.com/tmonk/mcp-stata/pull/54),
+  [`33cff51`](https://github.com/tmonk/mcp-stata/commit/33cff51ad0aa3d38e5c23c7cc89c605acfd4ac08))
+
+
 ## v3.2.8 (2026-05-10)
 
 ### Bug Fixes
