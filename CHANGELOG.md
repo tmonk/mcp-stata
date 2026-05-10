@@ -2,6 +2,31 @@
 
 <!-- version list -->
 
+## v3.2.8 (2026-05-10)
+
+### Bug Fixes
+
+- **installer**: Complete Windows bootstrap symlink fixes for PR #52
+  ([`70a77a6`](https://github.com/tmonk/mcp-stata/commit/70a77a600d4bf06b1d1f35bf232d3590fb47ccea))
+
+### Chores
+
+- Add automated benchmark test script with duration tracking and logging
+  ([`0e8de1a`](https://github.com/tmonk/mcp-stata/commit/0e8de1a23e6908c577407b2bfdddea07e8672cf5))
+
+- Integrate automated performance benchmarking into test suite and update setup scripts
+  ([`4562741`](https://github.com/tmonk/mcp-stata/commit/45627419e94bc362ff5f5c4451bf617f016073f5))
+
+- Update benchmark test execution script for improved performance validation
+  ([`0fdd8b5`](https://github.com/tmonk/mcp-stata/commit/0fdd8b5e61e88cb654b5ebe639d6e1736670bec1))
+
+### Testing
+
+- Fix discovery verification tests by patching internal module imports and using dynamic system
+  executable paths
+  ([`3f73876`](https://github.com/tmonk/mcp-stata/commit/3f73876ff28d1ccdb4717ea4f6da205d89da3232))
+
+
 ## v3.2.7 (2026-05-10)
 
 ### Bug Fixes
