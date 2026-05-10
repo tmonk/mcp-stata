@@ -2,6 +2,30 @@
 
 <!-- version list -->
 
+## v3.3.0 (2026-05-10)
+
+### Bug Fixes
+
+- **mcp**: Omit duplicate structured tool JSON by default
+  ([#55](https://github.com/tmonk/mcp-stata/pull/55),
+  [`e8e1a53`](https://github.com/tmonk/mcp-stata/commit/e8e1a53b6afae5d13cda8b88d9052b1d92c4c5f7))
+
+### Chores
+
+- Sync toolkit_catalog_data and lockfile to 3.2.8
+  ([`7b8fedd`](https://github.com/tmonk/mcp-stata/commit/7b8fedd48df1a83a0354ff399ab5e39f82606bbb))
+
+### Features
+
+- **install**: --install-repo and MCP_STATA_INSTALL_REPO for uv run
+  ([`f498f02`](https://github.com/tmonk/mcp-stata/commit/f498f02992d70645b183916b55790b7086be3aa2))
+
+### Testing
+
+- Decode CallToolResult via structuredContent when content empty
+  ([`44aeb89`](https://github.com/tmonk/mcp-stata/commit/44aeb89770ec957b39367be759dfe10e40511a17))
+
+
 ## v3.2.9 (2026-05-10)
 
 ### Bug Fixes
