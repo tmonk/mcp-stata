@@ -2,6 +2,28 @@
 
 <!-- version list -->
 
+## v3.2.2 (2026-05-10)
+
+### Bug Fixes
+
+- Add cross-platform support to PowerShell installer, improve preflight diagnostics, and increase
+  timeout threshold
+  ([`424554e`](https://github.com/tmonk/mcp-stata/commit/424554e333ee86adc8341fdd1a480db62b5cf412))
+
+- Enhance installation scripts and add tests for bootstrap delegation
+  ([`097566f`](https://github.com/tmonk/mcp-stata/commit/097566f43958e6bbeeb155d186bddf584eccbc85))
+
+- Ensured full Windows install workflow succeeds in user mode, created relevant tests
+  ([`ebeebb1`](https://github.com/tmonk/mcp-stata/commit/ebeebb11a75a26e4e6c851c43264c93d838bacf3))
+
+- Implement modular Stata installation verification and path resolution in install discovery module.
+  perf: added cache for discovery
+  ([`982b685`](https://github.com/tmonk/mcp-stata/commit/982b6855c3b69bbec66a96ab08b945629b684351))
+
+- Moved to hatchling with a dedicated rust watcher for builds
+  ([`50ef84f`](https://github.com/tmonk/mcp-stata/commit/50ef84f397a9dba415489b901c17106743221f5e))
+
+
 ## v3.2.1 (2026-05-09)
 
 ### Bug Fixes
