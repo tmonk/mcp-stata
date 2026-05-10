@@ -50,6 +50,7 @@ import time
 from .ui_http import UIChannelManager
 from .toolkit_catalog_data import SKILLS, SKILL_BY_ID, CHECKLISTS
 from .statest import runner as statest_runner
+from .fastmcp_text_compact import install_compact_fastmcp_tool_text
 
 
 
@@ -145,6 +146,7 @@ def setup_logging():
 mcp = FastMCP("mcp-stata")
 # Set version on the underlying server to expose it in InitializeResult
 mcp._mcp_server.version = SERVER_VERSION
+install_compact_fastmcp_tool_text()
 
 session_manager = SessionManager()
 
