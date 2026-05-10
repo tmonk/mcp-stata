@@ -492,14 +492,44 @@ def register_generic_skills(*, project_root: Path | None = None) -> Path | None:
 
 
 def _ensure_symlink(link: Path, target: Path) -> bool:
-    if link.is_symlink():
-        if link.resolve() == target.resolve():
-            return True
-        link.unlink()
-    elif link.exists():
-        print_warning(f"Skipping {link}: existing directory or file would be overwritten.")
-        return False
-    link.symlink_to(target)
+    if link.exists() or link.is_symlink():
+        try:
+            # samefile() handles symlinks and junctions correctly across platforms
+            if link.exists() and target.exists() and os.path.samefile(link, target):
+                return True
+        except Exception:
+            pass
+
+        if link.is_symlink():
+            link.unlink()
+        else:
+            print_warning(f"Skipping {link}: existing directory or file would be overwritten.")
+            return False
+
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except OSError:
+        if sys.platform == "win32":
+            if target.is_dir():
+                # Junctions allow directory linking without special privileges
+                try:
+                    subprocess.run(
+                        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                    return True
+                except subprocess.CalledProcessError:
+                    pass
+            else:
+                # Hardlinks allow file linking without special privileges
+                try:
+                    os.link(target, link)
+                    return True
+                except OSError:
+                    pass
+        raise
     return True
 
 
