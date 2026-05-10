@@ -28,8 +28,11 @@ Thank you for your interest in contributing to mcp-stata! This guide will help y
 
 2. Install dependencies with uv:
    ```bash
-   # Install main dependencies and development tools
-   uv sync --extra dev --no-install-project
+   # Install main dependencies and development tools (does not build the Rust extension)
+   uv sync --extra dev
+
+   # Build and install the Rust extension
+   maturin develop
    ```
 
    Or with pip:
@@ -48,20 +51,34 @@ Thank you for your interest in contributing to mcp-stata! This guide will help y
 
 ## Building the Project
 
-The project is a mixed Python/Rust project. The high-performance UI sorting is implemented in Rust using [PyO3](https://pyo3.rs/).
+The project uses **hatchling** as the Python build backend for fast installs. The Rust extension (`_native_ops`) is **not built automatically** by `uv sync` — run `maturin develop` manually when you modify `.rs` files in `src_rust/`.
+
+The high-performance UI sorting is implemented in Rust using [PyO3](https://pyo3.rs/).
 
 ### Local Development Build
 
-To build and install the native extension into your current environment for development:
+To build and install the native extension into your current environment:
 
 ```bash
-# Using maturin directly
 maturin develop
 ```
 
 If you don't have `maturin` globally installed, use the version in your venv:
 ```bash
 python -m maturin develop
+```
+
+### Auto-rebuild on Rust Changes
+
+To automatically recompile the extension when `.rs` files change, use `cargo watch`:
+
+```bash
+./scripts/watch_rust.sh
+```
+
+Requires `cargo-watch` (install once):
+```bash
+cargo install cargo-watch
 ```
 
 ### Building Wheels
@@ -71,7 +88,6 @@ To build redistributable wheels for your current platform:
 ```bash
 python -m build
 ```
-Note: This uses `maturin` as the build backend (defined in `pyproject.toml`). It will automatically compile the Rust code and package it with the Python source.
 
 ## Testing
 

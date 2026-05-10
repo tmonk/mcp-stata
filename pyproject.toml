@@ -55,8 +55,11 @@ Issues = "https://github.com/tmonk/mcp-stata/issues"
 mcp-stata = "mcp_stata.server:main"
 
 [build-system]
-requires = ["maturin>=1.5,<2.0"]
-build-backend = "maturin"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = true
 
 [tool.maturin]
 python-source = "src"
