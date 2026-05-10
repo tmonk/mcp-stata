@@ -100,6 +100,7 @@ EOF
 }
 
 show_success() {
+  boxed_title "${GREEN}" "MCP-STATA IS LIVE"
   printf "%b%s%b %s complete\n" "${GREEN}${BOLD}" "✓" "${RESET}" "${ACTION_LABEL}"
   printf "%b%s%b %s\n" "${CYAN}${BOLD}" "::" "${RESET}" "Verify by asking your agent: Do you have access to mcp-stata, an agentic toolkit for Stata?"
   blank
@@ -197,10 +198,10 @@ run_toolkit_installer() {
   local status=0
   set +e
   if [ "$VERBOSE_MODE" -eq 1 ]; then
-    uv run --no-project --python 3.11 "${INSTALL_REPO_ROOT}/scripts/install/setup_toolkit.py" "$@"
+    uv run --no-project --no-progress --python 3.11 "${INSTALL_REPO_ROOT}/scripts/install/setup_toolkit.py" "$@"
     status=$?
   else
-    uv run --no-project --python 3.11 "${INSTALL_REPO_ROOT}/scripts/install/setup_toolkit.py" "$@" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
+    uv run --no-project --no-progress --python 3.11 "${INSTALL_REPO_ROOT}/scripts/install/setup_toolkit.py" "$@" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
       format_toolkit_line "$line"
     done
     status=${PIPESTATUS[0]}

@@ -64,7 +64,8 @@ function Get-Version {
 }
 
 # ── Logging ────────────────────────────────────────────────────────────────
-$LogFile = Join-Path $env:TEMP ("mcp-stata-install-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".log")
+$TempPath = [System.IO.Path]::GetTempPath()
+$LogFile = Join-Path $TempPath ("mcp-stata-install-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".log")
 $env:MCP_STATA_INSTALL_LOG_FILE = $LogFile
 Start-Transcript -Path $LogFile -Append -ErrorAction SilentlyContinue | Out-Null
 
