@@ -492,7 +492,7 @@ def register_generic_skills(*, project_root: Path | None = None) -> Path | None:
 
 
 def _ensure_symlink(link: Path, target: Path) -> bool:
-    if link.exists() or link.is_symlink():
+    if os.path.lexists(link):
         try:
             # samefile() handles symlinks and junctions correctly across platforms
             if link.exists() and target.exists() and os.path.samefile(link, target):
@@ -503,8 +503,23 @@ def _ensure_symlink(link: Path, target: Path) -> bool:
         if link.is_symlink():
             link.unlink()
         else:
-            print_warning(f"Skipping {link}: existing directory or file would be overwritten.")
-            return False
+            # Real directory or Windows junction — remove before re-linking.
+            # os.rmdir removes a junction without touching its target; shutil.rmtree
+            # would follow the junction and delete the target, so avoid it on Windows.
+            try:
+                if link.is_dir():
+                    if sys.platform == "win32":
+                        try:
+                            os.rmdir(link)
+                        except OSError:
+                            shutil.rmtree(link)
+                    else:
+                        shutil.rmtree(link)
+                else:
+                    link.unlink()
+            except Exception as exc:
+                print_warning(f"Skipping {link}: could not remove existing path: {exc}")
+                return False
 
     try:
         link.symlink_to(target, target_is_directory=target.is_dir())
