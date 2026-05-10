@@ -24,6 +24,7 @@ AUTHOR_AFFILIATION="London School of Economics"
 AUTHOR_EMAIL="t.d.monk@lse.ac.uk"
 # Note: VERSION is derived dynamically in main() after bootstrap
 VERBOSE_MODE=0
+SCRIPT_VERSION='3.2.3'
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 # Primary installer domain and telemetry endpoint.
@@ -245,24 +246,7 @@ get_machine_id() {
 }
 
 get_version() {
-  if [ -n "${MCP_STATA_SCRIPT_VERSION:-}" ]; then
-    echo "$MCP_STATA_SCRIPT_VERSION"
-    return
-  fi
-
-  # 1. Try git if in a checkout
-  if command -v git >/dev/null 2>&1 && git -C "${INSTALL_REPO_ROOT:-$REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git -C "${INSTALL_REPO_ROOT:-$REPO_ROOT}" describe --tags --always --dirty 2>/dev/null
-    return
-  fi
-
-  # 2. Try pyproject.toml if source is available
-  if [ -f "${INSTALL_REPO_ROOT:-$REPO_ROOT}/pyproject.toml" ]; then
-    grep -m 1 'version = "' "${INSTALL_REPO_ROOT:-$REPO_ROOT}/pyproject.toml" | cut -d'"' -f2 2>/dev/null
-    return
-  fi
-
-  echo "3.1.2-direct"
+    echo "${MCP_STATA_SCRIPT_VERSION:-$SCRIPT_VERSION}"
 }
 
 # ── Paths ─────────────────────────────────────────────────────────────────────

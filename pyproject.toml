@@ -95,6 +95,10 @@ markers = [
 [tool.semantic_release]
 assets = ["server.json"]
 build_command = "python scripts/maintenance/sync_server_version.py"
+version_variables = [
+    "plugin/install.ps1:ScriptVersion",
+    "plugin/install.sh:SCRIPT_VERSION",
+]
 version_toml = [
     "pyproject.toml:project.version",
     "Cargo.toml:package.version"

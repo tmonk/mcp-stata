@@ -24,6 +24,7 @@ $GithubRepoUrl = 'https://github.com/tmonk/mcp-stata'
 $GithubRawUrl = 'https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin'
 $InstallFallbackSh = "${GithubRawUrl}/install.sh"
 $InstallFallbackPs1 = "${GithubRawUrl}/install.ps1"
+$ScriptVersion = '3.2.3'
 
 # Pull dynamic config from GitHub (optional, best-effort)
 try {
@@ -76,23 +77,7 @@ function Get-MachineId {
 
 function Get-Version {
     if ($env:MCP_STATA_SCRIPT_VERSION) { return $env:MCP_STATA_SCRIPT_VERSION }
-
-    $root = if ($script:InstallRepoRoot) { $script:InstallRepoRoot } else { $RepoRoot }
-
-    # 1. Try git if in a checkout
-    if (Get-Command git -ErrorAction SilentlyContinue) {
-        $v = (git -C $root describe --tags --always --dirty 2>$null) -join ''
-        if ($v) { return $v }
-    }
-
-    # 2. Try pyproject.toml if source is available
-    $toml = Join-Path $root 'pyproject.toml'
-    if (Test-Path $toml) {
-        $v = (Select-String -Path $toml -Pattern '^version = "([^"]+)"' | ForEach-Object { $_.Matches.Groups[1].Value })
-        if ($v) { return $v }
-    }
-
-    return '3.1.2-direct'
+    return $ScriptVersion
 }
 
 # ── Logging ────────────────────────────────────────────────────────────────
