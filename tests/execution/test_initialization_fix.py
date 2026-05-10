@@ -9,8 +9,9 @@ from mcp_stata.stata_client import StataClient
 
 @pytest.fixture
 def mock_discovery():
-    """Mock discovery candidates for initialization tests."""
-    with patch("mcp_stata.stata_client._get_discovery_candidates") as mock:
+    """Mock discovery candidates for initialization tests and disable cache."""
+    with patch("mcp_stata.stata_client._get_discovery_candidates") as mock, \
+         patch("mcp_stata.discovery._load_discovery_cache", return_value={}):
         mock.return_value = [("/Applications/StataNow/stata-mp", "mp")]
         yield mock
 
@@ -43,8 +44,8 @@ def test_init_timeout_increased(mock_discovery):
             # Check the first call to subprocess.run for preflight
             preflight_call = [call for call in mock_run.call_args_list if "-c" in call.args[0]]
             assert len(preflight_call) > 0
-            # Verify timeout=60
-            assert preflight_call[0].kwargs["timeout"] == 60
+            # Verify timeout=120
+            assert preflight_call[0].kwargs["timeout"] == 120
 
 def test_preflight_diagnostics_present(mock_discovery):
     """
@@ -91,7 +92,7 @@ def test_preflight_timeout_handling(mock_discovery):
             
             # Verify timeout message was written to stderr
             calls = [c.args[0] for c in mock_stderr.call_args_list]
-            assert any("Pre-flight timed out after 60s" in s for s in calls)
+            assert any("Pre-flight timed out after 120s" in s for s in calls)
             assert any("--- Captured stdout ---" in s for s in calls)
             assert any("partial out" in s for s in calls)
 

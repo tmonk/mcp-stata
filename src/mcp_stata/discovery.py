@@ -608,16 +608,25 @@ def verify_stata_install(root_path: str, edition: str, timeout: int = 120, use_c
 import sys
 import os
 try:
+    sys.stderr.write('[preflight] Starting diagnostics...\\n')
+    sys.stderr.flush()
     # Manually prioritize local utilities folder to avoid shadowing by PyPI 'pystata' trap.
     utils_path = os.path.join({repr(root_path)}, 'utilities')
     if os.path.isdir(utils_path) and utils_path not in sys.path:
+        sys.stderr.write(f'[preflight] Inserting utilities path: {{utils_path}}\\n')
         sys.path.insert(0, utils_path)
         
     import stata_setup
+    sys.stderr.write('[preflight] Calling stata_setup.config({repr(root_path)}, {repr(edition)})...\\n')
+    sys.stderr.flush()
     stata_setup.config({repr(root_path)}, {repr(edition)})
     
+    sys.stderr.write('[preflight] Importing pystata.stata...\\n')
+    sys.stderr.flush()
     from pystata import stata
     # Minimal verification of engine health
+    sys.stderr.write('[preflight] Running diagnostic command...\\n')
+    sys.stderr.flush()
     stata.run('display 1', echo=False)
     sys.stdout.write('PREFLIGHT_OK\\n')
     sys.stdout.flush()
@@ -628,6 +637,7 @@ except Exception as e:
     sys.stderr.flush()
     sys.exit(1)
 """
+
     is_working = False
     try:
         py_exe = sys.executable
@@ -657,8 +667,15 @@ except Exception as e:
                  msg += f"\nSTDERR: {res.stderr.strip()}"
             logger.debug(msg)
             is_working = False
-    except subprocess.TimeoutExpired:
-        logger.warning(f"Verification timed out after {timeout}s for {root_path}")
+    except subprocess.TimeoutExpired as e:
+        msg = f"Pre-flight timed out after {timeout}s for {root_path}"
+        if e.output:
+            msg += f"\n--- Captured stdout ---\n{e.output}"
+        if e.stderr:
+            msg += f"\n--- Captured stderr ---\n{e.stderr}"
+        logger.warning(msg)
+        sys.stderr.write(f"[mcp_stata] {msg}\n")
+        sys.stderr.flush()
         is_working = False
     except Exception as e:
         logger.debug(f"Verification error for {root_path}: {e}")

@@ -12,6 +12,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+if (-not [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) {
+    Write-Host '✖ This installer is for Windows only.' -ForegroundColor Red
+    Write-Host ':: Please use install.sh for Linux or macOS:' -ForegroundColor Cyan
+    Write-Host '   curl -fsSL https://mcp-stata-install.tdmonk.com/install.sh | bash' -ForegroundColor Cyan
+    exit 1
+}
+
 $RepoUrl = if ($env:MCP_STATA_REPO_URL) { $env:MCP_STATA_REPO_URL } else { 'https://github.com/tmonk/mcp-stata' }
 $Ref     = if ($env:MCP_STATA_REF) { $env:MCP_STATA_REF } else { 'main' }
 $ZipUrl  = "${RepoUrl}/archive/${Ref}.zip"
@@ -65,7 +73,8 @@ function Get-Version {
 
 # ── Logging ────────────────────────────────────────────────────────────────
 $TempPath = [System.IO.Path]::GetTempPath()
-$LogFile = Join-Path $TempPath ("mcp-stata-install-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + ".log")
+$RandomSuffix = -join ((48..57) + (97..122) | Get-Random -Count 6 | ForEach-Object { [char]$_ })
+$LogFile = Join-Path $TempPath ("mcp-stata-install-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + "-" + $RandomSuffix + ".log")
 $env:MCP_STATA_INSTALL_LOG_FILE = $LogFile
 Start-Transcript -Path $LogFile -Append -ErrorAction SilentlyContinue | Out-Null
 
@@ -152,7 +161,11 @@ function Show-Header {
     Write-Host ('shell'.PadRight(8)) -ForegroundColor DarkGray -NoNewline
     Write-Host "PowerShell $($PSVersionTable.PSVersion)"
     Write-Host ('user'.PadRight(8)) -ForegroundColor DarkGray -NoNewline
-    Write-Host ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
+    if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) {
+        Write-Host ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
+    } else {
+        Write-Host $env:USER
+    }
     Write-Host ('version'.PadRight(8)) -ForegroundColor DarkGray -NoNewline
     Write-Host (Get-Version)
     Write-Host ('args'.PadRight(8)) -ForegroundColor DarkGray -NoNewline
@@ -429,7 +442,13 @@ function Send-Telemetry {
             } catch {}
         }
 
-        $telemetryUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $telemetryUser = 'unknown'
+        if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) {
+            $telemetryUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        } else {
+            $telemetryUser = $env:USER
+        }
+
         if ($env:MCP_STATA_TELEMETRY_USERNAME) {
             $telemetryUser = $env:MCP_STATA_TELEMETRY_USERNAME
         }
@@ -585,9 +604,11 @@ if ($MyInvocation.InvocationName -ne '.') {
             exit 0
         }
 
-        $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-        if ($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-            Write-Warn "Running as Administrator. $ActionLabel will be local to the admin profile."
+        if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) {
+            $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+            if ($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+                Write-Warn "Running as Administrator. $ActionLabel will be local to the admin profile."
+            }
         }
 
         # Telemetry-only mode: test end-to-end telemetry without mutating the machine.

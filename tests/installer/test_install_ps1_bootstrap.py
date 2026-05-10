@@ -8,6 +8,8 @@ import pytest
 
 INSTALL_PS1 = Path(__file__).resolve().parents[2] / "plugin" / "install.ps1"
 
+pytestmark = pytest.mark.skipif(os.name != "nt", reason="install.ps1 is for Windows only")
+
 @pytest.fixture
 def test_env_ps1(tmp_path):
     home = tmp_path / "home"

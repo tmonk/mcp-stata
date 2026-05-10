@@ -1,5 +1,6 @@
 import numpy as np
 import pyarrow as pa
+import pytest
 
 from mcp_stata.ui_http import _try_native_argsort
 from mcp_stata import native_ops
@@ -30,12 +31,14 @@ def test_native_argsort_mixed_fallback():
     assert res == [1, 2, 0, 3]
 
 
+@pytest.mark.skipif(native_ops._native is None, reason="Native ops not available")
 def test_native_sorter_numeric_direct():
     cols = [np.array([3.0, 1.0, np.nan, 2.0], dtype=np.float64)]
     res = native_ops.argsort_numeric(cols, [False], [True])
     assert res == [1, 3, 0, 2]
 
 
+@pytest.mark.skipif(native_ops._native is None, reason="Native ops not available")
 def test_native_sorter_mixed_direct():
     cols = [
         np.array([2.0, 1.0, np.nan, 1.0], dtype=np.float64),
