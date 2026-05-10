@@ -46,7 +46,7 @@ async def test_break_session_tool_logic():
         # Start a long run (loop is better than sleep for testing interrupts)
         task = asyncio.create_task(session.call("run_command", {"code": "forvalues i=1/1000000 { \n di `i' \n }", "options": {"echo": True}}))
         
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.2)
         
         start_time = asyncio.get_running_loop().time()
         # Send break out-of-band

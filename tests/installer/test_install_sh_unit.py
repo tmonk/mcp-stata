@@ -12,13 +12,14 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import stat
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+
+from install_sh_harness import install_curl_noop_stub, install_uv_run_stub, make_executable
 
 INSTALL_SH = Path(__file__).resolve().parents[2] / "plugin" / "install.sh"
 pytestmark = pytest.mark.skipif(
@@ -31,13 +32,6 @@ pytestmark = pytest.mark.skipif(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_executable(path: Path, content: str) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return path
-
-
 def _run(
     args: list[str],
     *,
@@ -46,17 +40,16 @@ def _run(
     check: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run install.sh with an isolated HOME and optional extra env vars."""
-    import shutil
     bin_dir = home / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    # Symlink system uv/uvx to avoid network downloads in install.sh
-    for tool in ["uv", "uvx"]:
-        tool_path = bin_dir / tool
-        if not tool_path.exists():
-            system_tool = shutil.which(tool)
-            if system_tool:
-                tool_path.write_text(f'#!/bin/bash\nexec "{system_tool}" "$@"\n')
-                tool_path.chmod(tool_path.stat().st_mode | 0o755)
+    install_curl_noop_stub(bin_dir)
+    install_uv_run_stub(bin_dir)
+    tool_path = bin_dir / "uvx"
+    if not tool_path.exists():
+        system_uvx = shutil.which("uvx")
+        if system_uvx:
+            tool_path.write_text(f'#!/bin/bash\nexec "{system_uvx}" "$@"\n')
+            tool_path.chmod(tool_path.stat().st_mode | 0o755)
 
     env = os.environ.copy()
     env["HOME"] = str(home)
@@ -64,6 +57,8 @@ def _run(
     # while keeping essential system binaries and our uv wrapper.
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin"
     env["MCP_STATA_PROJECT_ROOT"] = str(home / "project")
+    env.setdefault("MCP_STATA_TELEMETRY_ENABLED", "0")
+    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     # Prefer the current Python for uv to avoid redundant downloads
     env["UV_PYTHON"] = sys.executable
     env.pop("STATA_PATH", None)  # ensure clean slate
@@ -88,7 +83,7 @@ def _stub_uvx(bin_dir: Path, stata_path: str = "") -> None:
         fi
         exit 0
     """)
-    _make_executable(bin_dir / "uvx", content)
+    make_executable(bin_dir / "uvx", content)
 
 
 def _stub_uvx_with_stata(bin_dir: Path, stata_path: Path) -> None:
@@ -101,7 +96,7 @@ def _stub_uvx_with_stata(bin_dir: Path, stata_path: Path) -> None:
         fi
         exit 0
     """).replace("tmp_be", "be")
-    _make_executable(bin_dir / "uvx", content)
+    make_executable(bin_dir / "uvx", content)
 
 
 def _stub_agent_cli(bin_dir: Path, name: str, *, succeeds: bool = True) -> None:
@@ -111,13 +106,13 @@ def _stub_agent_cli(bin_dir: Path, name: str, *, succeeds: bool = True) -> None:
         #!/usr/bin/env bash
         exit {exit_code}
     """)
-    _make_executable(bin_dir / name, content)
+    make_executable(bin_dir / name, content)
 
 
 def _fake_stata(tmp_path: Path) -> Path:
     """Create a minimal fake Stata executable."""
     p = tmp_path / "fake-stata" / "stata-mp"
-    _make_executable(p, "#!/usr/bin/env bash\nexit 0\n")
+    make_executable(p, "#!/usr/bin/env bash\nexit 0\n")
     return p
 
 

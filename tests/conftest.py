@@ -1,11 +1,19 @@
 import os
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
+
+_TESTS_ROOT = Path(__file__).resolve().parent
+if str(_TESTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TESTS_ROOT))
 
 # Snapshot capture is best-effort in tests; keep timeout low so mocked sessions
 # that do not reply to history RPCs do not slow the suite.
 os.environ.setdefault("MCP_STATA_HISTORY_SNAPSHOT_TIMEOUT", "0.2")
+
+# Less filesystem churn when subprocesses import repeatedly (installer/bash wrappers).
+os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
 # Mock Stata dependencies ONLY if they're not already available
 # This allows tests that need real Stata to use it, while providing mocks for unit tests
@@ -175,13 +183,6 @@ def pytest_collection_modifyitems(config, items):
                 stable_hash = sum(ord(c) for c in module_path)
                 group_idx = stable_hash % 4
                 item.add_marker(pytest.mark.xdist_group(name=f"stata_group_{group_idx}"))
-            
-            # 3. Group build integration tests into 2 subgroups
-            elif "tests/execution/test_build_integration.py" in nodeid:
-                module_path = nodeid.split("::")[0]
-                stable_hash = sum(ord(c) for c in module_path)
-                group_idx = stable_hash % 2
-                item.add_marker(pytest.mark.xdist_group(name=f"build_group_{group_idx}"))
 
     force_mock = os.environ.get("MCP_STATA_MOCK") == "1"
     

@@ -2657,6 +2657,16 @@ def main():
         print(SERVER_VERSION)
         return
 
+    # CLI introspection must not bootstrap Stata sessions (slow; breaks packaging smoke tests).
+    if "-h" in sys.argv or "--help" in sys.argv:
+        import argparse
+
+        parser = argparse.ArgumentParser(
+            prog="mcp-stata",
+            description="Model Context Protocol server for Stata.",
+        )
+        parser.parse_args()  # prints help and raises SystemExit on --help / -h
+
     # Fix for macOS environments where sys.executable might be a shim that calls 'realpath'.
     # On some macOS versions (pre-Monterey) or minimal environments, 'realpath' is missing,
     # causing shims (like those from uv or pyenv) to fail.

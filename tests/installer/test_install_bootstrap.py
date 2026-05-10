@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
+from install_sh_harness import make_executable
+
 INSTALL_SH = Path(__file__).resolve().parents[2] / "plugin" / "install.sh"
 
 @pytest.fixture
@@ -14,19 +16,21 @@ def test_env(tmp_path):
     home.mkdir()
     bin_dir = home / "bin"
     bin_dir.mkdir()
-    
-    # Mock uv
-    uv_path = bin_dir / "uv"
-    uv_path.write_text("#!/usr/bin/env bash\n"
-                       "if [[ \"$*\" == *\"--version\"* ]]; then echo \"uv 0.1.0\"; exit 0; fi\n"
-                       "echo \"UV RUN: $@\"\n"
-                       "exit 0")
-    uv_path.chmod(0o755)
+
+    # Echo-only uv: install.sh resolves INSTALL_REPO_ROOT to the real checkout, so a
+    # delegating stub would run the real setup_toolkit.py instead of tmp fixtures.
+    make_executable(
+        bin_dir / "uv",
+        "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"--version"* ]]; then echo "uv 0.1.0"; exit 0; fi\n'
+        'echo "UV RUN: $*"\n'
+        "exit 0\n",
+    )
     
     # Mock curl for telemetry and source download
     telemetry_log = tmp_path / "telemetry.log"
     curl_path = bin_dir / "curl"
-    curl_path.write_text(textwrap.dedent(f"""\
+    curl_script = textwrap.dedent(f"""\
         #!/usr/bin/env bash
         # Capture telemetry
         if [[ "$*" == *"-d"* ]]; then
@@ -45,14 +49,15 @@ def test_env(tmp_path):
             exit 0
         fi
         exit 0
-    """))
-    curl_path.chmod(0o755)
+    """)
+    make_executable(curl_path, curl_script)
     
     env = os.environ.copy()
     env["HOME"] = str(home)
-    env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
+    env["PATH"] = f"{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin"
     env["MCP_STATA_TELEMETRY_ENABLED"] = "1"
     env["MCP_STATA_DRY_RUN"] = "1"
+    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     
     return SimpleNamespace(home=home, telemetry_log=telemetry_log, env=env)
 
@@ -105,7 +110,7 @@ def test_install_sh_failure_telemetry(test_env):
     
     # Make uv run fail
     uv_path = Path(test_env.env["PATH"].split(":")[0]) / "uv"
-    uv_path.write_text("#!/usr/bin/env bash\nexit 1")
+    make_executable(uv_path, "#!/usr/bin/env bash\nexit 1\n")
     
     result = subprocess.run(
         ["/bin/bash", str(INSTALL_SH), "--dry-run"],

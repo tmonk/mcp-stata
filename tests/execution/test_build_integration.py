@@ -7,16 +7,24 @@ Optimizations:
 - Batched import testing in single subprocess
 """
 
+import hashlib
+import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.xdist_group(name="mcp_stata_build_integration")
+
 
 def run(cmd, *, cwd=None, check=True, env=None):
     """Run command and return result. Fails with full output on error."""
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", env=env)
+    merged = os.environ.copy() if env is None else dict(env)
+    merged.setdefault("MCP_STATA_SKIP_PREFLIGHT", "1")
+
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", env=merged)
     if check and result.returncode != 0:
         pytest.fail(
             f"Command failed: {' '.join(map(str, cmd))}\n"
@@ -31,6 +39,50 @@ def run(cmd, *, cwd=None, check=True, env=None):
 # =============================================================================
 
 
+def _packaging_tree_fingerprint(project_root: Path) -> str:
+    """Hash inputs that affect the built wheel so cache invalidates on real changes."""
+    hasher = hashlib.sha256()
+    key_files = [
+        project_root / "pyproject.toml",
+        project_root / "Cargo.toml",
+        project_root / "Cargo.lock",
+    ]
+    for path in key_files:
+        hasher.update(path.name.encode())
+        if path.exists():
+            hasher.update(path.read_bytes())
+
+    pkg_root = project_root / "src" / "mcp_stata"
+    if pkg_root.is_dir():
+        for path in sorted(pkg_root.rglob("*.py")):
+            rel = path.relative_to(project_root)
+            hasher.update(str(rel).encode())
+            hasher.update(path.read_bytes())
+
+    src_root = project_root / "src"
+    if src_root.is_dir():
+        for path in sorted(src_root.rglob("*.rs")):
+            rel = path.relative_to(project_root)
+            hasher.update(str(rel).encode())
+            hasher.update(path.read_bytes())
+
+    return hasher.hexdigest()
+
+
+@contextmanager
+def _pytest_build_cache_lock(lock_path: Path):
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+
+    with open(lock_path, "a+", encoding="utf-8") as lock_fh:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        yield
+
+
 @pytest.fixture(scope="session")
 def project_root():
     """Return the project root directory."""
@@ -38,14 +90,22 @@ def project_root():
 
 
 @pytest.fixture(scope="session")
-def built_package(tmp_path_factory, project_root):
+def built_package(project_root):
     """Build wheel and sdist once per test session."""
-    build_dir = tmp_path_factory.mktemp("build")
+    digest = _packaging_tree_fingerprint(project_root)
+    cache_root = project_root / ".pytest_build_cache"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    build_dir = cache_root / digest
+    lock_path = cache_root / ".build.lock"
 
-    run(["uv", "build", "--out-dir", str(build_dir)], cwd=project_root)
-
-    wheel_files = list(build_dir.glob("*.whl"))
-    sdist_files = list(build_dir.glob("*.tar.gz"))
+    with _pytest_build_cache_lock(lock_path):
+        wheel_files = list(build_dir.glob("*.whl"))
+        sdist_files = list(build_dir.glob("*.tar.gz"))
+        if not wheel_files or not sdist_files:
+            build_dir.mkdir(parents=True, exist_ok=True)
+            run(["uv", "build", "--out-dir", str(build_dir)], cwd=project_root)
+            wheel_files = list(build_dir.glob("*.whl"))
+            sdist_files = list(build_dir.glob("*.tar.gz"))
 
     if not wheel_files:
         pytest.fail(f"No wheel created. Found: {list(build_dir.glob('*'))}")
@@ -74,6 +134,9 @@ def installed_venv(tmp_path_factory, built_package):
         scripts = venv_path / "bin"
 
     run(["uv", "pip", "install", "--python", str(python), str(built_package["wheel"])])
+
+    # Prime imports once here so per-test subprocess timings reflect steady state.
+    run([str(python), "-c", "from mcp_stata.server import main"])
 
     return {
         "venv_path": venv_path,

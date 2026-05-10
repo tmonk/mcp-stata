@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
+
+from install_sh_harness import make_executable
 
 INSTALL_SH = Path(__file__).resolve().parents[2] / "plugin" / "install.sh"
 
@@ -30,13 +31,6 @@ INSTALL_SH = Path(__file__).resolve().parents[2] / "plugin" / "install.sh"
 # bootstrap. Keeping it as a module constant means a sneaky string change in
 # install.sh will be caught by the locked-down regression tests below.
 ASTRAL_UV_INSTALLER_URL = "https://astral.sh/uv/install.sh"
-
-
-def _make_executable(path: Path, content: str) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    return path
 
 
 def _curl_stub(telemetry_log: Path, *, fail_uv_install: bool) -> str:
@@ -111,16 +105,19 @@ def _run_install(
     bin_dir = home / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
 
-    _make_executable(bin_dir / "curl", _curl_stub(telemetry_log, fail_uv_install=fail_uv_install))
+    make_executable(bin_dir / "curl", _curl_stub(telemetry_log, fail_uv_install=fail_uv_install))
     if stub_uv_on_path:
-        _make_executable(bin_dir / "uv", "#!/usr/bin/env bash\necho 'uv 0.1.0'\nexit 0\n")
-    _make_executable(bin_dir / "uvx", "#!/usr/bin/env bash\nexit 0\n")
+        make_executable(bin_dir / "uv", "#!/usr/bin/env bash\necho 'uv 0.1.0'\nexit 0\n")
+    make_executable(bin_dir / "uvx", "#!/usr/bin/env bash\nexit 0\n")
 
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["PATH"] = str(bin_dir) + ":/usr/bin:/bin:/usr/sbin:/sbin"
     env["MCP_STATA_PROJECT_ROOT"] = str(home / "project")
     env["MCP_STATA_TELEMETRY_ENABLED"] = "1"
+    env.setdefault("MCP_STATA_TELEMETRY_RETRIES", "1")
+    env.setdefault("MCP_STATA_TELEMETRY_TIMEOUT_SECS", "1")
+    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
     return subprocess.run(
         ["/bin/bash", str(INSTALL_SH), *args],
@@ -269,8 +266,8 @@ def test_install_failure_log_tail_size_respects_byte_cap(tmp_path: Path) -> None
     env_extra = {"MCP_STATA_LOG_TAIL_BYTES": "512"}
     bin_dir = home / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
-    _make_executable(bin_dir / "curl", _curl_stub(telemetry_log, fail_uv_install=True))
-    _make_executable(bin_dir / "uvx", "#!/usr/bin/env bash\nexit 0\n")
+    make_executable(bin_dir / "curl", _curl_stub(telemetry_log, fail_uv_install=True))
+    make_executable(bin_dir / "uvx", "#!/usr/bin/env bash\nexit 0\n")
 
     env = os.environ.copy()
     env.update(env_extra)
@@ -278,6 +275,9 @@ def test_install_failure_log_tail_size_respects_byte_cap(tmp_path: Path) -> None
     env["PATH"] = str(bin_dir) + ":/usr/bin:/bin:/usr/sbin:/sbin"
     env["MCP_STATA_PROJECT_ROOT"] = str(home / "project")
     env["MCP_STATA_TELEMETRY_ENABLED"] = "1"
+    env.setdefault("MCP_STATA_TELEMETRY_RETRIES", "1")
+    env.setdefault("MCP_STATA_TELEMETRY_TIMEOUT_SECS", "1")
+    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
     result = subprocess.run(
         ["/bin/bash", str(INSTALL_SH), "--dry-run"],
