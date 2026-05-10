@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -44,10 +46,26 @@ def _run(
     check: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run install.sh with an isolated HOME and optional extra env vars."""
+    import shutil
+    bin_dir = home / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    # Symlink system uv/uvx to avoid network downloads in install.sh
+    for tool in ["uv", "uvx"]:
+        tool_path = bin_dir / tool
+        if not tool_path.exists():
+            system_tool = shutil.which(tool)
+            if system_tool:
+                tool_path.write_text(f'#!/bin/bash\nexec "{system_tool}" "$@"\n')
+                tool_path.chmod(tool_path.stat().st_mode | 0o755)
+
     env = os.environ.copy()
     env["HOME"] = str(home)
-    env["PATH"] = str(home / "bin") + ":/usr/bin:/bin"
+    # Use a restricted PATH to isolate from host agents (e.g. Claude, Cursor)
+    # while keeping essential system binaries and our uv wrapper.
+    env["PATH"] = f"{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin"
     env["MCP_STATA_PROJECT_ROOT"] = str(home / "project")
+    # Prefer the current Python for uv to avoid redundant downloads
+    env["UV_PYTHON"] = sys.executable
     env.pop("STATA_PATH", None)  # ensure clean slate
     if env_extra:
         env.update(env_extra)

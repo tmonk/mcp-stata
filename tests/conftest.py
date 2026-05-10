@@ -145,25 +145,43 @@ def mock_stata_modules():
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-mark Stata-backed fixture users and skip them in forced mock mode."""
-    # Auto-mark tests that use the Stata-backed shared fixtures.
+    """Auto-mark Stata-backed fixture users and group tests to optimize xdist parallelization."""
     for item in items:
-        needs_stata = False
-        fixturenames = set(getattr(item, "fixturenames", ()) or ())
-        if "stata_client" in fixturenames:
-            needs_stata = True
-        elif "client" in fixturenames:
-            fixtureinfo = getattr(item, "_fixtureinfo", None)
-            name2defs = getattr(fixtureinfo, "name2fixturedefs", {}) if fixtureinfo else {}
-            defs = name2defs.get("client", []) or []
-            if defs:
-                chosen = defs[-1]
-                func = getattr(chosen, "func", None)
-                module = getattr(func, "__module__", "") if func else ""
-                if module.endswith("conftest"):
-                    needs_stata = True
-        if needs_stata and "requires_stata" not in item.keywords:
-            item.add_marker(pytest.mark.requires_stata)
+        nodeid = item.nodeid
+        
+        # 1. Group version sync tests (avoids race conditions on real plugin files)
+        if "tests/data/test_sync_version_unit.py" in nodeid:
+            item.add_marker(pytest.mark.xdist_group(name="version_sync"))
+
+        # 2. Identify and group Stata-heavy tests
+        else:
+            needs_stata = False
+            fixturenames = set(getattr(item, "fixturenames", ()) or ())
+            
+            # Check for Stata fixtures or markers
+            if "stata_client" in fixturenames or "client" in fixturenames:
+                needs_stata = True
+            elif any(mark.name in ["requires_stata", "stata_heavy"] for mark in item.iter_markers()):
+                needs_stata = True
+            
+            if needs_stata:
+                if "requires_stata" not in item.keywords:
+                    item.add_marker(pytest.mark.requires_stata)
+                
+                # Group into 4 subgroups to balance Stata init cost (7s) with parallelism.
+                # This ensures only 4 workers pay the init cost, while still running 4-way parallel.
+                # Use a stable hash (sum of ords) since Python's hash() is randomized.
+                module_path = nodeid.split("::")[0]
+                stable_hash = sum(ord(c) for c in module_path)
+                group_idx = stable_hash % 4
+                item.add_marker(pytest.mark.xdist_group(name=f"stata_group_{group_idx}"))
+            
+            # 3. Group build integration tests into 2 subgroups
+            elif "tests/execution/test_build_integration.py" in nodeid:
+                module_path = nodeid.split("::")[0]
+                stable_hash = sum(ord(c) for c in module_path)
+                group_idx = stable_hash % 2
+                item.add_marker(pytest.mark.xdist_group(name=f"build_group_{group_idx}"))
 
     force_mock = os.environ.get("MCP_STATA_MOCK") == "1"
     

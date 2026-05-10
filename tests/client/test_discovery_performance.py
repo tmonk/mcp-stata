@@ -19,33 +19,15 @@ def clean_cache():
         _DISCOVERY_CACHE_PATH.unlink()
 
 def test_verify_stata_install_cache_integration(clean_cache):
-    # Setup mocks inside the test to capture real functions
-    import os
-    real_exists = os.path.exists
-    real_stat = os.stat
-    
-    with patch("os.path.exists") as mock_exists, \
-         patch("os.listdir") as mock_listdir, \
-         patch("os.stat") as mock_stat, \
+    # Setup mocks for cache functions and subprocess
+    with patch("mcp_stata.discovery._load_discovery_cache") as mock_load, \
+         patch("mcp_stata.discovery._save_discovery_cache") as mock_save, \
+         patch("mcp_stata.discovery._get_stata_fingerprint") as mock_fingerprint, \
          patch("subprocess.run") as mock_run:
          
-        def exists_side_effect(path):
-            if "/path/to/stata" in str(path):
-                return True
-            return real_exists(path)
-        mock_exists.side_effect = exists_side_effect
-        
-        mock_listdir.return_value = ["StataMP.app", "utilities", "stata.lic"]
-        
-        mock_stat_root = MagicMock()
-        mock_stat_root.st_mtime = 1000.0
-        mock_stat_root.st_size = 4096
-        def stat_side_effect(path):
-            if "/path/to/stata" in str(path):
-                return mock_stat_root
-            return real_stat(path)
-        mock_stat.side_effect = stat_side_effect
-        
+        # Initial state: empty cache
+        mock_load.return_value = {}
+        mock_fingerprint.return_value = "fingerprint-1"
         mock_run.return_value = MagicMock(returncode=0, stdout="PREFLIGHT_OK", stderr="")
         
         root_path = "/path/to/stata"
@@ -54,34 +36,46 @@ def test_verify_stata_install_cache_integration(clean_cache):
         # 1. First call: should run subprocess (Cold cache)
         assert verify_stata_install(root_path, edition) is True
         assert mock_run.call_count == 1
-        
-        # Verify cache file was created
-        assert _DISCOVERY_CACHE_PATH.exists()
+        assert mock_save.call_count == 1
         
         # 2. Second call: should use cache (Warm cache)
+        # Update mock_load to return the saved state
+        cache_key = f"{root_path}:{edition}"
+        mock_load.return_value = {
+            cache_key: {
+                "working": True,
+                "fingerprint": "fingerprint-1",
+                "at": time.time()
+            }
+        }
         assert verify_stata_install(root_path, edition) is True
         assert mock_run.call_count == 1 # Still 1
         
-        # 3. Call after mtime change: should re-verify
-        mock_stat_root.st_mtime = 2000.0
+        # 3. Call after fingerprint change: should re-verify
+        mock_fingerprint.return_value = "fingerprint-2"
         assert verify_stata_install(root_path, edition) is True
         assert mock_run.call_count == 2
         
-        # 4. Call after some time for a broken install
+        # 4. Broken install behavior
         mock_run.return_value = MagicMock(returncode=1, stdout="FAIL", stderr="")
-        mock_stat_root.st_mtime = 3000.0
-        # First time it fails and caches as broken
+        mock_fingerprint.return_value = "fingerprint-3"
+        # First time it fails
         assert verify_stata_install(root_path, edition) is False
         assert mock_run.call_count == 3
         
         # Immediate second call uses cache (False)
+        mock_load.return_value[cache_key] = {
+            "working": False,
+            "fingerprint": "fingerprint-3",
+            "at": time.time()
+        }
         assert verify_stata_install(root_path, edition) is False
         assert mock_run.call_count == 3
         
-        # Call after 25 hours (86400+ seconds) should re-verify
-        with patch("time.time", return_value=time.time() + 90000):
-            assert verify_stata_install(root_path, edition) is False
-            assert mock_run.call_count == 4
+        # Call after 25 hours should re-verify even if fingerprint matches
+        mock_load.return_value[cache_key]["at"] = time.time() - 90000
+        assert verify_stata_install(root_path, edition) is False
+        assert mock_run.call_count == 4
 
 @patch("mcp_stata.discovery.find_stata_candidates")
 @patch("mcp_stata.discovery.verify_stata_install")

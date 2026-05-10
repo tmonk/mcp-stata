@@ -28,3 +28,4 @@ mcp-stata-install/
 benchmarks/history/*.md
 /.venv_mac
 /scratch
+/benchmarks

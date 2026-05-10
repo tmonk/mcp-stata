@@ -924,7 +924,6 @@ def install_for_agent(
                 local_source=local_source,
                 project_root=project_root,
             ))
-            _append(register_generic_skills(project_root=project_root))
         return written
 
     if agent == "codex":
