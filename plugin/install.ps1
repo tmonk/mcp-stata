@@ -195,10 +195,16 @@ Notes:
   - This script delegates the heavy lifting to scripts\install\setup_toolkit.py
   - Telemetry is best-effort and never affects exit status.
 
+Local checkout (uv run --directory … instead of uvx):
+  --install-repo DIR          Passed through to setup_toolkit.py
+  MCP_STATA_INSTALL_REPO      Same effect if set in the environment
+
 Examples:
   irm ${InstallUrlPs1} | iex
   # Fallback: irm ${InstallFallbackPs1} | iex
   powershell -ExecutionPolicy Bypass -File install.ps1 --agent cursor --dry-run
+  `$env:MCP_STATA_INSTALL_REPO = 'C:\src\mcp-stata'; .\install.ps1 --agent cursor
+  .\install.ps1 --install-repo 'C:\src\mcp-stata' --agent cursor --dry-run
 "@ | Write-Host
 }
 
