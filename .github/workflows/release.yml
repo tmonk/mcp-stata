@@ -40,6 +40,18 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "**/uv.lock"
 
+      - name: Filter changed paths
+        uses: dorny/paths-filter@v2
+        id: paths
+        with:
+          filters: |
+            rust:
+              - 'src_rust/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'pyproject.toml'
+              - 'src/**/*.rs'
+
       - name: Set up Python
         run: uv python install 3.14
 
@@ -52,9 +64,11 @@ jobs:
         run: uv tool install hatch
 
       - name: Set up Rust
+        if: steps.paths.outputs.rust == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust cache
+        if: steps.paths.outputs.rust == 'true'
         uses: Swatinem/rust-cache@v2
 
       - name: Install release dependencies
@@ -67,7 +81,11 @@ jobs:
         timeout-minutes: 2
 
       - name: Run Rust tests
-        run: cargo test
+        if: steps.paths.outputs.rust == 'true'
+        run: |
+          cargo test
+          pip install maturin
+          maturin develop --release
 
       - name: Run Python tests (no Stata)
         run: uv run pytest -v -m "not requires_stata"
