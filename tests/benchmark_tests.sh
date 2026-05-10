@@ -66,6 +66,9 @@ echo -e "  ${BOLD}${RUN} Running pytest...${RESET}"
 print_divider
 echo
 
+# Ensure file exists before tail -f tries to open it
+touch "$OUTFILE"
+
 # Start live tail in background, store PID
 live_tail "$OUTFILE" &
 TAIL_PID=$!
