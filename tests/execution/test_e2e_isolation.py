@@ -8,6 +8,8 @@ from pathlib import Path
 from contextlib import AsyncExitStack
 from mcp import ClientSession, StdioServerParameters, stdio_client
 
+from tool_payload import tool_payload_dict
+
 pytestmark = [pytest.mark.requires_stata, pytest.mark.integration, pytest.mark.xdist_group("stata_heavy")]
 
 def find_mcp_stata_cli():
@@ -48,7 +50,7 @@ async def test_e2e_command_isolation_and_log_path():
 
         # Command 1
         res1 = await session.call_tool("stata_run", {"code": "display \"E2E_TOKEN_1\""})
-        out1 = json.loads(res1.content[0].text)
+        out1 = tool_payload_dict(res1)
         path1 = _log_path(out1)
         assert path1 and os.path.exists(path1)
 
@@ -59,7 +61,7 @@ async def test_e2e_command_isolation_and_log_path():
 
         # Command 2
         res2 = await session.call_tool("stata_run", {"code": "display \"E2E_TOKEN_2\""})
-        out2 = json.loads(res2.content[0].text)
+        out2 = tool_payload_dict(res2)
         path2 = _log_path(out2)
         assert path2 and os.path.exists(path2)
         assert path1 != path2

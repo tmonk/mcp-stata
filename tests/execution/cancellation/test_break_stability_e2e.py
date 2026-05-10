@@ -12,6 +12,8 @@ import anyio
 import pytest
 from mcp import ClientSession, StdioServerParameters, stdio_client
 
+from tool_payload import tool_payload_dict, tool_payload_text
+
 pytestmark = [pytest.mark.requires_stata, pytest.mark.integration, pytest.mark.xdist_group("stata_heavy")]
 
 def find_mcp_stata_cli():
@@ -76,14 +78,14 @@ async def test_session_stability_after_break():
         
         # 2. desc' DESC OUTPUT long running code' (Save baseline)
         desc_res1 = await session.call_tool("stata_run", {"code": "desc", "raw": False})
-        baseline = normalize_describe(desc_res1.content[0].text)
+        baseline = normalize_describe(tool_payload_text(desc_res1))
         print(f"\n[DEBUG] Baseline describe length: {len(baseline)}")
 
         # 3. long running background code
         # We use a display in a loop but with mod to keep output manageable
         code = "forvalues i = 1/1000000 { if mod(`i', 1000) == 0 { display `i' } }"
         bg_res = await session.call_tool("stata_run", {"code": code, "background": True})
-        task_id = json.loads(bg_res.content[0].text)["data"]["task_id"]
+        task_id = tool_payload_dict(bg_res)["data"]["task_id"]
 
         # 4. Wait a bit for it to be mid-flight
         await anyio.sleep(1.0)
@@ -99,7 +101,7 @@ async def test_session_stability_after_break():
         immediacy_duration = time.perf_counter() - cancel_start
         print(f"[DEBUG] Immediate desc call took: {immediacy_duration:.4f}s")
 
-        after_break = normalize_describe(desc_res2.content[0].text)
+        after_break = normalize_describe(tool_payload_text(desc_res2))
 
         # ASSERTIONS
         
@@ -116,7 +118,7 @@ async def test_session_stability_after_break():
 
         # Final check on task state
         status_res = await session.call_tool("stata_task_status", {"task_id": task_id})
-        status_payload = json.loads(status_res.content[0].text)["data"]
+        status_payload = tool_payload_dict(status_res)["data"]
         assert status_payload["status"] in ("done", "failed"), "Interrupted task should be marked as finished"
 
 @pytest.mark.anyio
@@ -141,12 +143,12 @@ async def test_session_stability_after_break_session_tool():
         # 1. Setup
         await session.call_tool("stata_run", {"code": "sysuse auto, clear"})
         desc_res1 = await session.call_tool("stata_run", {"code": "desc", "raw": False})
-        baseline = normalize_describe(desc_res1.content[0].text)
+        baseline = normalize_describe(tool_payload_text(desc_res1))
 
         # 2. Run background command
         code = "forvalues i = 1/1000000 { if mod(`i', 1000) == 0 { display `i' } }"
         bg_res = await session.call_tool("stata_run", {"code": code, "background": True})
-        task_id = json.loads(bg_res.content[0].text)["data"]["task_id"]
+        task_id = tool_payload_dict(bg_res)["data"]["task_id"]
 
         await anyio.sleep(1.0)
 
@@ -161,7 +163,7 @@ async def test_session_stability_after_break_session_tool():
         immediacy_duration = time.perf_counter() - cancel_start
         print(f"[DEBUG] Immediate desc call after break_session took: {immediacy_duration:.4f}s")
 
-        after_break = normalize_describe(desc_res2.content[0].text)
+        after_break = normalize_describe(tool_payload_text(desc_res2))
 
         # ASSERTIONS
         assert immediacy_duration < 3.0
@@ -169,7 +171,7 @@ async def test_session_stability_after_break_session_tool():
         
         # Check background task also finished
         status_res = await session.call_tool("stata_task_status", {"task_id": task_id})
-        status_payload = json.loads(status_res.content[0].text)["data"]
+        status_payload = tool_payload_dict(status_res)["data"]
         assert status_payload["status"] in ("done", "failed")
 
 @pytest.mark.anyio
@@ -215,7 +217,7 @@ async def test_foreground_break_session_immediacy():
             # Task 2: Break it
             print("[DEBUG] Sending out-of-band break_session...")
             break_res = await session.call_tool("stata_control", {"action": "break", "id": "default"})
-            print(f"[DEBUG] break_session response: {break_res.content[0].text}")
+            print(f"[DEBUG] break_session response: {tool_payload_text(break_res)}")
 
         # After the task group exits, the foreground command should have returned
         assert len(foreground_results) == 1
@@ -228,4 +230,4 @@ async def test_foreground_break_session_immediacy():
         
         # Verify state is still OK
         desc_res = await session.call_tool("stata_run", {"code": "desc", "raw": False})
-        assert "Variable label" in desc_res.content[0].text
+        assert "Variable label" in tool_payload_text(desc_res)

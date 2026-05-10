@@ -10,6 +10,8 @@ import pytest
 import json
 from mcp import ClientSession, StdioServerParameters, stdio_client
 
+from tool_payload import tool_payload_dict, tool_payload_text
+
 pytestmark = [pytest.mark.requires_stata, pytest.mark.integration, pytest.mark.xdist_group("stata_heavy")]
 
 def find_mcp_stata_cli():
@@ -59,7 +61,7 @@ def test_cancel_task_tool_works():
                 {"code": code, "background": True}
             )
             
-            payload = json.loads(result.content[0].text)["data"]
+            payload = tool_payload_dict(result)["data"]
             task_id = payload.get("task_id")
             assert task_id, "Expected task_id in response"
 
@@ -71,7 +73,7 @@ def test_cancel_task_tool_works():
                 "stata_control",
                 {"action": "cancel", "id": task_id}
             )
-            cancel_payload = json.loads(cancel_res.content[0].text)["data"]
+            cancel_payload = tool_payload_dict(cancel_res)["data"]
             assert cancel_payload.get("status") == "cancelling"
 
             # Wait for it to finish (it should finish with an error/cancelled status)
@@ -82,7 +84,7 @@ def test_cancel_task_tool_works():
                 "stata_task_status",
                 {"task_id": task_id}
             )
-            status_payload = json.loads(status_res.content[0].text)["data"]
+            status_payload = tool_payload_dict(status_res)["data"]
 
             # With our new architecture, a cancelled task should be 'completed' or 'failed'
             assert status_payload.get("status") in ("done", "completed", "failed")
@@ -92,6 +94,6 @@ def test_cancel_task_tool_works():
             
             # The session should be responsive
             check_res = await session.call_tool("stata_run", {"code": "display 999", "raw": False})
-            assert "999" in check_res.content[0].text
+            assert "999" in tool_payload_text(check_res)
 
     anyio.run(main)
