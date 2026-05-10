@@ -4,6 +4,12 @@
 
 ## v3.2.8 (2026-05-10)
 
+### Improvements
+
+- **MCP**: Omit duplicate unstructured JSON beside `structuredContent` by default (escape hatch:
+  `MCP_STATA_STRUCTURED_COMPANION_TEXT=compact`); document host variability in
+  `docs/MCP_COMPATIBILITY.md` ([#55](https://github.com/tmonk/mcp-stata/issues/55))
+
 ### Bug Fixes
 
 - **installer**: Complete Windows bootstrap symlink fixes for PR #52
