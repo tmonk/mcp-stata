@@ -470,11 +470,9 @@ def _cleanup_codex_marketplace(*, project_root: Path | None = None) -> None:
     _best_effort_subprocess(["codex", "plugin", "marketplace", "remove", "mcp-stata"])
 
 
-def install_codex_skills(*, project_root: Path | None = None) -> Path | None:
+def install_codex_skills(*, project_root: Path | None = None) -> list[Path]:
     skills_root = get_codex_home() / "skills"
-    skills_root.mkdir(parents=True, exist_ok=True)
-    link = skills_root / CANONICAL_SERVER_NAME
-    return link if _ensure_symlink(link, PLUGIN_SKILLS_DIR) else None
+    return _sync_skills(PLUGIN_SKILLS_DIR, skills_root)
 
 
 def install_gemini_extension(*, project_root: Path | None = None) -> Path | None:
@@ -484,11 +482,72 @@ def install_gemini_extension(*, project_root: Path | None = None) -> Path | None
     return link if _ensure_symlink(link, PLUGIN_ROOT) else None
 
 
-def register_generic_skills(*, project_root: Path | None = None) -> Path | None:
+def register_generic_skills(*, project_root: Path | None = None) -> list[Path]:
     skills_root = Path.home() / ".agents" / "skills"
-    skills_root.mkdir(parents=True, exist_ok=True)
-    link = skills_root / CANONICAL_SERVER_NAME
-    return link if _ensure_symlink(link, PLUGIN_SKILLS_DIR) else None
+    return _sync_skills(PLUGIN_SKILLS_DIR, skills_root)
+
+
+def _sync_skills(source_dir: Path, target_dir: Path) -> list[Path]:
+    """
+    Sync individual skill subdirectories from source_dir to target_dir.
+    Only touches symlinks that point into the source_dir (our "own" skills).
+    """
+    if not source_dir.exists():
+        return []
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Cleanup legacy namespaced link if it exists
+    legacy_link = target_dir / CANONICAL_SERVER_NAME
+    if legacy_link.is_symlink():
+        try:
+            if str(legacy_link.resolve()).startswith(str(source_dir)):
+                legacy_link.unlink()
+                print_verbose(f"Removed legacy namespaced skill link: {legacy_link}")
+        except Exception:
+            pass
+
+    # Identify skills in the source
+    source_skills = {p.name: p for p in source_dir.iterdir() if p.is_dir() and not p.name.startswith(".")}
+    synced = []
+
+    # 2. Ensure current skills are linked (Add/Update)
+    for skill_name, target_path in source_skills.items():
+        link = target_dir / skill_name
+        if _ensure_symlink(link, target_path):
+            synced.append(link)
+
+    # 3. Remove orphaned symlinks (Remove our OWN removed skills)
+    for item in target_dir.iterdir():
+        if item.is_symlink():
+            try:
+                resolved = item.resolve()
+                if str(resolved).startswith(str(source_dir)):
+                    if item.name not in source_skills:
+                        item.unlink()
+                        print_verbose(f"Removed orphaned skill symlink: {item}")
+            except Exception:
+                pass
+
+    return synced
+
+
+def _cleanup_skills(target_dir: Path):
+    """Remove any symlinks in target_dir that point into our PLUGIN_SKILLS_DIR."""
+    if not target_dir.exists():
+        return []
+    removed = []
+    # Also check the namespaced legacy link
+    legacy_link = target_dir / CANONICAL_SERVER_NAME
+    for item in list(target_dir.iterdir()) + [legacy_link]:
+        if item.exists() and item.is_symlink():
+            try:
+                if str(item.resolve()).startswith(str(PLUGIN_SKILLS_DIR)):
+                    item.unlink()
+                    removed.append(item)
+            except Exception:
+                pass
+    return removed
 
 
 def _ensure_symlink(link: Path, target: Path) -> bool:
@@ -508,13 +567,11 @@ def _ensure_symlink(link: Path, target: Path) -> bool:
             # would follow the junction and delete the target, so avoid it on Windows.
             try:
                 if link.is_dir():
-                    if sys.platform == "win32":
-                        try:
-                            os.rmdir(link)
-                        except OSError:
-                            shutil.rmtree(link)
-                    else:
-                        shutil.rmtree(link)
+                    # Check if it's a real directory (not a link/junction)
+                    # On Windows, is_dir() is true for junctions too, but is_symlink() is false.
+                    # We want to be careful not to delete a user's real skills directory.
+                    print_warning(f"Existing path {link} is a real directory and would be overwritten. Skipping.")
+                    return False
                 else:
                     link.unlink()
             except Exception as exc:
@@ -640,9 +697,9 @@ def uninstall_for_agent(
     if agent == "codex":
         target_dir = get_codex_home() if scope == "user" else get_project_root(project_root) / ".codex"
         _append(*remove_codex_config(target_dir / "config.toml"))
-        link = get_codex_home() / "skills" / CANONICAL_SERVER_NAME
-        if _remove_symlink(link):
-            removed.append(link)
+        # Cleanup individual and namespaced skills
+        skills_dir = get_codex_home() / "skills"
+        removed.extend(_cleanup_skills(skills_dir))
         _append(*remove_project_agents_hint(project_root=project_root))
         return removed
 
@@ -650,6 +707,8 @@ def uninstall_for_agent(
         link = Path.home() / ".gemini" / "extensions" / CANONICAL_SERVER_NAME
         if _remove_symlink(link):
             removed.append(link)
+        # Gemini skills are in ~/.agents/skills
+        removed.extend(_cleanup_skills(Path.home() / ".agents" / "skills"))
         return removed
 
     if agent == "cursor":
@@ -683,14 +742,14 @@ def _run_uninstall(args: argparse.Namespace) -> int:
             wanted.update({"claude-desktop", "claude-code"})
         targets = [a for a in targets if a.name in wanted]
 
-    # Remove the generic skills symlink once, regardless of agent.
-    generic_link = Path.home() / ".agents" / "skills" / CANONICAL_SERVER_NAME
-    if generic_link.is_symlink() or generic_link.exists():
-        if not args.dry_run:
-            if _remove_symlink(generic_link):
-                print_success(f"Removed {generic_link}")
-        else:
-            print(f"  [dry-run] would remove {generic_link}")
+    # Remove the generic skills symlink(s) once, regardless of agent.
+    generic_skills_root = Path.home() / ".agents" / "skills"
+    if not args.dry_run:
+        removed = _cleanup_skills(generic_skills_root)
+        for path in removed:
+            print_success(f"Removed {path}")
+    else:
+        print(f"  [dry-run] would remove mcp-stata skill symlinks from {generic_skills_root}")
 
     if not targets:
         print_warning("No supported agents detected. Nothing to uninstall.")
@@ -837,9 +896,13 @@ def install_for_agent(
 ) -> list[Path]:
     written: list[Path] = []
 
-    def _append(path: Path | None) -> None:
-        if path is not None:
-            written.append(path)
+    def _append(item: Path | list[Path] | None) -> None:
+        if item is None:
+            return
+        if isinstance(item, list):
+            written.extend(item)
+        else:
+            written.append(item)
 
     if agent == "claude":
         marketplace_ok = install_claude_marketplace(scope=scope, project_root=project_root)
@@ -861,6 +924,7 @@ def install_for_agent(
                 local_source=local_source,
                 project_root=project_root,
             ))
+            _append(register_generic_skills(project_root=project_root))
         return written
 
     if agent == "codex":
@@ -882,6 +946,7 @@ def install_for_agent(
                 local_source=local_source,
                 project_root=project_root,
             ))
+            _append(install_codex_skills(project_root=project_root))
         return written
 
     if agent == "gemini":
@@ -991,7 +1056,7 @@ def _print_dry_run(
             print("  [dry-run] would update Codex user configuration if marketplace install is unavailable")
         else:
             print("  [dry-run] would update Codex project configuration if marketplace install is unavailable")
-        print(f"  [dry-run] would symlink {PLUGIN_SKILLS_DIR} -> {get_codex_home() / 'skills' / CANONICAL_SERVER_NAME}")
+        print(f"  [dry-run] would symlink individual skills from {PLUGIN_SKILLS_DIR} -> {get_codex_home() / 'skills'}")
         print(f"  [dry-run] would merge project guidance into {project_root / 'AGENTS.md'}")
         return
     if agent == "gemini":

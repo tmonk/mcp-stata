@@ -29,7 +29,7 @@ pytestmark = pytest.mark.requires_stata
 class TestSFIAvailability:
     """Test SFI interface availability and basic functionality."""
     
-    def test_sfi_available(self):
+    def test_sfi_available(self, client):
         """Test that sfi interface is actually available."""
         assert SFI_AVAILABLE, "sfi interface should be available after stata_setup.config()"
         
@@ -38,7 +38,7 @@ class TestSFIAvailability:
         assert hasattr(Macro, 'getGlobal'), "Macro.getGlobal should be available"
         assert hasattr(Macro, 'setGlobal'), "Macro.setGlobal should be available"
     
-    def test_macro_functionality(self):
+    def test_macro_functionality(self, client):
         """Test basic Macro functionality used by SFI detection."""
         from sfi import Macro
         

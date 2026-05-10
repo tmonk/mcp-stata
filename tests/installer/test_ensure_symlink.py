@@ -17,7 +17,7 @@ import setup_toolkit
 def temp_dir(tmp_path):
     yield tmp_path
 
-def test_ensure_symlink_replaces_existing_directory(temp_dir):
+def test_ensure_symlink_skips_real_directory(temp_dir):
     target = temp_dir / "target"
     target.mkdir()
     (target / "file.txt").write_text("hello")
@@ -26,15 +26,15 @@ def test_ensure_symlink_replaces_existing_directory(temp_dir):
     link.mkdir()
     (link / "other.txt").write_text("old")
     
-    # This should replace the directory 'link' with a symlink/junction to 'target'
-    # Currently on Windows this might fail because of os.rmdir
+    # This should now SKIP replacing the directory 'link' to protect user data
     success = setup_toolkit._ensure_symlink(link, target)
     
-    assert success is True
+    assert success is False
     assert link.exists()
-    assert os.path.samefile(link, target)
-    assert not (link / "other.txt").exists()
-    assert (link / "file.txt").exists()
+    assert link.is_dir()
+    assert not os.path.samefile(link, target)
+    assert (link / "other.txt").exists()
+    assert not (link / "file.txt").exists()
 
 def test_ensure_symlink_skips_when_already_correct(temp_dir):
     target = temp_dir / "target"

@@ -390,7 +390,7 @@ class TestSkillsSymlink:
         _stub_uvx(bin_dir)
         result = _run(["--agent", "gemini"], home=tmp_path)
         assert result.returncode == 0
-        link = tmp_path / ".agents" / "skills" / "mcp-stata"
+        link = tmp_path / ".agents" / "skills" / "stata"
         assert link.exists() or link.is_symlink(), "skills symlink not created"
 
     def test_cursor_creates_skills_symlink(self, tmp_path):
@@ -398,7 +398,7 @@ class TestSkillsSymlink:
         _stub_uvx(bin_dir)
         (tmp_path / ".cursor").mkdir()
         _run(["--agent", "cursor"], home=tmp_path)
-        link = tmp_path / ".agents" / "skills" / "mcp-stata"
+        link = tmp_path / ".agents" / "skills" / "stata"
         assert link.exists() or link.is_symlink()
 
     def test_claude_does_not_create_skills_symlink(self, tmp_path):
@@ -423,7 +423,7 @@ class TestSkillsSymlink:
     def test_existing_real_skills_dir_is_left_in_place(self, tmp_path):
         bin_dir = tmp_path / "bin"
         _stub_uvx(bin_dir)
-        existing = tmp_path / ".agents" / "skills" / "mcp-stata"
+        existing = tmp_path / ".agents" / "skills" / "stata"
         existing.mkdir(parents=True)
         result = _run(["--agent", "gemini"], home=tmp_path)
         assert result.returncode == 0

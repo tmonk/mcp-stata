@@ -26,7 +26,7 @@ class TestRealSFIIntegration:
         """Create detector with shared StataClient."""
         return GraphCreationDetector(stata_client=client)
     
-    def test_sfi_available(self):
+    def test_sfi_available(self, client):
         """Test that sfi interface is actually available."""
         assert SFI_AVAILABLE, "sfi interface should be available after stata_setup.config()"
         
@@ -35,7 +35,7 @@ class TestRealSFIIntegration:
         assert hasattr(Macro, 'getGlobal'), "Macro.getGlobal should be available"
         assert hasattr(Macro, 'setGlobal'), "Macro.setGlobal should be available"
     
-    def test_macro_get_global_functionality(self):
+    def test_macro_get_global_functionality(self, client):
         """Test actual Macro.getGlobal functionality."""
         from sfi import Macro
         
