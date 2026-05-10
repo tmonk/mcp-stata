@@ -11,6 +11,8 @@ import json
 
 from mcp import ClientSession, StdioServerParameters, stdio_client
 
+from tool_payload import tool_payload_dict, tool_result_has_payload
+
 
 pytestmark = [pytest.mark.requires_stata, pytest.mark.integration, pytest.mark.xdist_group("stata_heavy")]
 
@@ -209,7 +211,7 @@ def test_e2e_background_do_file_streams_output(tmp_path):
                 },
             )
 
-            payload = json.loads(result.content[0].text)
+            payload = tool_payload_dict(result)
             assert payload["data"].get("task_id")
 
             saw_start = anyio.Event()
@@ -234,7 +236,7 @@ def test_e2e_background_do_file_streams_output(tmp_path):
                         "stata_task_status",
                         {"task_id": task_id},
                     )
-                    parsed = json.loads(task_result.content[0].text)
+                    parsed = tool_payload_dict(task_result)
                     if parsed["data"].get("status") in ("done", "completed", "failed"):
                         break
                     await anyio.sleep(0.05)
@@ -314,7 +316,7 @@ def test_e2e_graph_ready_emitted_on_repeated_runs(tmp_path):
                         "raw": False,
                     },
                 )
-                assert result.content
+                assert tool_result_has_payload(result)
 
             with anyio.fail_after(30):
                 while len(graph_ready_events) < 2:
@@ -399,7 +401,7 @@ def test_e2e_graph_ready_emitted_for_do_file(tmp_path):
                     "raw": False,
                 },
             )
-            assert result.content
+            assert tool_result_has_payload(result)
 
             with anyio.fail_after(20):
                 while not graph_ready_events:
@@ -463,7 +465,7 @@ def test_e2e_background_command_returns_log_path():
                 },
             )
 
-            payload = json.loads(result.content[0].text)
+            payload = tool_payload_dict(result)
             assert payload["data"].get("task_id")
             assert payload["data"].get("log_path")
 
@@ -475,7 +477,7 @@ def test_e2e_background_command_returns_log_path():
                         "stata_task_status",
                         {"task_id": task_id},
                     )
-                    parsed = json.loads(task_result.content[0].text)
+                    parsed = tool_payload_dict(task_result)
                     if parsed["data"].get("status") in ("done", "completed", "failed"):
                         break
                     await anyio.sleep(0.05)
@@ -539,7 +541,7 @@ def test_e2e_background_do_file_returns_log_path(tmp_path):
                 },
             )
 
-            payload = json.loads(result.content[0].text)
+            payload = tool_payload_dict(result)
             assert payload["data"].get("task_id")
             assert payload["data"].get("log_path")
 
@@ -551,7 +553,7 @@ def test_e2e_background_do_file_returns_log_path(tmp_path):
                         "stata_task_status",
                         {"task_id": task_id},
                     )
-                    parsed = json.loads(task_result.content[0].text)
+                    parsed = tool_payload_dict(task_result)
                     if parsed["data"].get("status") in ("done", "completed", "failed"):
                         break
                     await anyio.sleep(0.05)

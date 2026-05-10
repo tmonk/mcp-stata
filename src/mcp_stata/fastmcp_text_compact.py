@@ -1,7 +1,8 @@
-"""Compact unstructured companion text for FastMCP structured tools."""
+"""FastMCP structured-tool wire shaping: compact or omit duplicate unstructured JSON."""
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from itertools import chain
 from typing import Any
@@ -11,18 +12,37 @@ from mcp.server.fastmcp.utilities.types import Audio, Image
 from mcp.types import ContentBlock, TextContent
 
 _PATCH_ATTR = "_mcp_stata_compact_tool_text_patch"
+_PATCH_CONVERT_RESULT_ATTR = "_mcp_stata_convert_result_patch"
+
+STRUCTURED_COMPANION_ENV = "MCP_STATA_STRUCTURED_COMPANION_TEXT"
+
+
+def _structured_companion_mode() -> str:
+    """Return ``omit`` (default) or ``compact`` for duplicate unstructured JSON."""
+
+    return os.environ.get(STRUCTURED_COMPANION_ENV, "omit").strip().lower()
 
 
 def install_compact_fastmcp_tool_text() -> None:
-    """Use compact JSON for FastMCP's unstructured `content` alongside structured tools.
+    """Adjust FastMCP tool results so duplicate JSON beside ``structuredContent`` is minimal.
 
-    FastMCP's `_convert_to_content` uses `pydantic_core.to_json(..., indent=2)`. MCP hosts
-    often render both `structuredContent` and this companion text, so the indented copy
-    adds a large vertical footprint for every tool call.
+    FastMCP's ``FuncMetadata.convert_result`` returns ``(unstructured, structured)`` for
+    structured tools. The unstructured half uses ``_convert_to_content``, which historically
+    serialized the same payload as pretty-printed JSON. MCP hosts often surface both channels,
+    wasting tokens and vertical space.
 
-    This replaces that serializer with the default compact JSON (`indent=None`).
+    This module:
+
+    - Replaces ``_convert_to_content`` with compact JSON (``indent=None``) when companion text
+      is retained (``MCP_STATA_STRUCTURED_COMPANION_TEXT=compact``).
+    - Wraps ``FuncMetadata.convert_result`` so that, by default (``omit`` or unset), the
+      unstructured companion is an empty ``content`` list while ``structuredContent`` is unchanged.
+
+    Set ``MCP_STATA_STRUCTURED_COMPANION_TEXT=compact`` to restore FastMCP-style duplicate JSON
+    text (compact) for hosts that only read ``content[].text``.
     """
     from mcp.server.fastmcp.utilities import func_metadata as fm
+    from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
 
     if getattr(fm, _PATCH_ATTR, False):
         return
@@ -52,3 +72,20 @@ def install_compact_fastmcp_tool_text() -> None:
 
     fm._convert_to_content = _convert_to_content
     setattr(fm, _PATCH_ATTR, True)
+
+    if getattr(FuncMetadata, _PATCH_CONVERT_RESULT_ATTR, False):
+        return
+
+    _original_convert_result = FuncMetadata.convert_result
+
+    def convert_result(self: FuncMetadata, result: Any) -> Any:
+        converted = _original_convert_result(self, result)
+        if _structured_companion_mode() == "compact":
+            return converted
+        if isinstance(converted, tuple) and len(converted) == 2:
+            _unstructured, structured = converted
+            return ([], structured)
+        return converted
+
+    FuncMetadata.convert_result = convert_result  # type: ignore[method-assign]
+    setattr(FuncMetadata, _PATCH_CONVERT_RESULT_ATTR, True)

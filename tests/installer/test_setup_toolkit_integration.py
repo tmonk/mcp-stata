@@ -253,6 +253,37 @@ def test_build_parser_accepts_verbose_flag():
     args = parser.parse_args(["--verbose"])
     assert args.verbose is True
 
+
+def test_build_parser_accepts_install_repo_flag():
+    parser = setup_toolkit.build_parser()
+    args = parser.parse_args(["--install-repo", "/tmp/mcp-stata"])
+    assert args.install_repo == "/tmp/mcp-stata"
+
+
+def test_build_server_entry_install_repo_uses_uv_run(tmp_path):
+    repo = tmp_path / "mcp-stata"
+    repo.mkdir()
+    entry = setup_toolkit.build_server_entry(install_repo=repo)
+    assert entry["command"] == "uv"
+    assert entry["args"] == ["run", "--directory", str(repo.resolve()), "mcp-stata"]
+
+
+def test_main_rejects_local_source_with_install_repo(tmp_path, capsys):
+    repo = tmp_path / "mcp-stata"
+    repo.mkdir()
+    rc = setup_toolkit.main(
+        [
+            "--install-repo",
+            str(repo),
+            "--local-source",
+            str(repo / "dist"),
+            "--dry-run",
+        ]
+    )
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "Cannot combine" in (captured.out + captured.err)
+
 def test_run_logged_subprocess_appends_full_trace_to_log(mock_home, tmp_path):
     log_path = tmp_path / "install.log"
     with patch.object(setup_toolkit, "INSTALL_LOG_PATH", str(log_path)), \

@@ -288,10 +288,16 @@ Notes:
   - This script delegates the heavy lifting to scripts/install/setup_toolkit.py
   - Telemetry is best-effort and never affects exit status.
 
+Local checkout (uv run --directory … instead of uvx):
+  --install-repo DIR          Passed through to setup_toolkit.py
+  MCP_STATA_INSTALL_REPO      Same effect if set in the environment
+
 Examples:
   curl -fsSL ${INSTALL_URL_SH} | bash
   # Fallback: curl -fsSL ${INSTALL_FALLBACK_SH} | bash
   bash install.sh --agent cursor --dry-run
+  MCP_STATA_INSTALL_REPO="\$HOME/src/mcp-stata" bash install.sh --agent cursor
+  bash install.sh --install-repo "\$HOME/src/mcp-stata" --agent cursor --dry-run
 EOF
 }
 

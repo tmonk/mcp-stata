@@ -147,11 +147,19 @@ def build_server_entry(
     version: str | None = None,
     latest: bool = True,
     local_source: str | None = None,
+    install_repo: Path | str | None = None,
 ) -> dict:
-    entry = {
-        "command": "uvx",
-        "args": build_uvx_args(version=version, latest=latest, local_source=local_source),
-    }
+    if install_repo:
+        repo = Path(install_repo).expanduser().resolve()
+        entry = {
+            "command": "uv",
+            "args": ["run", "--directory", str(repo), PACKAGE_NAME],
+        }
+    else:
+        entry = {
+            "command": "uvx",
+            "args": build_uvx_args(version=version, latest=latest, local_source=local_source),
+        }
     if include_type:
         entry = {"type": "stdio", **entry}
     if include_env:
@@ -315,6 +323,7 @@ def configure_editor_mcp(
     version: str | None = None,
     latest: bool = True,
     local_source: str | None = None,
+    install_repo: Path | None = None,
     project_root: Path | None = None,
 ) -> Path:
     config_path = get_mcp_config_path(editor, scope=scope, project_root=project_root)
@@ -329,6 +338,7 @@ def configure_editor_mcp(
         version=version,
         latest=latest,
         local_source=local_source,
+        install_repo=install_repo,
     )
     return merge_json_server_config(config_path, top_key=top_key, entry=entry)
 
@@ -339,6 +349,7 @@ def configure_claude_code(
     version: str | None = None,
     latest: bool = True,
     local_source: str | None = None,
+    install_repo: Path | None = None,
     project_root: Path | None = None,
 ) -> Path | None:
     if scope == "project":
@@ -348,6 +359,7 @@ def configure_claude_code(
             version=version,
             latest=latest,
             local_source=local_source,
+            install_repo=install_repo,
         )
         return merge_json_server_config(
             get_mcp_config_path("claude_desktop", scope="project", project_root=project_root),
@@ -356,7 +368,33 @@ def configure_claude_code(
         )
 
     if shutil.which("claude"):
-        cmd = ["claude", "mcp", "add", "--scope", scope, CANONICAL_SERVER_NAME, "--", "uvx", *build_uvx_args(version=version, latest=latest, local_source=local_source)]
+        if install_repo:
+            cmd = [
+                "claude",
+                "mcp",
+                "add",
+                "--scope",
+                scope,
+                CANONICAL_SERVER_NAME,
+                "--",
+                "uv",
+                "run",
+                "--directory",
+                str(install_repo.resolve()),
+                PACKAGE_NAME,
+            ]
+        else:
+            cmd = [
+                "claude",
+                "mcp",
+                "add",
+                "--scope",
+                scope,
+                CANONICAL_SERVER_NAME,
+                "--",
+                "uvx",
+                *build_uvx_args(version=version, latest=latest, local_source=local_source),
+            ]
         try:
             run_logged_subprocess(cmd, check=True)
             return None
@@ -367,6 +405,7 @@ def configure_claude_code(
         version=version,
         latest=latest,
         local_source=local_source,
+        install_repo=install_repo,
     )
     return merge_json_server_config(
         get_mcp_config_path("claude_desktop", scope="user", project_root=project_root),
@@ -380,8 +419,11 @@ def configure_claude_desktop(
     version: str | None = None,
     latest: bool = True,
     local_source: str | None = None,
+    install_repo: Path | None = None,
 ) -> Path:
-    entry = build_server_entry(version=version, latest=latest, local_source=local_source)
+    entry = build_server_entry(
+        version=version, latest=latest, local_source=local_source, install_repo=install_repo
+    )
     return merge_json_server_config(
         get_mcp_config_path("claude_desktop", scope="user"),
         top_key="mcpServers",
@@ -395,6 +437,7 @@ def configure_codex(
     version: str | None = None,
     latest: bool = True,
     local_source: str | None = None,
+    install_repo: Path | None = None,
     project_root: Path | None = None,
 ) -> Path:
     target_dir = get_codex_home() if scope == "user" else get_project_root(project_root) / ".codex"
@@ -404,6 +447,7 @@ def configure_codex(
         version=version,
         latest=latest,
         local_source=local_source,
+        install_repo=install_repo,
     )
     return upsert_codex_config(config_path, entry=entry)
 
@@ -968,6 +1012,7 @@ def install_for_agent(
     version: str | None,
     latest: bool,
     local_source: str | None,
+    install_repo: Path | None = None,
     project_root: Path | None = None,
 ) -> list[Path]:
     written: list[Path] = []
@@ -998,6 +1043,7 @@ def install_for_agent(
                 version=version,
                 latest=latest,
                 local_source=local_source,
+                install_repo=install_repo,
                 project_root=project_root,
             ))
         return written
@@ -1019,6 +1065,7 @@ def install_for_agent(
                 version=version,
                 latest=latest,
                 local_source=local_source,
+                install_repo=install_repo,
                 project_root=project_root,
             ))
             _append(install_codex_skills(project_root=project_root))
@@ -1037,6 +1084,7 @@ def install_for_agent(
                 version=version,
                 latest=latest,
                 local_source=local_source,
+                install_repo=install_repo,
                 project_root=project_root,
             )
         )
@@ -1048,7 +1096,12 @@ def install_for_agent(
             merge_json_server_config(
                 Path.home() / ".codeium" / "windsurf" / "mcp_config.json",
                 top_key="mcpServers",
-                entry=build_server_entry(version=version, latest=latest, local_source=local_source),
+                entry=build_server_entry(
+                    version=version,
+                    latest=latest,
+                    local_source=local_source,
+                    install_repo=install_repo,
+                ),
             )
         )
         _append(register_generic_skills(project_root=project_root))
@@ -1062,6 +1115,7 @@ def install_for_agent(
                 version=version,
                 latest=latest,
                 local_source=local_source,
+                install_repo=install_repo,
                 project_root=project_root,
             )
         )
@@ -1094,6 +1148,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Install from a local repo or wheel path for offline setups.",
     )
+    parser.add_argument(
+        "--install-repo",
+        default="",
+        metavar="DIR",
+        help=(
+            "Use a local checkout: register MCP as `uv run --directory DIR mcp-stata` instead of uvx. "
+            "May also be set via MCP_STATA_INSTALL_REPO. Incompatible with --local-source."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--verify", action="store_true")
     parser.add_argument(
@@ -1116,8 +1179,11 @@ def _print_dry_run(
     version: str | None,
     latest: bool,
     local_source: str | None,
+    install_repo: Path | None,
     project_root: Path,
 ) -> None:
+    if install_repo:
+        print(f"  [dry-run] MCP server would run as: uv run --directory {install_repo} {PACKAGE_NAME}")
     if agent == "claude":
         if scope == "project":
             print(f"  [dry-run] would add marketplace from {project_root}")
@@ -1146,6 +1212,8 @@ def _print_dry_run(
     if agent == "vscode":
         print(f"  [dry-run] would write {get_mcp_config_path('vscode', scope=scope, project_root=project_root)}")
         return
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1161,6 +1229,18 @@ def main(argv: list[str] | None = None) -> int:
         latest = False
     elif args.latest:
         latest = True
+
+    install_repo_raw = (args.install_repo or "").strip() or os.environ.get("MCP_STATA_INSTALL_REPO", "").strip()
+    install_repo: Path | None = None
+    if install_repo_raw:
+        install_repo = Path(install_repo_raw).expanduser().resolve()
+        if not install_repo.is_dir():
+            print_error(f"Install repo directory does not exist or is not a directory: {install_repo}")
+            return 1
+    local_source = args.local_source or None
+    if local_source and install_repo:
+        print_error("Cannot combine --local-source with --install-repo / MCP_STATA_INSTALL_REPO.")
+        return 1
 
     print("=== mcp-stata Toolkit Setup ===")
 
@@ -1246,7 +1326,9 @@ def main(argv: list[str] | None = None) -> int:
     print_step("Configuration summary")
     print_success(f"Scope: {args.scope}")
     print_success(f"Agents: {', '.join(agent_names)}")
-    if args.local_source:
+    if install_repo:
+        print_success(f"MCP launch: local checkout via uv run --directory ({install_repo})")
+    elif args.local_source:
         print_success(f"Install source: local ({args.local_source})")
     elif args.version:
         print_success(f"Install source: PyPI @{args.version}")
@@ -1266,7 +1348,8 @@ def main(argv: list[str] | None = None) -> int:
                     scope=args.scope,
                     version=args.version or None,
                     latest=latest,
-                    local_source=args.local_source or None,
+                    local_source=local_source,
+                    install_repo=install_repo,
                     project_root=project_root,
                 )
                 continue
@@ -1275,7 +1358,8 @@ def main(argv: list[str] | None = None) -> int:
                 scope=args.scope,
                 version=args.version or None,
                 latest=latest,
-                local_source=args.local_source or None,
+                local_source=local_source,
+                install_repo=install_repo,
                 project_root=project_root,
             )
             for path in written:
@@ -1290,7 +1374,8 @@ def main(argv: list[str] | None = None) -> int:
                     scope=args.scope,
                     version=args.version or None,
                     latest=latest,
-                    local_source=args.local_source or None,
+                    local_source=local_source,
+                    install_repo=install_repo,
                     project_root=project_root,
                 )
                 continue
@@ -1301,7 +1386,8 @@ def main(argv: list[str] | None = None) -> int:
                     scope=args.scope,
                     version=args.version or None,
                     latest=latest,
-                    local_source=args.local_source or None,
+                    local_source=local_source,
+                    install_repo=install_repo,
                     project_root=project_root,
                 )
                 if len(display_names) > 1:
@@ -1313,7 +1399,8 @@ def main(argv: list[str] | None = None) -> int:
                 server_config = build_server_entry(
                     version=args.version or None,
                     latest=latest,
-                    local_source=args.local_source or None,
+                    local_source=local_source,
+                    install_repo=install_repo,
                 )
                 assert representative is not None
                 representative.install_mcp_entry(CANONICAL_SERVER_NAME, server_config)
