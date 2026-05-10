@@ -24,7 +24,7 @@ $GithubRepoUrl = 'https://github.com/tmonk/mcp-stata'
 $GithubRawUrl = 'https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin'
 $InstallFallbackSh = "${GithubRawUrl}/install.sh"
 $InstallFallbackPs1 = "${GithubRawUrl}/install.ps1"
-$ScriptVersion = '3.2.5'
+$ScriptVersion = '3.2.6'
 
 # Pull dynamic config from GitHub (optional, best-effort)
 try {

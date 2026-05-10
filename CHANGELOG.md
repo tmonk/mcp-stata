@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v3.2.6 (2026-05-10)
+
+### Bug Fixes
+
+- Robust Stata installation fingerprinting for reliable discovery caching
+  ([`532207c`](https://github.com/tmonk/mcp-stata/commit/532207c589438d887590fbcf28b4702adeeaf4c7))
+
+- Stabilize test environments, prevent accidental symlink overwrites, and rename skills directory to
+  stata
+  ([`48d1f7d`](https://github.com/tmonk/mcp-stata/commit/48d1f7d37582ac4453293d6fe3db8ed71539c57d))
+
+- Symlink dirs being skipped due to broken dirs
+  ([`cd880a7`](https://github.com/tmonk/mcp-stata/commit/cd880a7c109f433fb315a3d479003b863828a0ff))
+
+
 ## v3.2.5 (2026-05-10)
 
 
