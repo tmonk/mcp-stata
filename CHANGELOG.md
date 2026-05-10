@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v3.2.4 (2026-05-10)
+
+### Bug Fixes
+
+- Semantic-release can modify the version on release
+  ([`14cf913`](https://github.com/tmonk/mcp-stata/commit/14cf913e4392fa3cd0e35f0dbe67d6140520ded8))
+
+
 ## v3.2.3 (2026-05-10)
 
 ### Bug Fixes
