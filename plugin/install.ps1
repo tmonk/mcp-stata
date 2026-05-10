@@ -42,7 +42,7 @@ if (-not [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.Int
     Write-Host ':: Please use install.sh for Linux or macOS:' -ForegroundColor Cyan
     Write-Host "   curl -fsSL ${InstallUrlSh} | bash" -ForegroundColor Cyan
     Write-Host "   (Fallback: curl -fsSL ${InstallFallbackSh} | bash)" -ForegroundColor DarkGray
-    exit 1
+    if ($MyInvocation.MyCommand.Path) { exit 1 } else { return }
 }
 
 $RepoUrl = if ($env:MCP_STATA_REPO_URL) { $env:MCP_STATA_REPO_URL } else { 'https://github.com/tmonk/mcp-stata' }
@@ -598,64 +598,68 @@ function Initialize-Uv {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    Show-Header
+    function Invoke-Main {
+        try {
+            # 1. Identity & Early Metadata
+            $script:UserId = Get-UserId
+            $startEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_start' } else { 'install_start' }
 
-    # ── Entry point ───────────────────────────────────────────────────────────────
-    try {
-        # 1. Identity & Early Metadata
-        $script:UserId = Get-UserId
-        $startEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_start' } else { 'install_start' }
+            # 2. Emit start event IMMEDIATELY
+            Send-Telemetry $startEvent
 
-        # 2. Emit start event IMMEDIATELY
-        Send-Telemetry $startEvent
-
-        if ($PassthroughArgs -contains '--help' -or $PassthroughArgs -contains '-h') {
-            Show-Help
-            exit 0
-        }
-
-        if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) {
-            $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-            if ($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-                Write-Warn "Running as Administrator. $ActionLabel will be local to the admin profile."
+            if ($PassthroughArgs -contains '--help' -or $PassthroughArgs -contains '-h') {
+                Show-Help
+                return 0
             }
-        }
 
-        # Telemetry-only mode: test end-to-end telemetry without mutating the machine.
-        if ($env:MCP_STATA_TELEMETRY_ONLY -eq '1') {
-            $InstallStage = 'telemetry_only'
-            $endEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_success' } else { 'install_success' }
-            Send-Telemetry $endEvent
-            Write-Ok 'Telemetry-only mode complete'
+            if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) {
+                $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+                if ($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+                    Write-Warn "Running as Administrator. $ActionLabel will be local to the admin profile."
+                }
+            }
+
+            # Telemetry-only mode: test end-to-end telemetry without mutating the machine.
+            if ($env:MCP_STATA_TELEMETRY_ONLY -eq '1') {
+                $InstallStage = 'telemetry_only'
+                $endEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_success' } else { 'install_success' }
+                Send-Telemetry $endEvent
+                Write-Ok 'Telemetry-only mode complete'
+                Write-Host '   •' -ForegroundColor DarkGray -NoNewline
+                Write-Host " install_id=$InstallId" -ForegroundColor DarkGray
+                return 0
+            }
+
+            $InstallStage = 'ensure_repo_root'
+            Initialize-RepoRoot
+            $InstallStage = 'ensure_uv'
+            Initialize-Uv
+            Write-BoxedTitle -Title "$($ActionLabel.ToUpper()) TOOLKIT" -Color Blue
             Write-Host '   •' -ForegroundColor DarkGray -NoNewline
-            Write-Host " install_id=$InstallId" -ForegroundColor DarkGray
-            exit 0
+            Write-Host ' Delegating to setup_toolkit.py' -ForegroundColor DarkGray
+            $InstallStage = 'setup_toolkit'
+            $toolkitExitCode = Invoke-ToolkitInstaller -Arguments $PassthroughArgs
+            if ($toolkitExitCode -ne 0) { throw "Python installer failed with exit code $toolkitExitCode" }
+
+            $event = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_success' } else { 'install_success' }
+            Send-Telemetry $event
+            Show-Success
+            return 0
+        } catch {
+            $failEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_failure' } else { 'install_failure' }
+            # Ensure log is flushed to disk before sending telemetry
+            try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
+            Send-Telemetry $failEvent $_.Exception.Message
+            Show-Failure $_.Exception.Message
+            return 1
+        } finally {
+            Remove-TempDir
+            Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
         }
-
-        $InstallStage = 'ensure_repo_root'
-        Initialize-RepoRoot
-        $InstallStage = 'ensure_uv'
-        Initialize-Uv
-        Write-BoxedTitle -Title "$($ActionLabel.ToUpper()) TOOLKIT" -Color Blue
-        Write-Host '   •' -ForegroundColor DarkGray -NoNewline
-        Write-Host ' Delegating to setup_toolkit.py' -ForegroundColor DarkGray
-        $InstallStage = 'setup_toolkit'
-        $toolkitExitCode = Invoke-ToolkitInstaller -Arguments $PassthroughArgs
-        if ($toolkitExitCode -ne 0) { throw "Python installer failed with exit code $toolkitExitCode" }
-
-        $event = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_success' } else { 'install_success' }
-        Send-Telemetry $event
-        Show-Success
-        exit 0
-    } catch {
-        $failEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_failure' } else { 'install_failure' }
-        # Ensure log is flushed to disk before sending telemetry
-        try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
-        Send-Telemetry $failEvent $_.Exception.Message
-        Show-Failure $_.Exception.Message
-        exit 1
-    } finally {
-        Remove-TempDir
-        Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
     }
+
+    Show-Header
+    $exitCode = Invoke-Main
+    if ($MyInvocation.MyCommand.Path) { exit $exitCode }
 }
+
