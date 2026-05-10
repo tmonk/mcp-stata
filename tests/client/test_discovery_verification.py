@@ -47,7 +47,7 @@ def test_verify_stata_install_success(mock_run):
     # Verify subprocess call
     args, kwargs = mock_run.call_args
     assert args[0][0] == "/usr/bin/python3"
-    assert "import stata_setup" in args[0][2]
+    assert "[preflight] Calling stata_setup.config" in args[0][2]
     assert "stata_setup.config('/path/to/stata', 'mp')" in args[0][2]
 
 @patch("subprocess.run")
@@ -67,7 +67,7 @@ def test_find_working_stata_path_fallback(mock_get_root, mock_verify, mock_find)
     mock_get_root.side_effect = lambda x: os.path.dirname(x)
     
     # Mock verification: MP fails, SE succeeds
-    def verify_side_effect(path, edition):
+    def verify_side_effect(path, edition, **kwargs):
         return "se" in path
     
     mock_verify.side_effect = verify_side_effect

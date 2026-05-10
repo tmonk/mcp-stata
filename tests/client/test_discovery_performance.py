@@ -19,12 +19,19 @@ def clean_cache():
         _DISCOVERY_CACHE_PATH.unlink()
 
 @patch("subprocess.run")
-@patch("os.path.getmtime")
+@patch("os.stat")
+@patch("os.listdir")
 @patch("os.path.exists")
-def test_verify_stata_install_cache_integration(mock_exists, mock_mtime, mock_run, clean_cache):
+def test_verify_stata_install_cache_integration(mock_exists, mock_listdir, mock_stat, mock_run, clean_cache):
     # Setup mocks
     mock_exists.return_value = True
-    mock_mtime.return_value = 1000.0
+    mock_listdir.return_value = ["StataMP.app", "utilities", "stata.lic"]
+    
+    mock_stat_root = MagicMock()
+    mock_stat_root.st_mtime = 1000.0
+    mock_stat_root.st_size = 4096
+    mock_stat.return_value = mock_stat_root
+    
     mock_run.return_value = MagicMock(returncode=0, stdout="PREFLIGHT_OK", stderr="")
     
     root_path = "/path/to/stata"
@@ -42,13 +49,13 @@ def test_verify_stata_install_cache_integration(mock_exists, mock_mtime, mock_ru
     assert mock_run.call_count == 1 # Still 1
     
     # 3. Call after mtime change: should re-verify
-    mock_mtime.return_value = 2000.0
+    mock_stat_root.st_mtime = 2000.0
     assert verify_stata_install(root_path, edition) is True
     assert mock_run.call_count == 2
     
     # 4. Call after some time for a broken install
     mock_run.return_value = MagicMock(returncode=1, stdout="FAIL", stderr="")
-    mock_mtime.return_value = 3000.0
+    mock_stat_root.st_mtime = 3000.0
     # First time it fails and caches as broken
     assert verify_stata_install(root_path, edition) is False
     assert mock_run.call_count == 3

@@ -375,7 +375,7 @@ def test_detect_stata_with_fallback():
          patch("mcp_stata.discovery.verify_stata_install") as mock_verify:
         
         # MP fails, SE succeeds
-        mock_verify.side_effect = lambda path, edition: edition == "se"
+        mock_verify.side_effect = lambda path, edition, **kwargs: edition == "se"
         
         path, edition = setup_toolkit.detect_stata()
         

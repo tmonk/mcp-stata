@@ -199,7 +199,7 @@ def _get_discovery_candidates() -> List[Tuple[str, str]]:
                 futures = []
                 for exe, edition in candidates:
                     root = get_stata_install_root(exe)
-                    futures.append((exe, edition, executor.submit(verify_stata_install, root, edition)))
+                    futures.append((exe, edition, executor.submit(verify_stata_install, root, edition, exe_path=exe)))
                 
                 for exe, edition, future in futures:
                     try:
@@ -1662,8 +1662,6 @@ class StataClient:
         from contextlib import redirect_stdout, redirect_stderr
 
         try:
-            import stata_setup
-            
             # Get discovered Stata paths (cached from first call)
             discovery_candidates = _get_discovery_candidates()
             if not discovery_candidates:
@@ -1690,8 +1688,10 @@ class StataClient:
                     sys.stderr.flush()
                     
                     if not verify_stata_install(root_path, edition):
-                        sys.stderr.write(f"[mcp_stata] Pre-flight failed for '{root_path}'. Trying next candidate.\n")
+                        msg = f"Pre-flight failed for '{root_path}'"
+                        sys.stderr.write(f"[mcp_stata] {msg}. Trying next candidate.\n")
                         sys.stderr.flush()
+                        last_error = RuntimeError(msg)
                         continue
                         
                     sys.stderr.write(f"[mcp_stata] Pre-flight succeeded for '{root_path}'. Proceeding to in-process init.\n")
@@ -1711,14 +1711,21 @@ class StataClient:
 
                     self._purge_pystata_modules(allowed_paths=[utils_path])
 
-                    msg = f"[mcp_stata] DEBUG: In-process stata_setup.config('{root_path}', '{edition}')\n"
-                    sys.stderr.write(msg)
-                    sys.stderr.flush()
                     # Redirect both sys.stdout/err AND the raw fds to our stderr pipe.
                     with redirect_stdout(sys.stderr), redirect_stderr(sys.stderr), self._safe_redirect_fds():
-                        stata_setup.config(root_path, edition)
+                        try:
+                            import stata_setup
+                            sys.stderr.write(f"[mcp_stata] DEBUG: In-process stata_setup.config('{root_path}', '{edition}')\n")
+                            sys.stderr.flush()
+                            stata_setup.config(root_path, edition)
+                        except (ImportError, ModuleNotFoundError):
+                            # Fallback to direct pystata initialization
+                            from pystata import config as pystata_config
+                            sys.stderr.write(f"[mcp_stata] DEBUG: stata_setup not found, trying pystata.config.init('{edition}')\n")
+                            sys.stderr.flush()
+                            pystata_config.init(edition, splash=False)
                     
-                    sys.stderr.write(f"[mcp_stata] DEBUG: stata_setup.config succeeded for root: {root_path}\n")
+                    sys.stderr.write(f"[mcp_stata] DEBUG: Stata initialization succeeded for root: {root_path}\n")
                     sys.stderr.flush()
                     success = True
                     chosen_exec = (stata_exec_path, edition)

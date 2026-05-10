@@ -14,6 +14,7 @@ import time
 import re
 import subprocess
 import json
+import hashlib
 from pathlib import Path
 from typing import Tuple, List, Optional, Dict, Any
 
@@ -578,7 +579,41 @@ def _save_discovery_cache(cache: Dict[str, Any]) -> None:
     except Exception:
         pass
 
-def verify_stata_install(root_path: str, edition: str, timeout: int = 120, use_cache: bool = True) -> bool:
+def _get_stata_fingerprint(root_path: str, exe_path: Optional[str] = None) -> str:
+    """Generate a fingerprint of the Stata installation to detect changes."""
+    # Start with the root and specific components
+    paths = [root_path]
+    
+    # Include immediate children to detect added/removed editions (.app bundles or directories)
+    try:
+        if os.path.isdir(root_path):
+            for item in os.listdir(root_path):
+                # We only check immediate children to keep it fast
+                paths.append(os.path.join(root_path, item))
+    except Exception:
+        pass
+
+    if exe_path and os.path.exists(exe_path) and exe_path not in paths:
+        paths.append(exe_path)
+    
+    # Sort paths for consistent fingerprinting
+    paths.sort()
+    
+    parts = []
+    for p in paths:
+        try:
+            # For directories, stat() mtime changes on add/remove of immediate children
+            # For files, stat() mtime changes on content update
+            stat = os.stat(p)
+            parts.append(f"{os.path.basename(p)}:{stat.st_mtime}:{stat.st_size}")
+        except Exception:
+            pass
+    
+    fingerprint_raw = "|".join(parts)
+    return hashlib.md5(fingerprint_raw.encode("utf-8")).hexdigest()
+
+
+def verify_stata_install(root_path: str, edition: str, timeout: int = 120, use_cache: bool = True, exe_path: Optional[str] = None) -> bool:
     """
     Perform a pre-flight check in a subprocess to see if this Stata installation works.
     Returns True if the installation is valid and can run a basic command.
@@ -586,17 +621,16 @@ def verify_stata_install(root_path: str, edition: str, timeout: int = 120, use_c
     """
     # Check cache first
     cache_key = f"{root_path}:{edition}"
+    fingerprint = _get_stata_fingerprint(root_path, exe_path)
+    
     if use_cache:
         cache = _load_discovery_cache()
         if cache_key in cache:
             entry = cache[cache_key]
             try:
-                # Check if the root directory or binary has changed
-                # We'll just check the root_path mtime as a proxy
-                curr_mtime = os.path.getmtime(root_path)
-                if entry.get("mtime") == curr_mtime:
-                    # Trust the cached result if it's recent (e.g., within 7 days)
-                    # or if it was successful. Broken ones we might want to re-check sooner.
+                # Check if the installation fingerprint has changed
+                if entry.get("fingerprint") == fingerprint:
+                    # Trust the cached result if it was successful or recently checked
                     is_working = entry.get("working", False)
                     verified_at = entry.get("at", 0)
                     if is_working or (time.time() - verified_at < 86400): # Re-check broken every 24h
@@ -607,24 +641,37 @@ def verify_stata_install(root_path: str, edition: str, timeout: int = 120, use_c
     preflight_code = f"""
 import sys
 import os
+import faulthandler
+
+# Enable faulthandler to capture C-level crashes in Stata shared library
+faulthandler.enable(file=sys.stderr)
+
 try:
-    sys.stderr.write('[preflight] Starting diagnostics...\\n')
-    sys.stderr.flush()
-    # Manually prioritize local utilities folder to avoid shadowing by PyPI 'pystata' trap.
     utils_path = os.path.join({repr(root_path)}, 'utilities')
     if os.path.isdir(utils_path) and utils_path not in sys.path:
-        sys.stderr.write(f'[preflight] Inserting utilities path: {{utils_path}}\\n')
         sys.path.insert(0, utils_path)
-        
-    import stata_setup
-    sys.stderr.write('[preflight] Calling stata_setup.config({repr(root_path)}, {repr(edition)})...\\n')
-    sys.stderr.flush()
-    stata_setup.config({repr(root_path)}, {repr(edition)})
     
+    # Try importing stata_setup (the standard helper)
+    try:
+        import stata_setup
+        sys.stderr.write(f"[preflight] Calling stata_setup.config({repr(root_path)}, {repr(edition)})...\\n")
+        sys.stderr.flush()
+        stata_setup.config({repr(root_path)}, {repr(edition)})
+    except (ImportError, ModuleNotFoundError):
+        # Fallback for Stata installations missing stata_setup.py helper (common in some StataNow builds)
+        # If we have the 'utilities' folder in sys.path, pystata.config.init() should work.
+        try:
+            import pystata.config
+            sys.stderr.write(f"[preflight] stata_setup not found, trying pystata.config.init({repr(edition)})...\\n")
+            sys.stderr.flush()
+            pystata.config.init({repr(edition)}, splash=False)
+        except (ImportError, ModuleNotFoundError, AttributeError):
+             sys.stderr.write('PREFLIGHT_FAIL: Neither stata_setup nor pystata.config found in ' + utils_path + '\\n')
+             sys.exit(1)
+
     sys.stderr.write('[preflight] Importing pystata.stata...\\n')
     sys.stderr.flush()
     from pystata import stata
-    # Minimal verification of engine health
     sys.stderr.write('[preflight] Running diagnostic command...\\n')
     sys.stderr.flush()
     stata.run('display 1', echo=False)
@@ -634,6 +681,11 @@ except Exception as e:
     sys.stderr.write(f'PREFLIGHT_FAIL: {{e}}\\n')
     import traceback
     traceback.print_exc()
+    sys.stderr.flush()
+    sys.exit(1)
+except BaseException as e:
+    # Capture SystemExit or other non-Exception signals (like hard exits from pystata)
+    sys.stderr.write(f'PREFLIGHT_CRASH: {{repr(e)}}\\n')
     sys.stderr.flush()
     sys.exit(1)
 """
@@ -686,7 +738,7 @@ except Exception as e:
         cache = _load_discovery_cache()
         cache[cache_key] = {
             "working": is_working,
-            "mtime": os.path.getmtime(root_path),
+            "fingerprint": fingerprint,
             "at": time.time()
         }
         _save_discovery_cache(cache)
@@ -713,20 +765,18 @@ def find_working_stata_path() -> Tuple[str, str]:
     if len(candidates) == 1:
         exe_path, edition = candidates[0]
         root = get_stata_install_root(exe_path)
-        if verify_stata_install(root, edition):
+        if verify_stata_install(root, edition, exe_path=exe_path):
             return exe_path, edition
         return exe_path, edition
 
     # For multiple candidates, verify in parallel
-    # We still want to return the highest-priority WORKING candidate.
-    # So we wait for results in the order of candidates.
     results = []
     with ThreadPoolExecutor(max_workers=len(candidates)) as executor:
         # Submit all candidates for verification
         future_to_candidate = {}
         for exe_path, edition in candidates:
             root = get_stata_install_root(exe_path)
-            future = executor.submit(verify_stata_install, root, edition)
+            future = executor.submit(verify_stata_install, root, edition, exe_path=exe_path)
             future_to_candidate[future] = (exe_path, edition)
             results.append(future)
 

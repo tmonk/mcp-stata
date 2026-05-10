@@ -9,7 +9,7 @@
       "name": "mcp-stata",
       "source": "./plugin",
       "description": "Stata MCP tools and skills for AI agents.",
-      "version": "3.2.0",
+      "version": "3.2.5",
       "category": "Development"
     }
   ]
