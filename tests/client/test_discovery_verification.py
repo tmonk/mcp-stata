@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import pytest
@@ -37,24 +38,28 @@ def test_get_stata_install_root_fallback():
         root = get_stata_install_root(exec_path)
         assert root == "/random/path"
 
-@patch("subprocess.run")
-@patch("sys.executable", "/usr/bin/python3")
+@patch("mcp_stata.discovery.subprocess.run")
 def test_verify_stata_install_success(mock_run):
     mock_run.return_value = MagicMock(returncode=0, stdout="PREFLIGHT_OK", stderr="")
-    
-    assert verify_stata_install("/path/to/stata", "mp") is True
-    
+    py_exe = sys.executable
+
+    # Ensure discovery keeps py_exe as sys.executable (on Windows "/usr/bin/python3"
+    # does not exist and the code resolves via realpath, breaking assertions).
+    with patch("mcp_stata.discovery.sys.executable", py_exe):
+        assert verify_stata_install("/path/to/stata", "mp", use_cache=False) is True
+
     # Verify subprocess call
     args, kwargs = mock_run.call_args
-    assert args[0][0] == "/usr/bin/python3"
+    assert args[0][0] == py_exe
     assert "[preflight] Calling stata_setup.config" in args[0][2]
     assert "stata_setup.config('/path/to/stata', 'mp')" in args[0][2]
 
-@patch("subprocess.run")
+@patch("mcp_stata.discovery.subprocess.run")
 def test_verify_stata_install_failure(mock_run):
     mock_run.return_value = MagicMock(returncode=1, stdout="ERROR", stderr="License expired")
-    
-    assert verify_stata_install("/path/to/stata", "mp") is False
+
+    with patch("mcp_stata.discovery.sys.executable", sys.executable):
+        assert verify_stata_install("/path/to/stata", "mp", use_cache=False) is False
 
 @patch("mcp_stata.discovery.find_stata_candidates")
 @patch("mcp_stata.discovery.verify_stata_install")
