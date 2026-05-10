@@ -27,3 +27,4 @@ mcp-stata-install/
 /worker/.wrangler
 .mcpregistry_*
 benchmarks/history/*.md
+/.venv_mac

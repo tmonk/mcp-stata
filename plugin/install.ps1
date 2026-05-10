@@ -302,10 +302,10 @@ function Invoke-ToolkitInstaller {
     
     try {
         if ($VerboseMode) {
-            & uv run --no-progress --python 3.11 $pythonInstaller @Arguments
+            & uv run --no-project --no-progress --python 3.11 "$pythonInstaller" @Arguments
             $exitCode = $LASTEXITCODE
         } else {
-            $output = & uv run --no-progress --python 3.11 $pythonInstaller @Arguments 2>&1
+            $output = & uv run --no-project --no-progress --python 3.11 "$pythonInstaller" @Arguments 2>&1
             $exitCode = $LASTEXITCODE
             foreach ($line in $output) {
                 Format-ToolkitLine ([string]$line)
@@ -525,8 +525,8 @@ function Initialize-Uv {
 
     try {
         $policy = Get-ExecutionPolicy -Scope CurrentUser
-        if ($policy -in @('Restricted', 'Undefined')) {
-            Write-Step 'Attempting to set execution policy to RemoteSigned'
+        if ($policy -notin @('RemoteSigned', 'Unrestricted', 'Bypass')) {
+            Write-Step "Attempting to set execution policy to RemoteSigned (current: $policy)"
             Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force -ErrorAction SilentlyContinue
         }
     } catch {
@@ -543,7 +543,8 @@ function Initialize-Uv {
 
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $env:Path = (@($env:Path, $machinePath, $userPath) -join ';' -split ';' | Where-Object { $_ } | Select-Object -Unique) -join ';'
+    # Combine and deduplicate PATH, preserving order (env:Path first)
+    $env:Path = (@($env:Path, $userPath, $machinePath) -join ';' -split ';' | Where-Object { $_ } | Select-Object -Unique) -join ';'
 
     $CandidatePaths = @(
         (Join-Path $env:APPDATA 'uv\bin'),
@@ -566,61 +567,63 @@ function Initialize-Uv {
     Write-Ok "uv installed ($uvVer)"
 }
 
-Show-Header
+if ($MyInvocation.InvocationName -ne '.') {
+    Show-Header
 
-# ── Entry point ───────────────────────────────────────────────────────────────
-try {
-    # 1. Identity & Early Metadata
-    $script:UserId = Get-UserId
-    $startEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_start' } else { 'install_start' }
+    # ── Entry point ───────────────────────────────────────────────────────────────
+    try {
+        # 1. Identity & Early Metadata
+        $script:UserId = Get-UserId
+        $startEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_start' } else { 'install_start' }
 
-    # 2. Emit start event IMMEDIATELY
-    Send-Telemetry $startEvent
+        # 2. Emit start event IMMEDIATELY
+        Send-Telemetry $startEvent
 
-    if ($PassthroughArgs -contains '--help' -or $PassthroughArgs -contains '-h') {
-        Show-Help
-        exit 0
-    }
+        if ($PassthroughArgs -contains '--help' -or $PassthroughArgs -contains '-h') {
+            Show-Help
+            exit 0
+        }
 
-    $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-    if ($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        Write-Warn "Running as Administrator. $ActionLabel will be local to the admin profile."
-    }
+        $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+        if ($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            Write-Warn "Running as Administrator. $ActionLabel will be local to the admin profile."
+        }
 
-    # Telemetry-only mode: test end-to-end telemetry without mutating the machine.
-    if ($env:MCP_STATA_TELEMETRY_ONLY -eq '1') {
-        $InstallStage = 'telemetry_only'
-        $endEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_success' } else { 'install_success' }
-        Send-Telemetry $endEvent
-        Write-Ok 'Telemetry-only mode complete'
+        # Telemetry-only mode: test end-to-end telemetry without mutating the machine.
+        if ($env:MCP_STATA_TELEMETRY_ONLY -eq '1') {
+            $InstallStage = 'telemetry_only'
+            $endEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_success' } else { 'install_success' }
+            Send-Telemetry $endEvent
+            Write-Ok 'Telemetry-only mode complete'
+            Write-Host '   •' -ForegroundColor DarkGray -NoNewline
+            Write-Host " install_id=$InstallId" -ForegroundColor DarkGray
+            exit 0
+        }
+
+        $InstallStage = 'ensure_repo_root'
+        Initialize-RepoRoot
+        $InstallStage = 'ensure_uv'
+        Initialize-Uv
+        Write-BoxedTitle -Title "$($ActionLabel.ToUpper()) TOOLKIT" -Color Blue
         Write-Host '   •' -ForegroundColor DarkGray -NoNewline
-        Write-Host " install_id=$InstallId" -ForegroundColor DarkGray
+        Write-Host ' Delegating to setup_toolkit.py' -ForegroundColor DarkGray
+        $InstallStage = 'setup_toolkit'
+        $toolkitExitCode = Invoke-ToolkitInstaller -Arguments $PassthroughArgs
+        if ($toolkitExitCode -ne 0) { throw "Python installer failed with exit code $toolkitExitCode" }
+
+        $event = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_success' } else { 'install_success' }
+        Send-Telemetry $event
+        Show-Success
         exit 0
+    } catch {
+        $failEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_failure' } else { 'install_failure' }
+        # Ensure log is flushed to disk before sending telemetry
+        try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
+        Send-Telemetry $failEvent $_.Exception.Message
+        Show-Failure $_.Exception.Message
+        exit 1
+    } finally {
+        Remove-TempDir
+        Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
     }
-
-    $InstallStage = 'ensure_repo_root'
-    Initialize-RepoRoot
-    $InstallStage = 'ensure_uv'
-    Initialize-Uv
-    Write-BoxedTitle -Title "$($ActionLabel.ToUpper()) TOOLKIT" -Color Blue
-    Write-Host '   •' -ForegroundColor DarkGray -NoNewline
-    Write-Host ' Delegating to setup_toolkit.py' -ForegroundColor DarkGray
-    $InstallStage = 'setup_toolkit'
-    $toolkitExitCode = Invoke-ToolkitInstaller -Arguments $PassthroughArgs
-    if ($toolkitExitCode -ne 0) { throw "Python installer failed with exit code $toolkitExitCode" }
-
-    $event = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_success' } else { 'install_success' }
-    Send-Telemetry $event
-    Show-Success
-    exit 0
-} catch {
-    $failEvent = if ($PassthroughArgs -contains '--uninstall') { 'uninstall_failure' } else { 'install_failure' }
-    # Ensure log is flushed to disk before sending telemetry
-    try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch {}
-    Send-Telemetry $failEvent $_.Exception.Message
-    Show-Failure $_.Exception.Message
-    exit 1
-} finally {
-    Remove-TempDir
-    Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
 }

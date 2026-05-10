@@ -197,10 +197,10 @@ run_toolkit_installer() {
   local status=0
   set +e
   if [ "$VERBOSE_MODE" -eq 1 ]; then
-    uv run --python 3.11 "${INSTALL_REPO_ROOT}/scripts/install/setup_toolkit.py" "$@"
+    uv run --no-project --python 3.11 "${INSTALL_REPO_ROOT}/scripts/install/setup_toolkit.py" "$@"
     status=$?
   else
-    uv run --python 3.11 "${INSTALL_REPO_ROOT}/scripts/install/setup_toolkit.py" "$@" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
+    uv run --no-project --python 3.11 "${INSTALL_REPO_ROOT}/scripts/install/setup_toolkit.py" "$@" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
       format_toolkit_line "$line"
     done
     status=${PIPESTATUS[0]}

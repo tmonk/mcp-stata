@@ -3,6 +3,9 @@
 Cross-agent setup helpers for the mcp-stata toolkit.
 
 This script powers the repo-local installer and is also importable from tests.
+Note: When running this script via 'uv run' in the repository root, use '--no-project'
+to avoid building the native Rust extension. The extension is optional for registration
+and will be fetched as a pre-compiled wheel from PyPI when the server is executed via 'uvx'.
 """
 
 from __future__ import annotations
