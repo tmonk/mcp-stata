@@ -24,7 +24,7 @@ AUTHOR_AFFILIATION="London School of Economics"
 AUTHOR_EMAIL="t.d.monk@lse.ac.uk"
 # Note: VERSION is derived dynamically in main() after bootstrap
 VERBOSE_MODE=0
-SCRIPT_VERSION='3.2.4'
+SCRIPT_VERSION='3.2.5'
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 # Primary installer domain and telemetry endpoint.
