@@ -44,6 +44,9 @@ class ToolEnvelope(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     next_actions: List[str] = Field(default_factory=list)
 
+    def model_dump(self, *, exclude_none: bool = True, **kwargs):
+        return super().model_dump(exclude_none=exclude_none, **kwargs)
+
 
 class CommandResponse(BaseModel):
     command: str

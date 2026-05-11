@@ -277,30 +277,7 @@ async def stata_manage_session(
     include_packages: bool = False,
     as_json: bool = False,
 ) -> ToolEnvelope | str:
-    """Manage Stata sessions (create, stop, list, profile, UI channel, detect).
-    
-    This tool allows for orchestration of multiple Stata sessions, including their
-    lifecycle management and configuration.
-    
-    Args:
-        action: The management action to perform:
-            - "create": Initializes a new Stata session.
-            - "stop": Terminates an existing Stata session.
-            - "list": Returns a JSON list of all active sessions.
-            - "set_profile": Executes initialization code for a session.
-            - "history_diff": Returns tracked session state changes.
-            - "history_stats": Returns retained history window metadata.
-            - "get_ui_channel": Retrieves connection details for the UI proxy.
-            - "detect": Returns metadata about the Stata installation and environment.
-        session_id: Unique identifier for the Stata session (defaults to "default").
-        code: Stata code to execute when using the "set_profile" action.
-        since_command: Optional command index for "history_diff". If omitted, compares
-            to the last diff checkpoint for this session.
-        include_packages: If True (for "detect"), lists all user-installed packages.
-        
-    Returns:
-        A JSON string containing the status of the action or the requested data.
-    """
+    """Manage Stata sessions. action: create|stop|list|set_profile|history_diff|history_stats|detect."""
     _log_tool_call("stata_manage_session")
     if action == "create":
         await session_manager.get_or_create_session(session_id)
@@ -423,7 +400,6 @@ async def stata_manage_session(
         return _envelope_legacy_json(envelope) if as_json else envelope
 
 
-@mcp.tool(structured_output=True)
 @log_call
 async def stata_load_data(
     source: str,
@@ -435,24 +411,7 @@ async def stata_load_data(
     session_id: str = "default",
     allow_unsafe_paths: bool = False,
 ) -> ToolEnvelope | str:
-    """Loads a dataset into a Stata session.
-    
-    Supports loading local .dta files or using Stata's built-in 'sysuse' and 'webuse' 
-    commands. This tool ensures that the dataset is properly initialized for use 
-    in subsequent analysis.
-    
-    Args:
-        source: Path to the dataset file or a valid Stata sysuse/webuse name.
-        clear: If True (default), clears any existing data in memory before loading.
-        as_json: If True, returns a structured JSON response envelope.
-        raw: If True, returns only the raw Stata output or error message.
-        strip_smcl: If True, removes Stata SMCL tags from the output for readability.
-        max_output_lines: Optional limit on the number of output lines to return.
-        session_id: The ID of the Stata session to load data into.
-        
-    Returns:
-        A JSON string (if as_json is True) or raw text containing the result of the load operation.
-    """
+    """Load a .dta file or sysuse/webuse dataset into Stata. Prefer sysuse/use inside stata_run instead."""
     _log_tool_call("stata_load_data")
     warnings: list[str] = []
     if _looks_like_path(source) and not source.startswith(("http://", "https://")):
@@ -704,13 +663,12 @@ def _truncate_text(text: str | None, limit: int = 5000) -> str | None:
 
 
 def _command_data(result: CommandResponse) -> dict[str, Any]:
-    return {
-        "command": result.command,
+    stdout = (result.stdout or "").rstrip()
+    data: dict[str, Any] = {
         "rc": result.rc,
-        "stdout": _truncate_text(result.stdout),
-        "stderr": _truncate_text(result.stderr),
-        "smcl_output": None,
+        "stdout": _truncate_text(stdout) if stdout else None,
     }
+    return {k: v for k, v in data.items() if v is not None}
 
 
 def _build_envelope(
@@ -751,9 +709,9 @@ def _envelope_legacy_json(envelope: ToolEnvelope) -> str:
 def _command_result_envelope(tool: str, session_id: str, result: CommandResponse) -> ToolEnvelope:
     next_actions: list[str] = []
     if result.log_path:
-        next_actions.append("Use stata_read_log with the returned log path for full output.")
+        next_actions.append(f"stata_read_log(path) for full output.")
     if not result.success:
-        next_actions.append("Inspect error_details and log output before retrying.")
+        next_actions.append("Check error.message and log before retrying.")
     return _build_envelope(
         tool=tool,
         success=result.success,
@@ -778,8 +736,6 @@ def _format_command_result(result: CommandResponse, raw: bool, as_json: bool, se
         return result.log_path or ""
     
     envelope = _command_result_envelope("stata_run", session_id, result)
-    if envelope.error and envelope.error.details:
-        envelope.error.details = _truncate_text(envelope.error.details)
     if as_json:
         return _envelope_legacy_json(envelope)
     return envelope
@@ -876,43 +832,7 @@ async def stata_task_status(
     tail_lines: int = 0,
     as_json: bool = False,
 ) -> ToolEnvelope | str:
-    """Return task status for background executions.
-
-    Provides detailed information about the state of a background task initiated
-    via `stata_run` with `background=True`. Supports optional blocking wait for
-    task completion.
-
-    **Critical usage pattern**: Every `stata_run(background=True)` task MUST be
-    resolved before returning to the user. You can do other work in between — fire
-    multiple background tasks, load data, inspect results — but you must call this
-    tool with `wait=True` on every task_id before the turn ends. Post-return
-    notifications are NOT surfaced to the model, so without an explicit wait call
-    the task completes silently and the conversation stalls.
-
-    Parallel example (fire two tasks, then wait on both):
-
-        t1 = stata_run(code="...", background=True)   # task_id in t1.data.task_id
-        t2 = stata_run(code="...", background=True)   # task_id in t2.data.task_id
-        # ... do other work ...
-        r1 = stata_task_status(task_id=t1.data.task_id, wait=True, timeout=<N>, tail_lines=<M>)
-        r2 = stata_task_status(task_id=t2.data.task_id, wait=True, timeout=<N>, tail_lines=<M>)
-        # if status == "timeout", call again until "done" or "failed"
-
-    Args:
-        task_id: The unique identifier of the background task to query.
-        wait: If True, the call will block until the task finishes or the timeout is reached.
-        timeout: Maximum seconds to wait. Set based on expected runtime: short commands ~30s,
-            typical do-files ~120s, large dataset jobs ~600s. If uncertain, use a moderate
-            value and loop on status='timeout' rather than setting an artificially high ceiling.
-        poll_interval: Delay between checks (in seconds) when waiting for completion.
-        tail_lines: Lines of log to include in the response. Set based on how much output you
-            expect: 0 if you plan to call stata_read_log separately, 20-50 for quick
-            spot-checks, 100+ for verbose scripts where you want the full tail inline.
-
-    Returns:
-        A JSON object containing task details: status (started, running, done, failed, timeout,
-        not_found), timestamps, log path, and the final result if completed.
-    """
+    """Poll a background task started by stata_run(background=True). Use wait=True to block until done."""
     _log_tool_call("stata_task_status")
     start_time = time.time()
     while True:
@@ -973,20 +893,7 @@ async def stata_control(
     id: str,
     as_json: bool = False,
 ) -> ToolEnvelope | str:
-    """Interrupt a session or cancel a background task.
-    
-    Allows for immediate control over running operations, either by sending a 
-    break signal to an active Stata session or by cancelling a queued background task.
-    
-    Args:
-        action: The control action to perform:
-            - "break": Sends a BREAK signal to the specified Stata session.
-            - "cancel": Terminates the execution of a background task.
-        id: Either the `session_id` (for "break") or the `task_id` (for "cancel").
-        
-    Returns:
-        A JSON string indicating the result of the control operation.
-    """
+    """Interrupt a Stata session or cancel a background task. action: break|cancel."""
     _log_tool_call("stata_control")
     if action == "break":
         try:
@@ -1062,44 +969,7 @@ async def stata_run(
     read_only: bool = False,
     allow_unsafe_paths: bool = False,
 ) -> ToolEnvelope | str:
-    """Executes Stata code or a .do file.
-
-    This is the primary tool for interacting with Stata. It supports both
-    synchronous execution and background processing for long-running scripts.
-
-    **Background mode** (`background=True`) returns a `task_id` immediately while
-    execution continues in a separate task. Because post-return notifications are
-    NOT surfaced back to the model, you MUST immediately call
-    `stata_task_status(task_id=<id>, wait=True, timeout=300, tail_lines=50)` right
-    after this tool returns. Loop on that call until `status` is `'done'` or
-    `'failed'`. Skipping the follow-up call will stall the conversation.
-
-    Stata output is captured in real-time and written to a temporary log file.
-
-    Args:
-        code: The Stata command string or the absolute path to a .do file.
-        is_file: If True, the `code` parameter is treated as a path to a script file.
-        background: If True, runs the operation in the background. Requires
-            immediate follow-up with stata_task_status(wait=True).
-        ctx: FastMCP-injected request context for session and notification routing.
-        echo: If True, includes the original command in the captured output.
-        as_json: If True, returns a structured JSON response envelope.
-        trace: If True, enables Stata trace mode for debugging.
-        raw: If True, returns only the raw text output or error message.
-        max_output_lines: Optional limit for the number of lines returned in synchronous mode.
-        cwd: Optional working directory for the Stata process during execution.
-        session_id: The ID of the Stata session to use (defaults to "default").
-        strip_smcl: If True, removes Stata SMCL tags from the output for readability.
-        filter_pattern: Optional regex to include only matching lines in the output.
-        exclude_pattern: Optional regex to omit matching lines from the output.
-
-    Returns:
-        For sync calls: The execution output (JSON or raw text). Note: the return
-            value is truncated to the tail (max 5,000 chars) for token efficiency.
-            Use `stata_read_log` on the provided `log_path` for full execution details.
-        For background calls: A JSON object containing `task_id` and initial status.
-            You MUST call stata_task_status(wait=True) immediately after receiving this.
-    """
+    """Run Stata commands or a .do file. For background=True, call stata_task_status(task_id, wait=True) immediately after."""
     risk = _classify_command_risk(code)
     warnings = []
     if risk["categories"]:
@@ -1281,9 +1151,8 @@ async def stata_run(
             log_path=task_info.log_path,
             warnings=warnings,
             next_actions=[
-                        f"Before returning to the user, call stata_task_status(task_id='{task_id}', wait=True, timeout=<N>, tail_lines=<M>) to collect the result. Choose timeout based on expected runtime; choose tail_lines based on how much output you want inline. You may do other work first (e.g. launch parallel tasks), but every background task must be waited on before the turn ends.",
-                "If stata_task_status returns status='timeout', call it again. Repeat until status is 'done' or 'failed'.",
-                "After status='done', read data.result for the output. Use stata_read_log with log_path for the full log.",
+                f"Call stata_task_status(task_id='{task_id}', wait=True, timeout=<N>, tail_lines=50) now.",
+                "If status='timeout', call again. Repeat until 'done' or 'failed'.",
             ],
         )
         return _envelope_legacy_json(envelope) if as_json else envelope
@@ -1296,11 +1165,6 @@ async def stata_run(
         logger.info("stata_run sync result: %s", result)
         formatted = _format_command_result(result, raw=raw, as_json=as_json, session_id=session_id)
         if isinstance(formatted, ToolEnvelope):
-            formatted.data = {
-                **(formatted.data if isinstance(formatted.data, dict) else {}),
-                "risk": risk,
-                "read_only": read_only,
-            }
             formatted.warnings.extend(warnings)
         return formatted
 
@@ -1413,27 +1277,7 @@ def stata_read_log(
     max_matches: int = 50,
     as_json: bool = False,
 ) -> ToolEnvelope | str:
-    """Read or search Stata log files.
-    
-    Provides low-level access to execution logs. Supports reading specific byte 
-    ranges, tailing the end of logs, and searching for patterns with context lines.
-    
-    Args:
-        path: Optional absolute path to the log file on disk.
-        task_id: Optional ID of a background task to read the log for (alternative to path).
-        offset: Starting byte position for the read operation.
-        max_bytes: Maximum number of bytes to read from the log (defaults to 256kb).
-        tail_lines: If > 0, returns the last N lines of the log, overriding offset.
-        query: Search string or regular expression to find within the log file.
-        before: Number of lines before a match to include as context.
-        after: Number of lines after a match to include as context.
-        case_sensitive: If True, performs a case-sensitive search.
-        regex: If True, treats the `query` as a regular expression.
-        max_matches: Limit on the number of search results returned.
-        
-    Returns:
-        A JSON string containing the read data, current offset, and any search matches.
-    """
+    """Read or search a Stata log file. Use log_path from a stata_run result."""
     _log_tool_call("stata_read_log")
     logger.info(f"stata_read_log called with path={path}, task_id={task_id}")
     
@@ -1537,33 +1381,7 @@ async def stata_inspect_data(
     as_json: bool = False,
     legacy_text: bool = False,
 ) -> ToolEnvelope | str:
-    """Inspect the active dataset (describe, codebook, summarize, search, get data) or code (lint).
-    
-    Comprehensive tool for exploring the structure and content of the current 
-    Stata dataset or performing static analysis on Stata code files.
-    
-    Args:
-        action: The inspection action to perform:
-            - "describe": Returns dataset structure and variable types.
-            - "codebook": Detailed description of a specific variable's contents.
-            - "summary": Descriptive statistics (mean, sd, etc.) for variables.
-            - "search": Finds variables matching a name or label pattern.
-            - "list": Returns a structured list of all variables in the dataset.
-            - "get": Retrieves raw data observations from the dataset.
-            - "lint": Performs static analysis on a .do or .ado file.
-        query: Search term for the "search" action or variable name for "codebook".
-        variables: Optional list of variables to include in the "summary" action.
-        start: 0-indexed starting observation for the "get" action.
-        count: Number of observations to retrieve for the "get" action.
-        strip_smcl: If True, removes Stata SMCL tags from text-like outputs.
-        session_id: The ID of the Stata session to inspect.
-        path: (For "lint") Absolute path to the file to check.
-        linemax: (For "lint") Maximum line length (default 80).
-        indent: (For "lint") Required indentation size (default 4).
-        
-    Returns:
-        A JSON string or formatted text containing the requested inspection data.
-    """
+    """Describe variables and compute summary stats for the active Stata dataset. action: describe|codebook|summary|search|list|get|lint."""
     _log_tool_call("stata_inspect_data")
     session = await session_manager.get_or_create_session(session_id)
     if action == "describe":
@@ -1696,23 +1514,7 @@ async def stata_manage_graphs(
     session_id: str = "default",
     as_json: bool = False,
 ) -> ToolEnvelope | str:
-    """Manage Stata graphs (list, export).
-    
-    Enables interaction with Stata's graph memory, allowing for listing open 
-    figures and exporting them to various file formats on disk.
-    
-    Args:
-        action: The graph management action:
-            - "list": Returns a JSON list of all graphs currently in memory.
-            - "export": Saves a specific graph to a file.
-            - "export_all": Exports all graphs in memory to files.
-        graph_name: The name of the specific graph to export (used with "export").
-        format: The file format for export (svg, pdf, png). Defaults to "svg".
-        session_id: The ID of the Stata session to manage graphs from.
-        
-    Returns:
-        A JSON string containing the list of graphs or export confirmation details.
-    """
+    """List, export, or display Stata graphs from the active session. action: list|export|export_all."""
     _log_tool_call("stata_manage_graphs")
     session = await session_manager.get_or_create_session(session_id)
     if action == "list":
@@ -1769,7 +1571,6 @@ async def stata_manage_graphs(
         )
         return _envelope_legacy_json(envelope) if as_json else envelope
 
-@mcp.tool(structured_output=True)
 @log_call
 async def stata_get_results(
     session_id: str = "default",
@@ -1825,14 +1626,7 @@ async def stata_get_help(
     as_json: bool = False,
     legacy_text: bool = False,
 ) -> ToolEnvelope | str:
-    """Returns help for a Stata command.
-    
-    Args:
-        topic: The command or topic to get help for.
-        plain_text: If True, returns plain text instead of Markdown.
-        merge_paragraphs: If True, merges fixed-width split paragraphs.
-        session_id: The ID of the Stata session.
-    """
+    """Return help text for a Stata command or topic."""
     _log_tool_call("stata_get_help")
     session = await session_manager.get_or_create_session(session_id)
     help_text = await session.call(
@@ -2060,6 +1854,35 @@ async def _recent_session_logs(session_id: str) -> list[dict[str, Any]]:
             }
         )
     return items[:20]
+
+
+@mcp.tool(structured_output=True)
+@log_call
+async def write_file(path: str, content: str) -> ToolEnvelope:
+    """Write text to a file on disk. Use for creating .do files before stata_run(is_file=True)."""
+    import pathlib
+    allowed, reason = _path_is_allowed(path)
+    if not allowed:
+        return _build_envelope(
+            tool="write_file",
+            success=False,
+            error=ErrorEnvelope(message=reason or "Path not allowed."),
+        )
+    try:
+        p = pathlib.Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        return _build_envelope(
+            tool="write_file",
+            success=True,
+            data={"path": str(p.resolve())},
+        )
+    except OSError as e:
+        return _build_envelope(
+            tool="write_file",
+            success=False,
+            error=ErrorEnvelope(message=str(e)),
+        )
 
 
 @mcp.tool(structured_output=True)
@@ -2558,16 +2381,7 @@ async def stata_run_tests(
     max_workers: int = 4,
     junit_xml_path: Optional[str] = None
 ) -> ToolEnvelope:
-    """Discover and run all test_*.do files under path.
-    
-    Args:
-        path: Directory path to search for tests.
-        session_id: Optional ID of an existing session to run tests in. 
-                   If omitted, fresh sessions are used for each test.
-        parallel: If True, run tests in parallel using multiple sessions.
-        max_workers: Maximum number of parallel workers (default 4).
-        junit_xml_path: Optional path to save results in JUnit XML format.
-    """
+    """Discover and run all test_*.do files under path."""
     summary = await statest_runner.run_tests(
         path, 
         session_manager, 
@@ -2592,13 +2406,7 @@ async def stata_run_test(
     path: str,
     session_id: Optional[str] = None
 ) -> ToolEnvelope:
-    """Run a single test_*.do file.
-    
-    Args:
-        path: Path to the test file.
-        session_id: Optional ID of an existing session to run the test in.
-                   If omitted, a fresh session is used.
-    """
+    """Run a single test_*.do file."""
     result = await statest_runner.run_test(path, session_manager, existing_session_id=session_id)
     # We also update the 'last results' for this session_id or 'default'
     # but as a single-entry summary

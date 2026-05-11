@@ -3056,7 +3056,7 @@ class StataClient:
             else:
                 msg, context = self._extract_error_and_context(stdout + stderr, rc)
             snippet = context or stdout or stderr or msg
-            error = ErrorEnvelope(message=msg, details=context, rc=rc, command=code)
+            error = ErrorEnvelope(message=msg, rc=rc, command=code)
             # In error case, we often want to isolate the error msg in stderr
             # but keep stdout for context if provided.
             stdout = "" 
@@ -3173,7 +3173,6 @@ class StataClient:
                 message=msg,
                 rc=rc,
                 command=code,
-                details=ret_text,
             )
 
         return CommandResponse(
@@ -3590,14 +3589,13 @@ class StataClient:
 
             error = ErrorEnvelope(
                 message=msg,
-                details=context,
                 rc=rc,
                 command=command,
                 log_path=log_path,
             )
             # Put summary in stderr
             stderr_final = context
-        
+
         duration = time.time() - start_time
         logger.info(
             "stata.run(stream) rc=%s success=%s trace=%s duration_ms=%.2f code_preview=%s",
@@ -3915,7 +3913,6 @@ class StataClient:
 
             error = ErrorEnvelope(
                 message=msg,
-                details=context,
                 rc=rc,
                 command=command,
                 log_path=log_path,
@@ -5861,7 +5858,6 @@ class StataClient:
 
             error = ErrorEnvelope(
                 message=msg,
-                details=context,
                 rc=rc,
                 command=command,
                 log_path=log_path,
