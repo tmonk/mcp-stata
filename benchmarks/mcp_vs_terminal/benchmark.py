@@ -2,6 +2,8 @@ import asyncio
 import os
 import json
 import time
+import argparse
+import subprocess
 import pandas as pd
 from typing import Any, Dict, List, Optional
 from pathlib import Path
@@ -16,6 +18,22 @@ from db import init_db, create_run, save_result, save_artifact, get_run_results
 
 load_dotenv()
 
+
+def _get_local_version() -> str:
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    try:
+        dirty = subprocess.run(
+            ["git", "describe", "--dirty", "--always"],
+            cwd=root, capture_output=True, text=True, timeout=10
+        ).stdout.strip()
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=root, capture_output=True, text=True, timeout=10
+        ).stdout.strip()
+        return f"{dirty} ({branch})" if branch else dirty
+    except Exception:
+        return "unknown"
+
 api_key = os.environ.get("GEMINI_API_KEY")
 if not api_key:
     print("Warning: GEMINI_API_KEY not found in environment.")
@@ -24,14 +42,18 @@ MODEL_NAME = "gemini-3-flash-preview"
 
 
 class BenchmarkHarness:
-    def __init__(self, model_name: str = MODEL_NAME, notes: str = None):
+    def __init__(self, model_name: str = MODEL_NAME, notes: str = None, use_local: bool = False):
         self.model_name = model_name
+        self.use_local = use_local
         self.client = genai.Client(api_key=api_key)
         self.results = []
 
         # Initialise DB and create a stamped run for this session
         init_db()
-        self.run_id = create_run(model_name=self.model_name, notes=notes)
+        run_notes = notes or ""
+        if use_local:
+            run_notes += f" [LOCAL: {_get_local_version()}]"
+        self.run_id = create_run(model_name=self.model_name, notes=run_notes)
         print(f"Benchmark run ID: {self.run_id}")
 
         # Ensure we persist a full run log to disk (and DB) for later ingestion/debugging.
@@ -65,7 +87,7 @@ class BenchmarkHarness:
         print(f"\n--- Running Task {task['id']} ({approach}) ---")
 
         if approach == "mcp":
-            async with MCPStataClient(".") as client:
+            async with MCPStataClient(".", use_local=self.use_local) as client:
                 tools = await client.get_tools()
                 gemini_tools = self._convert_tools_to_gemini(tools)
                 return await self._run_loop(approach, task, gemini_tools, client, max_turns)
@@ -199,7 +221,15 @@ class BenchmarkHarness:
 
 
 async def main():
-    harness = BenchmarkHarness(notes="CLI run")
+    parser = argparse.ArgumentParser(description="MCP vs Terminal Stata Benchmark")
+    parser.add_argument("--local", action="store_true", help="Use local development mcp-stata instead of installed release")
+    args = parser.parse_args()
+
+    notes = "CLI run"
+    if args.local:
+        notes += f" --local ({_get_local_version()})"
+        print(f"Using LOCAL mcp-stata: {_get_local_version()}")
+    harness = BenchmarkHarness(notes=notes, use_local=args.local)
 
     try:
         await harness.run_sanity_check()

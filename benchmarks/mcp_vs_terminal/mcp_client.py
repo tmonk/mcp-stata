@@ -6,15 +6,14 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 class MCPStataClient:
-    def __init__(self, server_path: str):
+    def __init__(self, server_path: str, use_local: bool = False):
         self.server_path = server_path
+        self.use_local = use_local
         self.session: Optional[ClientSession] = None
         self._exit_stack = None
         self._client = None
 
     async def __aenter__(self):
-        # We assume mcp-stata is installed in the venv or we use the local source
-        # To use local source, we might need to set PYTHONPATH
         env = os.environ.copy()
         root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         env["PYTHONPATH"] = os.path.join(root_dir, "src")
