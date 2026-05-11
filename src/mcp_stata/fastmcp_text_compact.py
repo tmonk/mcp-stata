@@ -18,9 +18,9 @@ STRUCTURED_COMPANION_ENV = "MCP_STATA_STRUCTURED_COMPANION_TEXT"
 
 
 def _structured_companion_mode() -> str:
-    """Return ``omit`` (default) or ``compact`` for duplicate unstructured JSON."""
+    """Return ``compact`` (default) or ``omit`` for duplicate unstructured JSON."""
 
-    return os.environ.get(STRUCTURED_COMPANION_ENV, "omit").strip().lower()
+    return os.environ.get(STRUCTURED_COMPANION_ENV, "compact").strip().lower()
 
 
 def install_compact_fastmcp_tool_text() -> None:
@@ -33,13 +33,13 @@ def install_compact_fastmcp_tool_text() -> None:
 
     This module:
 
-    - Replaces ``_convert_to_content`` with compact JSON (``indent=None``) when companion text
-      is retained (``MCP_STATA_STRUCTURED_COMPANION_TEXT=compact``).
-    - Wraps ``FuncMetadata.convert_result`` so that, by default (``omit`` or unset), the
-      unstructured companion is an empty ``content`` list while ``structuredContent`` is unchanged.
+    - Replaces ``_convert_to_content`` with compact JSON (``indent=None``) by default
+      (``MCP_STATA_STRUCTURED_COMPANION_TEXT=compact``).
+    - Wraps ``FuncMetadata.convert_result`` so that the unstructured companion is retained
+      unless explicitly suppressed via ``MCP_STATA_STRUCTURED_COMPANION_TEXT=omit``.
 
-    Set ``MCP_STATA_STRUCTURED_COMPANION_TEXT=compact`` to restore FastMCP-style duplicate JSON
-    text (compact) for hosts that only read ``content[].text``.
+    Set ``MCP_STATA_STRUCTURED_COMPANION_TEXT=omit`` to return an empty ``content`` list while
+    keeping ``structuredContent`` unchanged (for hosts that only use structured data).
     """
     from mcp.server.fastmcp.utilities import func_metadata as fm
     from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
