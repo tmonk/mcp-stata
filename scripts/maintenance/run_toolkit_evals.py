@@ -15,7 +15,7 @@ REPORTS = ROOT / "plugin" / "evals" / "reports"
 
 
 def score_fixture(path: Path) -> dict:
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     required = {"name", "input", "expected"}
     missing = sorted(required - set(payload))
     passed = not missing
@@ -85,7 +85,7 @@ def write_report(payload: dict) -> Path:
     REPORTS.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = REPORTS / f"eval_report_{timestamp}.json"
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
 
 

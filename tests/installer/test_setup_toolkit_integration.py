@@ -84,7 +84,7 @@ def test_configure_project_scope_cursor(mock_home):
     project_root = mock_home / "project"
     cfg = project_root / ".cursor" / "mcp.json"
     setup_toolkit.configure_editor_mcp("cursor", scope="project", project_root=project_root)
-    data = json.loads(cfg.read_text())
+    data = json.loads(cfg.read_text(encoding="utf-8"))
     assert "mcp-stata" in data["mcpServers"]
     assert "env" not in data["mcpServers"]["mcp-stata"]
 
@@ -101,17 +101,17 @@ def test_project_scope_omits_env_when_process_env_is_set(mock_home):
     ):
         cursor_cfg = project_root / ".cursor" / "mcp.json"
         setup_toolkit.configure_editor_mcp("cursor", scope="project", project_root=project_root)
-        cursor_data = json.loads(cursor_cfg.read_text())
+        cursor_data = json.loads(cursor_cfg.read_text(encoding="utf-8"))
         assert "env" not in cursor_data["mcpServers"]["mcp-stata"]
 
         setup_toolkit.configure_claude_code(scope="project", project_root=project_root)
         claude_cfg = project_root / ".mcp.json"
-        claude_data = json.loads(claude_cfg.read_text())
+        claude_data = json.loads(claude_cfg.read_text(encoding="utf-8"))
         assert "env" not in claude_data["mcpServers"]["mcp-stata"]
 
         setup_toolkit.configure_codex(scope="project", project_root=project_root)
         codex_cfg = project_root / ".codex" / "config.toml"
-        codex_content = codex_cfg.read_text()
+        codex_content = codex_cfg.read_text(encoding="utf-8")
         assert "/very/wrong/stata/path" not in codex_content
         assert "/very/wrong/startup.do" not in codex_content
         assert "/very/wrong/temp/dir" not in codex_content
@@ -131,7 +131,8 @@ def test_reinstall_removes_standalone_claude_config_when_marketplace_available(m
                     }
                 }
             }
-        )
+        ),
+        encoding="utf-8"
     )
 
     with patch.object(setup_toolkit, "install_claude_marketplace", return_value=True), \
@@ -145,7 +146,7 @@ def test_reinstall_removes_standalone_claude_config_when_marketplace_available(m
             project_root=mock_home / "project",
         )
 
-    data = json.loads(claude_cfg.read_text())
+    data = json.loads(claude_cfg.read_text(encoding="utf-8"))
     assert "mcp-stata" not in data["mcpServers"]
     assert written == []  # written is for newly created config paths, but here we only modified (cleaned) existing ones
 
@@ -164,7 +165,7 @@ def test_reinstall_falls_back_to_standalone_claude_on_marketplace_failure(mock_h
             project_root=mock_home / "project",
         )
 
-    data = json.loads(claude_cfg.read_text())
+    data = json.loads(claude_cfg.read_text(encoding="utf-8"))
     assert "mcp-stata" in data["mcpServers"]
     assert "mcp-stata@9.9.9" in str(data["mcpServers"]["mcp-stata"]["args"])
     assert claude_cfg in written
@@ -183,7 +184,8 @@ def test_reinstall_removes_standalone_codex_config_when_marketplace_available(mo
                 'STATA_PATH = "/stale/path"',
                 "",
             ]
-        )
+        ),
+        encoding="utf-8"
     )
 
     with patch.object(setup_toolkit, "install_codex_marketplace", return_value=True):
@@ -196,7 +198,7 @@ def test_reinstall_removes_standalone_codex_config_when_marketplace_available(mo
             project_root=project_root,
         )
 
-    content = codex_cfg.read_text()
+    content = codex_cfg.read_text(encoding="utf-8")
     assert "[mcp_servers.mcp-stata]" not in content
     assert codex_cfg not in written
 
@@ -219,11 +221,12 @@ def test_reinstall_strips_existing_project_placeholder_env_blocks(mock_home):
                     }
                 }
             }
-        )
+        ),
+        encoding="utf-8"
     )
 
     setup_toolkit.configure_editor_mcp("cursor", scope="project", project_root=project_root)
-    cursor_data = json.loads(cursor_cfg.read_text())
+    cursor_data = json.loads(cursor_cfg.read_text(encoding="utf-8"))
     assert "env" not in cursor_data["mcpServers"]["mcp-stata"]
 
     codex_cfg = project_root / ".codex" / "config.toml"
@@ -240,11 +243,12 @@ def test_reinstall_strips_existing_project_placeholder_env_blocks(mock_home):
                 'MCP_STATA_TEMP_DIR = "${MCP_STATA_TEMP_DIR:-}"',
                 "",
             ]
-        )
+        ),
+        encoding="utf-8"
     )
 
     setup_toolkit.configure_codex(scope="project", project_root=project_root)
-    codex_content = codex_cfg.read_text()
+    codex_content = codex_cfg.read_text(encoding="utf-8")
     assert "[mcp_servers.mcp-stata.env]" not in codex_content
     assert "${STATA_PATH:-}" not in codex_content
 
@@ -292,7 +296,7 @@ def test_run_logged_subprocess_appends_full_trace_to_log(mock_home, tmp_path):
         result = setup_toolkit.run_logged_subprocess(["echo", "hi"], check=True, quiet_console=True)
 
     assert result.returncode == 0
-    log_text = log_path.read_text()
+    log_text = log_path.read_text(encoding="utf-8")
     assert "Running command:" in log_text
     assert "Command exit code: 0" in log_text
     assert "[VERBOSE] stdout:" in log_text

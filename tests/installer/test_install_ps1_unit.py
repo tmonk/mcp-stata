@@ -19,7 +19,7 @@ INSTALL_PS1 = Path(__file__).resolve().parents[2] / "plugin" / "install.ps1"
 
 
 def _script_text() -> str:
-    return INSTALL_PS1.read_text()
+    return INSTALL_PS1.read_text(encoding="utf-8")
 
 
 def test_install_ps1_exists() -> None:

@@ -87,7 +87,7 @@ def parse_frontmatter(text: str, *, path: Path, allowed_keys: set[str]) -> tuple
 def load_manifest(path: Path) -> dict:
     if not path.exists():
         raise ValueError(f"Missing sidecar manifest: {path}")
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def render_full_markdown(*, name: str, description: str, body: str) -> str:
@@ -119,14 +119,14 @@ def write_openai_yaml(skill_dir: Path, manifest: dict, *, description: str) -> s
         ),
     }
     lines = [f"{key}: {json.dumps(value)}" for key, value in data.items()]
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return str(path.relative_to(ROOT))
 
 
 def load_skill_docs() -> list[dict]:
     docs = []
     for path in sorted(PLUGIN_SKILLS.glob("*/SKILL.md")):
-        raw = path.read_text()
+        raw = path.read_text(encoding="utf-8")
         meta, body = parse_frontmatter(
             raw,
             path=path,
@@ -141,7 +141,7 @@ def load_skill_docs() -> list[dict]:
         for ref_path in references:
             full_ref_path = path.parent / ref_path
             if full_ref_path.exists():
-                reference_docs[ref_path] = full_ref_path.read_text()
+                reference_docs[ref_path] = full_ref_path.read_text(encoding="utf-8")
 
         docs.append(
             {
@@ -177,7 +177,7 @@ def load_skill_docs() -> list[dict]:
 def load_agent_docs() -> list[dict]:
     docs = []
     for path in sorted(PLUGIN_AGENTS.glob("*.md")):
-        raw = path.read_text()
+        raw = path.read_text(encoding="utf-8")
         meta, body = parse_frontmatter(
             raw,
             path=path,
@@ -235,7 +235,7 @@ def build_data_module(skills: list[dict], agents: list[dict]) -> str:
 
 
 def sync_readme(skills: list[dict], agents: list[dict]) -> None:
-    text = PLUGIN_README.read_text()
+    text = PLUGIN_README.read_text(encoding="utf-8")
 
     model_invoked = [item for item in skills if item["invocation_type"] == "context-skill"]
     slash = [item for item in skills if item["invocation_type"] == "slash-command"]
@@ -263,13 +263,13 @@ def sync_readme(skills: list[dict], agents: list[dict]) -> None:
         end_marker = marker.replace("BEGIN", "END")
         end = text.index(end_marker)
         text = text[: start + len(marker)] + "\n" + table + "\n" + text[end:]
-    PLUGIN_README.write_text(text)
+    PLUGIN_README.write_text(text, encoding="utf-8")
 
 
 def main() -> None:
     skills = load_skill_docs()
     agents = load_agent_docs()
-    DATA_MODULE.write_text(build_data_module(skills, agents))
+    DATA_MODULE.write_text(build_data_module(skills, agents), encoding="utf-8")
     sync_readme(skills, agents)
     print(f"Generated catalog for {len(skills)} skills and {len(agents)} agents.")
 

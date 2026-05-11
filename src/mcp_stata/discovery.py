@@ -563,7 +563,7 @@ def _load_discovery_cache() -> Dict[str, Any]:
     if not _DISCOVERY_CACHE_PATH.exists():
         return {}
     try:
-        content = _DISCOVERY_CACHE_PATH.read_text()
+        content = _DISCOVERY_CACHE_PATH.read_text(encoding="utf-8")
         return json.loads(content)
     except Exception:
         return {}
@@ -577,7 +577,7 @@ def _save_discovery_cache(cache: Dict[str, Any]) -> None:
             cache = dict(sorted_items[:50])
         _DISCOVERY_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         content = json.dumps(cache)
-        _DISCOVERY_CACHE_PATH.write_text(content)
+        _DISCOVERY_CACHE_PATH.write_text(content, encoding="utf-8")
     except Exception:
         pass
 

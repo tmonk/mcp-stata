@@ -48,7 +48,7 @@ def _run(
     if not tool_path.exists():
         system_uvx = shutil.which("uvx")
         if system_uvx:
-            tool_path.write_text(f'#!/bin/bash\nexec "{system_uvx}" "$@"\n')
+            tool_path.write_text(f'#!/bin/bash\nexec "{system_uvx}" "$@"\n', encoding="utf-8")
             tool_path.chmod(tool_path.stat().st_mode | 0o755)
 
     env = os.environ.copy()
@@ -223,7 +223,7 @@ class TestGeminiConfig:
         assert link.exists()
 
     def test_manifest_contains_env_placeholders(self):
-        manifest = json.loads((Path(__file__).resolve().parents[2] / "plugin" / "gemini-extension.json").read_text())
+        manifest = json.loads((Path(__file__).resolve().parents[2] / "plugin" / "gemini-extension.json").read_text(encoding="utf-8"))
         entry = manifest["mcpServers"]["mcp-stata"]
         assert entry["cwd"] == "${extensionPath}"
         assert "env" not in entry
@@ -242,7 +242,7 @@ class TestCursorConfig:
         assert result.returncode == 0
         cfg = tmp_path / "project" / ".cursor" / "mcp.json"
         assert cfg.exists()
-        data = json.loads(cfg.read_text())
+        data = json.loads(cfg.read_text(encoding="utf-8"))
         assert "mcp-stata" in data["mcpServers"]
 
     def test_merges_into_existing_cursor_config(self, tmp_path):
@@ -250,9 +250,9 @@ class TestCursorConfig:
         _stub_uvx(bin_dir)
         cfg = tmp_path / "project" / ".cursor" / "mcp.json"
         cfg.parent.mkdir(parents=True)
-        cfg.write_text(json.dumps({"mcpServers": {"existing": {"command": "foo"}}}))
+        cfg.write_text(json.dumps({"mcpServers": {"existing": {"command": "foo"}}}), encoding="utf-8")
         _run(["--agent", "cursor", "--scope", "project"], home=tmp_path)
-        data = json.loads(cfg.read_text())
+        data = json.loads(cfg.read_text(encoding="utf-8"))
         assert "existing" in data["mcpServers"]
         assert "mcp-stata" in data["mcpServers"]
 
@@ -270,7 +270,7 @@ class TestWindsurfConfig:
         assert result.returncode == 0
         cfg = tmp_path / ".codeium" / "windsurf" / "mcp_config.json"
         assert cfg.exists()
-        data = json.loads(cfg.read_text())
+        data = json.loads(cfg.read_text(encoding="utf-8"))
         assert "mcp-stata" in data["mcpServers"]
 
 
@@ -287,7 +287,7 @@ class TestClaudeConfig:
         assert result.returncode == 0
         cfg = tmp_path / "project" / ".mcp.json"
         assert cfg.exists()
-        data = json.loads(cfg.read_text())
+        data = json.loads(cfg.read_text(encoding="utf-8"))
         assert "mcp-stata" in data["mcpServers"]
 
     def test_marketplace_success_cleans_standalone_config(self, tmp_path):
@@ -297,11 +297,11 @@ class TestClaudeConfig:
         # Pre-create standalone config
         cfg = tmp_path / "project" / ".mcp.json"
         cfg.parent.mkdir(parents=True, exist_ok=True)
-        cfg.write_text(json.dumps({"mcpServers": {"mcp-stata": {}}}))
+        cfg.write_text(json.dumps({"mcpServers": {"mcp-stata": {}}}), encoding="utf-8")
         
         result = _run(["--agent", "claude", "--scope", "project"], home=tmp_path)
         assert result.returncode == 0
-        data = json.loads(cfg.read_text())
+        data = json.loads(cfg.read_text(encoding="utf-8"))
         assert "mcp-stata" not in data["mcpServers"]
 
 
@@ -318,7 +318,7 @@ class TestCodexConfig:
         assert result.returncode == 0
         toml = tmp_path / "project" / ".codex" / "config.toml"
         assert toml.exists()
-        content = toml.read_text()
+        content = toml.read_text(encoding="utf-8")
         assert "mcp-stata" in content
         assert "uvx" in content
         assert "mcp-stata@latest" in content
@@ -330,7 +330,7 @@ class TestCodexConfig:
         _run(["--agent", "codex", "--scope", "project"], home=tmp_path)
         _run(["--agent", "codex", "--scope", "project"], home=tmp_path)
         toml = tmp_path / "project" / ".codex" / "config.toml"
-        count = toml.read_text().count("[mcp_servers.mcp-stata]")
+        count = toml.read_text(encoding="utf-8").count("[mcp_servers.mcp-stata]")
         assert count == 1, f"mcp-stata entry duplicated: found {count} times"
 
     # Note: Codex-specific skills and AGENTS.md hint logic was removed 
@@ -354,7 +354,7 @@ class TestMcpArgs:
     ]
 
     def _check_args(self, cfg_path: Path, key: str = "mcpServers") -> None:
-        data = json.loads(cfg_path.read_text())
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
         entry = data[key]["mcp-stata"]
         assert entry["command"] == "uvx"
         assert entry["args"] == self.EXPECTED_ARGS, (
@@ -366,7 +366,7 @@ class TestMcpArgs:
         bin_dir = tmp_path / "bin"
         _stub_uvx(bin_dir)
         _run(["--agent", "gemini"], home=tmp_path)
-        manifest = json.loads((Path(__file__).resolve().parents[2] / "plugin" / "gemini-extension.json").read_text())
+        manifest = json.loads((Path(__file__).resolve().parents[2] / "plugin" / "gemini-extension.json").read_text(encoding="utf-8"))
         entry = manifest["mcpServers"]["mcp-stata"]
         assert entry["command"] == "uvx"
         assert entry["args"] == self.EXPECTED_ARGS
@@ -501,12 +501,12 @@ class TestSummaryOutput:
         _stub_agent_cli(bin_dir, "codex", succeeds=False)
         _run(["--agent", "codex", "--version", "9.9.9", "--scope", "project"], home=tmp_path)
         toml = tmp_path / "project" / ".codex" / "config.toml"
-        assert "mcp-stata@9.9.9" in toml.read_text()
+        assert "mcp-stata@9.9.9" in toml.read_text(encoding="utf-8")
 
 
 class TestPluginMetadata:
     def test_hooks_schema_uses_session_start_matcher(self):
-        hooks = json.loads((Path(__file__).resolve().parents[2] / "plugin" / "hooks" / "hooks.json").read_text())
+        hooks = json.loads((Path(__file__).resolve().parents[2] / "plugin" / "hooks" / "hooks.json").read_text(encoding="utf-8"))
         session_start = hooks["hooks"]["SessionStart"][0]
         assert session_start["matcher"] == "startup|resume|clear|compact"
         command_hook = session_start["hooks"][0]
@@ -517,13 +517,13 @@ class TestPluginMetadata:
 
 class TestFallbackConfiguration:
     def test_defines_fallback_urls(self):
-        text = INSTALL_SH.read_text()
+        text = INSTALL_SH.read_text(encoding="utf-8")
         assert 'INSTALL_HOST="mcp-stata-install.tdmonk.com"' in text
         assert 'GITHUB_RAW_URL="https://raw.githubusercontent.com/tmonk/mcp-stata/main/plugin"' in text
         assert 'INSTALL_FALLBACK_SH="${GITHUB_RAW_URL}/install.sh"' in text
 
     def test_pulls_dynamic_config(self):
-        text = INSTALL_SH.read_text()
+        text = INSTALL_SH.read_text(encoding="utf-8")
         assert 'DYNAMIC_CONFIG=$(curl -fsSL --max-time 2 "${GITHUB_RAW_URL}/installer.json"' in text
         assert 'NEW_HOST=$(printf \'%s\' "$DYNAMIC_CONFIG" | grep -o \'"base": "[^"]*"\' | head -1 | cut -d\'"\' -f4 | sed \'s|https://||\')' in text
 

@@ -74,12 +74,12 @@ def test_merge_json_server_config_migration(tmp_path):
         }
     }
     import json
-    config_file.write_text(json.dumps(existing))
+    config_file.write_text(json.dumps(existing), encoding="utf-8")
     
     new_entry = {"command": "new", "args": []}
     setup_toolkit.merge_json_server_config(config_file, top_key="mcpServers", entry=new_entry)
     
-    data = json.loads(config_file.read_text())
+    data = json.loads(config_file.read_text(encoding="utf-8"))
     assert "mcp-stata" in data["mcpServers"]
     assert "mcp_stata" not in data["mcpServers"]
     assert data["mcpServers"]["mcp-stata"]["command"] == "new"

@@ -56,11 +56,11 @@ def sync_json_toplevel(path: Path, version: str) -> bool:
     if not path.exists():
         sys.stderr.write(f"Warning: {path} not found, skipping.\n")
         return False
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("version") == version:
         return False
     data["version"] = version
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return True
 
 
@@ -69,14 +69,14 @@ def sync_json_nested(path: Path, version: str) -> bool:
     if not path.exists():
         sys.stderr.write(f"Warning: {path} not found, skipping.\n")
         return False
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     updated = False
     for item in data.get("plugins", []):
         if item.get("version") != version:
             item["version"] = version
             updated = True
     if updated:
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return updated
 
 
@@ -91,7 +91,7 @@ def sync_markdown_frontmatter(path: Path, version: str) -> bool:
     if not path.exists():
         sys.stderr.write(f"Warning: {path} not found, skipping.\n")
         return False
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     if not text.startswith("---\n"):
         return False
     end = text.find("\n---\n", 4)
@@ -114,7 +114,7 @@ def sync_markdown_frontmatter(path: Path, version: str) -> bool:
         count=1,
         flags=re.MULTILINE,
     )
-    path.write_text(f"---\n{new_front}\n---\n{body}")
+    path.write_text(f"---\n{new_front}\n---\n{body}", encoding="utf-8")
     return True
 
 
@@ -123,7 +123,7 @@ def sync_server_json(version: str) -> bool:
     if not SERVER_JSON.exists():
         sys.stderr.write(f"server.json not found at {SERVER_JSON}\n")
         sys.exit(1)
-    data = json.loads(SERVER_JSON.read_text())
+    data = json.loads(SERVER_JSON.read_text(encoding="utf-8"))
     updated = False
     if data.get("version") != version:
         data["version"] = version
@@ -133,7 +133,7 @@ def sync_server_json(version: str) -> bool:
             pkg["version"] = version
             updated = True
     if updated:
-        SERVER_JSON.write_text(json.dumps(data, indent=2) + "\n")
+        SERVER_JSON.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return updated
 
 

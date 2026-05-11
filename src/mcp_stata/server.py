@@ -2515,7 +2515,7 @@ async def eval_latest_resource() -> str:
     if not candidates:
         return json.dumps({"status": "missing", "message": "No eval reports have been generated yet."})
     latest = candidates[0]
-    return json.dumps({"status": "ok", "path": str(latest), "report": json.loads(latest.read_text())})
+    return json.dumps({"status": "ok", "path": str(latest), "report": json.loads(latest.read_text(encoding="utf-8"))})
 
 @mcp.resource("stata://skills/list")
 async def list_skills_resource() -> str:

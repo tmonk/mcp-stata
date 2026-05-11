@@ -184,14 +184,14 @@ def _load_json(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
 
 def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
 def merge_json_server_config(path: Path, *, top_key: str, entry: dict) -> Path:
@@ -215,7 +215,7 @@ def upsert_codex_config(
     entry: dict,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    content = path.read_text() if path.exists() else ""
+    content = path.read_text(encoding="utf-8") if path.exists() else ""
     pattern = re.compile(
         r'(?ms)^\[mcp_servers\.(?:"?mcp-stata"?|"?mcp_stata"?)(?:\.env)?\]\n.*?(?=^\[|\Z)'
     )
@@ -233,7 +233,7 @@ def upsert_codex_config(
             block_lines.append(f"{key} = {_format_toml_value(value)}")
     block = "\n".join(block_lines) + "\n"
     new_content = (content + "\n\n" + block).lstrip("\n")
-    path.write_text(new_content)
+    path.write_text(new_content, encoding="utf-8")
     return path
 
 
@@ -755,14 +755,14 @@ def remove_codex_config(path: Path) -> tuple[Path, bool]:
     """Remove the mcp-stata TOML block from a Codex config.toml."""
     if not path.exists():
         return path, False
-    content = path.read_text()
+    content = path.read_text(encoding="utf-8")
     pattern = re.compile(
         r'(?ms)^\[mcp_servers\.(?:"?mcp-stata"?|"?mcp_stata"?)\](?:\.env)?\n.*?(?=^\[|\Z)'
     )
     new_content = pattern.sub("", content).strip()
     if new_content == content.strip():
         return path, False
-    path.write_text((new_content + "\n") if new_content else "")
+    path.write_text(((new_content + "\n") if new_content else ""), encoding="utf-8")
     return path, True
 
 
@@ -772,7 +772,7 @@ def remove_project_agents_hint(project_root: Path | None = None) -> tuple[Path, 
     target = root / "AGENTS.md"
     if not target.exists():
         return target, False
-    content = target.read_text()
+    content = target.read_text(encoding="utf-8")
     pattern = re.compile(
         rf"{re.escape(AGENTS_BLOCK_START)}.*?{re.escape(AGENTS_BLOCK_END)}\n?",
         re.DOTALL,
@@ -781,7 +781,7 @@ def remove_project_agents_hint(project_root: Path | None = None) -> tuple[Path, 
     if new_content == content.strip():
         return target, False
     if new_content:
-        target.write_text(new_content + "\n")
+        target.write_text(new_content + "\n", encoding="utf-8")
     else:
         target.unlink()
     return target, True
@@ -928,7 +928,7 @@ def merge_project_agents_hint(project_root: Path | None = None) -> Path:
     target = root / "AGENTS.md"
     managed_block = _managed_agents_block()
     if target.exists():
-        content = target.read_text().rstrip()
+        content = target.read_text(encoding="utf-8").rstrip()
         pattern = re.compile(
             rf"{re.escape(AGENTS_BLOCK_START)}.*?{re.escape(AGENTS_BLOCK_END)}",
             re.DOTALL,
@@ -940,7 +940,7 @@ def merge_project_agents_hint(project_root: Path | None = None) -> Path:
             new_content = f"{content}{separator}{managed_block}"
     else:
         new_content = managed_block
-    target.write_text(new_content.rstrip() + "\n")
+    target.write_text(new_content.rstrip() + "\n", encoding="utf-8")
     return target
 
 

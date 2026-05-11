@@ -34,7 +34,7 @@ def load_server_json() -> dict:
     if not SERVER_JSON.exists():
         sys.stderr.write(f"server.json not found at {SERVER_JSON}\n")
         sys.exit(1)
-    return json.loads(SERVER_JSON.read_text())
+    return json.loads(SERVER_JSON.read_text(encoding="utf-8"))
 
 
 def main() -> None:

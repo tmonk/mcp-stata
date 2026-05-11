@@ -39,7 +39,7 @@ def test_catalog_metadata_shape():
 
 
 def test_server_uses_generated_catalog():
-    text = SERVER_FILE.read_text()
+    text = SERVER_FILE.read_text(encoding="utf-8")
     assert "from .toolkit_catalog_data import SKILLS, SKILL_BY_ID, CHECKLISTS" in text
     assert '"resource_uri": f"stata://skills/{item[\'id\']}"' in text
     assert 'return doc["content"]' in text
@@ -57,7 +57,7 @@ def test_catalog_contains_checklists():
 
 def test_skill_frontmatter_is_minimal():
     for path in PLUGIN_SKILLS.glob("*/SKILL.md"):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         frontmatter = text.split("---\n", 2)[1]
         keys = {
             line.split(":", 1)[0].strip()
@@ -112,17 +112,17 @@ def test_catalog_is_complete_and_synced():
         manifest_path = skill_dir / "manifest.json"
         if manifest_path.exists():
             import json
-            manifest = json.loads(manifest_path.read_text())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             expected_refs = manifest.get("references", [])
             
             for ref in expected_refs:
                 assert ref in skill_data["reference_docs"], f"Missing embedded reference {ref} for {skill_id}"
-                ref_content = (skill_dir / ref).read_text()
+                ref_content = (skill_dir / ref).read_text(encoding="utf-8")
                 assert skill_data["reference_docs"][ref] == ref_content, f"Content mismatch for reference {ref} in {skill_id}"
 
 
 def test_pyproject_contains_no_stale_force_includes():
     """Ensures we didn't leave any skill-related force-includes in pyproject.toml."""
-    text = PYPROJECT.read_text()
+    text = PYPROJECT.read_text(encoding="utf-8")
     assert "plugin/skills/" not in text or "force-include" not in text.split("plugin/skills/")[0]
     assert "mcp_stata/skills-catalog" not in text
