@@ -1,0 +1,64 @@
+{
+  "T1": [
+    {
+      "id": "T1.1",
+      "prompt": "Load the built-in auto dataset, run summarize price mpg weight, and report the mean and standard deviation of each variable."
+    },
+    {
+      "id": "T1.2",
+      "prompt": "Run regress price mpg weight foreign, then retrieve and report the coefficient on mpg, its standard error, and the model R-squared."
+    },
+    {
+      "id": "T1.3",
+      "prompt": "Load nlsw88, describe the dataset structure, and produce a frequency table of industry."
+    },
+    {
+      "id": "T1.4",
+      "prompt": "Load auto, produce a scatter plot of price vs mpg with a fitted line, and export it as a PDF."
+    }
+  ],
+  "T2": [
+    {
+      "id": "T2.1",
+      "prompt": "Run this code. Report what went wrong and fix it.\n\nsysuse auto\nregres price mpg"
+    },
+    {
+      "id": "T2.2",
+      "prompt": "Run this code. Identify the error and correct it.\n\nsysuse nlsw88\nregress wage educaton experience"
+    },
+    {
+      "id": "T2.3",
+      "prompt": "Run this sequence. Explain what happens at the final display and why.\n\nsysuse auto\nsummarize price\ndisplay \"Mean price is \" r(mean)\ndisplay \"Observations: \" r(N)\nclear\ndisplay r(mean)"
+    },
+    {
+      "id": "T2.4",
+      "prompt": "Create a do-file with ~30 lines of valid code, with one error on line 22 (e.g., referencing a variable dropped earlier). Run it and identify the failing line and cause."
+    },
+    {
+      "id": "T2.5",
+      "prompt": "The code below runs without error. Using stored results and the codebook, identify that weight is a likely confounder and flag the potential issue.\n\nsysuse auto\nregress price mpg"
+    }
+  ],
+  "T3": [
+    {
+      "id": "T3.1",
+      "prompt": "Create a do-file with 200 lines of valid code followed by a syntax error on line 163. Run it. Identify the failing line and error message."
+    },
+    {
+      "id": "T3.3",
+      "prompt": "Run the following code:\nsysuse nlsw88\nregress wage education experience tenure\npredict yhat\npredict resid, resid\nmargins, dydx(education)\ntest education = experience\n\nAfter each command, retrieve and report: the relevant e() or r() scalars (coefficients, margins, test statistics) without re-running any prior command."
+    },
+    {
+      "id": "T3.4",
+      "prompt": "Load auto. Produce a scatter plot of price vs mpg. Then apply five sequential modifications:\n1. Add a linear fit line\n2. Change marker colour to navy\n3. Add axis titles\n4. Add a note citing the data source\n5. Change the plot to a binned scatter (use binscatter or twoway scatter with jitter)\n\nAfter each step, confirm the graph updated correctly before proceeding."
+    },
+    {
+      "id": "T3.5",
+      "prompt": "Run two independent analyses simultaneously within the same conversation:\n- Session A: sysuse auto -> regress price mpg weight\n- Session B: sysuse nlsw88 -> regress wage education experience\n\nInterleave the steps (A step 1, B step 1, A step 2, B step 2). At the end, retrieve e(r2) from each session independently."
+    },
+    {
+      "id": "T3.6",
+      "prompt": "Run this command:\nsysuse nlsw88\nmargins industry, dydx(wage) atmeans\n\nThis command has incorrect syntax (dydx is not a valid option in this position for this use case). Look up margins help, identify the correct syntax, and fix the command."
+    }
+  ]
+}
