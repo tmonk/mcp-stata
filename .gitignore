@@ -36,3 +36,7 @@ benchmarks/mcp_vs_terminal/.envrc
 /benchmarks/mcp_vs_terminal/results
 /.pytest_build_cache
 benchmarks/mcp_vs_terminal/benchmarks.db
+benchmarks/mcp_vs_terminal/.DS_Store
+/.venv
+benchmarks/mcp_vs_terminal/.DS_Store
+benchmarks/mcp_vs_terminal/.DS_Store

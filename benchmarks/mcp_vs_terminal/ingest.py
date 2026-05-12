@@ -22,7 +22,7 @@ from pathlib import Path
 
 import hashlib
 
-from db import init_db, upsert_run, save_result, get_run, save_artifact
+from db import init_db, upsert_run, save_result, get_run, save_artifact, get_baseline_run, set_baseline_run
 
 # Files ingested when no CLI args are given
 DEFAULT_FILES = [
@@ -318,6 +318,16 @@ def main(files: list[str] | None = None):
     targets = [Path(f) for f in (files or DEFAULT_FILES)]
     for path in targets:
         ingest_file(path)
+
+    if not get_baseline_run():
+        from db import get_latest_terminal_run
+        fallback = get_latest_terminal_run()
+        if fallback:
+            set_baseline_run(fallback["run_id"])
+            print(f"\nAuto-set latest terminal run as baseline: {fallback['run_id']}")
+        else:
+            print("\nWarning: no terminal runs found to set as baseline.")
+
     print("\nDone.")
 
 
